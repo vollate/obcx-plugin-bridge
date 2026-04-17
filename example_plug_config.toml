@@ -1,0 +1,108 @@
+# OBCX Bridge Plugin Configuration
+[global]
+locale = "zh_CN.UTF8"
+#locale = "en_US.UTF8"
+# Plugin directories
+[plugin_directories]
+local = "./plugins"
+build = "./build/plugins"
+
+# Bot configurations - both QQ and Telegram bots are needed for bridge
+[bots.qq_bot]
+type = "qq"
+enabled = true
+plugins = ["qq_to_tg"]
+
+[bots.qq_bot.connection]
+type = "websocket"
+host = "127.0.0.1"
+port = 3001
+access_token = ""         # leave empty if no access token for llonebot
+secret = ""
+use_ssl = false
+timeout = 30000
+heartbeat_interval = 5000
+
+[bots.telegram_bot]
+type = "telegram"
+enabled = true
+plugins = ["tg_to_qq"]
+
+[bots.telegram_bot.connection]
+type = "http"
+host = "api.telegram.org"
+port = 443
+access_token = "2222"
+use_ssl = true
+timeout = 30000
+
+# Proxy configuration for Telegram (optional)
+proxy_host = "127.0.0.1"
+proxy_port = 10086
+proxy_type = "http"
+
+# QQ to Telegram Plugin configuration
+[plugins.qq_to_tg]
+enabled = true
+callbacks = ["on_message", "on_notice"]
+priority = 100  # Higher priority (0-255, default: 0)
+# required = []  # No dependencies (optional field)
+
+[plugins.qq_to_tg.config]
+database_file = "bridge_bot.db"
+enable_retry_queue = true
+
+# Telegram to QQ Plugin configuration
+[plugins.tg_to_qq]
+enabled = true
+callbacks = ["on_message", "on_notice"]
+priority = 100  # Same priority as qq_to_tg
+# required = []  # No dependencies (optional field)
+
+[plugins.tg_to_qq.config]
+database_file = "bridge_bot.db"
+enable_retry_queue = true
+
+[group_mappings]
+
+[[group_mappings.group_to_group]]
+telegram_group_id = "113"
+qq_group_id = "112"
+mode = "group_to_group"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = false
+
+[[group_mappings.group_to_group]]
+telegram_group_id = "DDD"
+qq_group_id = "22222"
+mode = "group_to_group"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = false
+
+[[group_mappings.group_to_group]]
+telegram_group_id = "CCC"
+qq_group_id = "113413"
+mode = "group_to_group"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = true
+
+[[group_mappings.topic_to_group]]
+telegram_group_id = "AAA"
+mode = "topic_to_group"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = true
+
+# Topics for the above Telegram group
+[[group_mappings.topics]]
+telegram_group_id = "AA"    # 明确指定属于哪个群
+telegram_topic_id = 1
+qq_group_id = "140320158"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = true
+
+[[group_mappings.topics]]
+telegram_group_id = "AAA"    # 明确指定属于哪个群
+telegram_topic_id = 33
+qq_group_id = "111"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = false

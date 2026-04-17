@@ -1,0 +1,16 @@
+[plugin]
+name = "bridge_bot"
+version = "0.1.0"
+description = "Bridges messages between QQ and Telegram platforms"
+authors = ["Vollate"]
+license = "MIT"
+
+[compatibility]
+obcx_abi_version = 1
+obcx_min_version = "1.1.0"
+
+[dependencies]
+required_plugins = []
+
+[build]
+vcpkg_deps = ["sqlite3", "tomlplusplus"]
