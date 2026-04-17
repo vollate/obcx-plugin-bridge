@@ -5,10 +5,6 @@ description = "Bridges messages between QQ and Telegram platforms"
 authors = ["Vollate"]
 license = "MIT"
 
-[compatibility]
-obcx_abi_version = 1
-obcx_min_version = "1.1.0"
-
 [dependencies]
 required_plugins = []
 
