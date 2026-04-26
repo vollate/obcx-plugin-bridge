@@ -2,6 +2,7 @@
 
 #include "common/message_type.hpp"
 
+#include <atomic>
 #include <boost/asio.hpp>
 #include <chrono>
 #include <deque>
@@ -55,7 +56,8 @@ struct MediaDownloadRetryEntry {
  * 实现指数退避算法，避免频繁重试导致的系统压力
  * 所有数据存储在内存中，重启后清空
  */
-class RetryQueueManager {
+class RetryQueueManager
+    : public std::enable_shared_from_this<RetryQueueManager> {
 public:
   using MessageSendCallback =
       std::function<boost::asio::awaitable<std::optional<std::string>>(

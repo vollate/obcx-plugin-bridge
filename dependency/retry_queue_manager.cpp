@@ -25,9 +25,20 @@ void RetryQueueManager::start() {
 
   PLUGIN_INFO("bridge", "Starting RetryQueueManager");
 
-  // Start retry queue processing coroutine
-  boost::asio::co_spawn(io_context_, process_retry_queues(),
-                        boost::asio::detached);
+  // Keep the manager alive while its detached coroutine is suspended in an
+  // in-flight retry callback. Shutdown can otherwise destroy `this` before a
+  // timed-out send resumes.
+  if (auto self = weak_from_this().lock()) {
+    boost::asio::co_spawn(
+        io_context_,
+        [self]() -> boost::asio::awaitable<void> {
+          co_await self->process_retry_queues();
+        },
+        boost::asio::detached);
+  } else {
+    boost::asio::co_spawn(io_context_, process_retry_queues(),
+                          boost::asio::detached);
+  }
 }
 
 void RetryQueueManager::stop() {
@@ -142,9 +153,15 @@ auto RetryQueueManager::process_retry_queues() -> boost::asio::awaitable<void> {
     try {
       // Process message retries
       co_await process_message_retries();
+      if (!running_) {
+        break;
+      }
 
       // Process media download retries
       co_await process_media_download_retries();
+      if (!running_) {
+        break;
+      }
 
       // Wait for next check interval
       retry_timer_->expires_after(
@@ -238,7 +255,7 @@ auto RetryQueueManager::process_message_retries()
                       entry.max_retry_count, entry.source_platform,
                       entry.target_platform);
           // Don't re-add - give up
-        } else {
+        } else if (running_) {
           // Re-add with updated retry time
           entry.next_retry_at = calculate_next_retry_time(
               entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
@@ -258,7 +275,7 @@ auto RetryQueueManager::process_message_retries()
       PLUGIN_ERROR("bridge", "Error processing message retry: {}", e.what());
       // Re-add to queue on error
       entry.retry_count++;
-      if (entry.retry_count < entry.max_retry_count) {
+      if (running_ && entry.retry_count < entry.max_retry_count) {
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
         std::lock_guard<std::mutex> lock(message_retry_mutex_);
@@ -322,7 +339,7 @@ RetryQueueManager::process_media_download_retries() {
 
         if (entry.retry_count >= entry.max_retry_count) {
           // Try direct connection if proxy failed
-          if (entry.use_proxy) {
+          if (running_ && entry.use_proxy) {
             PLUGIN_INFO("bridge",
                         "Proxy download failed, trying direct connection: {}",
                         entry.file_id);
@@ -337,7 +354,7 @@ RetryQueueManager::process_media_download_retries() {
                         "Media download retry failed after {} attempts: {}",
                         entry.max_retry_count, entry.file_id);
           }
-        } else {
+        } else if (running_) {
           entry.next_retry_at = calculate_next_retry_time(
               entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
           std::lock_guard<std::mutex> lock(media_retry_mutex_);
@@ -349,7 +366,7 @@ RetryQueueManager::process_media_download_retries() {
       PLUGIN_ERROR("bridge", "Error processing media download retry: {}",
                    e.what());
       entry.retry_count++;
-      if (entry.retry_count < entry.max_retry_count) {
+      if (running_ && entry.retry_count < entry.max_retry_count) {
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
         std::lock_guard<std::mutex> lock(media_retry_mutex_);
