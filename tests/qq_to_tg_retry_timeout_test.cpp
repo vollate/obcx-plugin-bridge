@@ -6,8 +6,8 @@
 #include "database/manager.hpp"
 #include "interfaces/plugin.hpp"
 #include "onebot11/adapter/protocol_adapter.hpp"
+#include "qq_to_tg_plugin.hpp"
 #include "telegram/adapter/protocol_adapter.hpp"
-#include "tg_to_qq_plugin.hpp"
 
 #include <atomic>
 #include <boost/asio.hpp>
@@ -43,11 +43,11 @@ constexpr std::string_view kQQGroupId = "2222";
 
 struct StressConfig {
   size_t messages_per_second{10000};
-  std::chrono::seconds duration{120};
-  size_t telegram_batch_size{100};
-  double qq_outage_probability_per_second{0.2};
-  std::chrono::milliseconds qq_outage_duration{1000};
-  std::chrono::milliseconds qq_timeout{80};
+  std::chrono::seconds duration{60};
+  size_t qq_batch_size{10000};
+  double tg_outage_probability_per_second{0.2};
+  std::chrono::milliseconds tg_outage_duration{1000};
+  std::chrono::milliseconds tg_timeout{80};
 };
 
 auto get_env_size(const char *name, size_t fallback) -> size_t {
@@ -81,17 +81,17 @@ auto load_stress_config() -> StressConfig {
   config.duration = std::chrono::seconds(
       get_env_size("OBCX_BRIDGE_STRESS_DURATION_SECONDS",
                    static_cast<size_t>(config.duration.count())));
-  config.telegram_batch_size = get_env_size(
-      "OBCX_BRIDGE_STRESS_TELEGRAM_BATCH_SIZE", config.telegram_batch_size);
-  config.qq_outage_probability_per_second =
-      get_env_double("OBCX_BRIDGE_STRESS_QQ_OUTAGE_PROBABILITY",
-                     config.qq_outage_probability_per_second);
-  config.qq_outage_duration = std::chrono::milliseconds(
-      get_env_size("OBCX_BRIDGE_STRESS_QQ_OUTAGE_MS",
-                   static_cast<size_t>(config.qq_outage_duration.count())));
-  config.qq_timeout = std::chrono::milliseconds(
-      get_env_size("OBCX_BRIDGE_STRESS_QQ_TIMEOUT_MS",
-                   static_cast<size_t>(config.qq_timeout.count())));
+  config.qq_batch_size =
+      get_env_size("OBCX_BRIDGE_STRESS_QQ_BATCH_SIZE", config.qq_batch_size);
+  config.tg_outage_probability_per_second =
+      get_env_double("OBCX_BRIDGE_STRESS_TG_OUTAGE_PROBABILITY",
+                     config.tg_outage_probability_per_second);
+  config.tg_outage_duration = std::chrono::milliseconds(
+      get_env_size("OBCX_BRIDGE_STRESS_TG_OUTAGE_MS",
+                   static_cast<size_t>(config.tg_outage_duration.count())));
+  config.tg_timeout = std::chrono::milliseconds(
+      get_env_size("OBCX_BRIDGE_STRESS_TG_TIMEOUT_MS",
+                   static_cast<size_t>(config.tg_timeout.count())));
   return config;
 }
 
@@ -107,7 +107,7 @@ auto wait_until(std::chrono::milliseconds timeout, auto predicate) -> bool {
 }
 
 auto make_temp_path(std::string_view suffix) -> std::filesystem::path {
-  auto name = "obcx_bridge_retry_" + std::to_string(::getpid()) + "_" +
+  auto name = "obcx_bridge_qq_to_tg_retry_" + std::to_string(::getpid()) + "_" +
               std::to_string(
                   std::chrono::steady_clock::now().time_since_epoch().count()) +
               std::string(suffix);
@@ -134,15 +134,6 @@ public:
     asio::post(ioc_, [this]() {
       boost::system::error_code ignored;
       acceptor_.close(ignored);
-      {
-        std::lock_guard lock(pending_sockets_mutex_);
-        for (auto &socket : pending_sockets_) {
-          if (socket && socket->is_open()) {
-            socket->close(ignored);
-          }
-        }
-        pending_sockets_.clear();
-      }
       work_guard_.reset();
       ioc_.stop();
     });
@@ -177,9 +168,14 @@ protected:
                       });
   }
 
-  void keep_socket_open(const std::shared_ptr<tcp::socket> &socket) {
-    std::lock_guard lock(pending_sockets_mutex_);
-    pending_sockets_.push_back(socket);
+  void keep_socket_open_for(const std::shared_ptr<tcp::socket> &socket,
+                            std::chrono::milliseconds duration) {
+    auto timer =
+        std::make_shared<asio::steady_timer>(socket->get_executor(), duration);
+    timer->async_wait([socket, timer](beast::error_code) {
+      boost::system::error_code ignored;
+      socket->close(ignored);
+    });
   }
 
 private:
@@ -212,21 +208,17 @@ private:
   tcp::acceptor acceptor_;
   asio::executor_work_guard<asio::io_context::executor_type> work_guard_;
   std::thread thread_;
-  std::mutex pending_sockets_mutex_;
-  std::vector<std::shared_ptr<tcp::socket>> pending_sockets_;
 };
 
-class MockTelegramServer final : public MockHttpServer {
+class MockQQEventServer final : public MockHttpServer {
 public:
-  explicit MockTelegramServer(StressConfig config)
+  explicit MockQQEventServer(StressConfig config)
       : MockHttpServer({asio::ip::make_address("127.0.0.1"), 0}),
         config_(config),
         total_message_count_(config_.messages_per_second *
                              static_cast<size_t>(config_.duration.count())) {}
 
-  [[nodiscard]] auto get_updates_count() const -> size_t {
-    return get_updates_count_.load();
-  }
+  [[nodiscard]] auto poll_count() const -> size_t { return poll_count_.load(); }
 
   [[nodiscard]] auto emitted_message_count() const -> size_t {
     return emitted_message_count_.load();
@@ -250,68 +242,93 @@ protected:
                       const std::shared_ptr<http::request<http::string_body>>
                           &request) override {
     const std::string target = std::string(request->target());
-    if (target.find("/getUpdates") == std::string::npos) {
-      send_json(socket, R"({"ok":true,"result":true})");
+    if (request->method() == http::verb::get &&
+        target.find("/get_latest_events") != std::string::npos) {
+      handle_event_poll(socket);
       return;
     }
 
-    get_updates_count_.fetch_add(1);
+    if (request->method() == http::verb::post) {
+      handle_action(socket, request->body());
+      return;
+    }
+
+    send_json(socket, "[]");
+  }
+
+private:
+  void handle_event_poll(const std::shared_ptr<tcp::socket> &socket) {
+    poll_count_.fetch_add(1);
 
     const auto target_count = generated_message_count();
     const auto already_emitted = emitted_message_count_.load();
     if (already_emitted >= target_count) {
-      send_json(socket, R"({"ok":true,"result":[]})");
+      send_json(socket, "[]");
       return;
     }
 
     const auto batch_count =
-        std::min(config_.telegram_batch_size, target_count - already_emitted);
-    nlohmann::json updates = nlohmann::json::array();
+        std::min(config_.qq_batch_size, target_count - already_emitted);
+    nlohmann::json events = nlohmann::json::array();
     for (size_t i = 0; i < batch_count; ++i) {
       const auto message_index = already_emitted + i;
-      updates.push_back({
-          {"update_id", 1000000 + static_cast<int>(message_index)},
-          {"message",
-           {{"message_id", 2000000 + static_cast<int>(message_index)},
-            {"date", 1700000000},
-            {"chat",
-             {{"id", std::stoll(std::string(kTelegramGroupId))},
-              {"type", "supergroup"},
-              {"title", "bridge-test"}}},
-            {"from",
-             {{"id", 3000000 + static_cast<int>(message_index)},
-              {"is_bot", false},
-              {"first_name", "LoadTest"}}},
-            {"text", "stream message " + std::to_string(message_index)}}},
+      const auto text = "stream message " + std::to_string(message_index);
+      events.push_back({
+          {"time", 1700000000},
+          {"self_id", 10000},
+          {"post_type", "message"},
+          {"message_type", "group"},
+          {"sub_type", "normal"},
+          {"message_id", std::to_string(2000000 + message_index)},
+          {"group_id", std::string(kQQGroupId)},
+          {"user_id", std::to_string(3000000 + message_index)},
+          {"raw_message", text},
+          {"font", 0},
+          {"sender",
+           {{"user_id", std::to_string(3000000 + message_index)},
+            {"nickname", "LoadTest"},
+            {"card", "LoadTest"}}},
+          {"message", nlohmann::json::array(
+                          {{{"type", "text"}, {"data", {{"text", text}}}}})},
       });
     }
     emitted_message_count_.fetch_add(batch_count);
-
-    send_json(socket,
-              nlohmann::json({{"ok", true}, {"result", updates}}).dump());
+    send_json(socket, events.dump());
   }
 
-private:
+  void handle_action(const std::shared_ptr<tcp::socket> &socket,
+                     const std::string &body) {
+    try {
+      const auto request = nlohmann::json::parse(body);
+      const auto action = request.value("action", "");
+      if (action == "get_group_member_info") {
+        send_json(
+            socket,
+            R"({"status":"ok","data":{"nickname":"LoadTest","card":"LoadTest","title":""}})");
+        return;
+      }
+    } catch (...) {
+    }
+
+    send_json(socket, R"({"status":"ok","data":{}})");
+  }
+
   StressConfig config_;
   size_t total_message_count_;
   std::chrono::steady_clock::time_point started_at_{
       std::chrono::steady_clock::now()};
-  std::atomic<size_t> get_updates_count_{0};
+  std::atomic<size_t> poll_count_{0};
   std::atomic<size_t> emitted_message_count_{0};
 };
 
-class MockQQServer final : public MockHttpServer {
+class MockTelegramSendServer final : public MockHttpServer {
 public:
-  explicit MockQQServer(StressConfig config)
+  explicit MockTelegramSendServer(StressConfig config)
       : MockHttpServer({asio::ip::make_address("127.0.0.1"), 0}),
         config_(config) {}
 
-  [[nodiscard]] auto send_group_request_count() const -> size_t {
-    return send_group_request_count_.load();
-  }
-
-  [[nodiscard]] auto successful_request_count() const -> size_t {
-    return successful_request_count_.load();
+  [[nodiscard]] auto send_message_count() const -> size_t {
+    return send_message_count_.load();
   }
 
   [[nodiscard]] auto timed_out_request_count() const -> size_t {
@@ -330,57 +347,47 @@ protected:
   void handle_request(const std::shared_ptr<tcp::socket> &socket,
                       const std::shared_ptr<http::request<http::string_body>>
                           &request) override {
-    if (request->method() == http::verb::get) {
-      send_json(socket, "[]");
+    const std::string target = std::string(request->target());
+    if (target.find("/getUpdates") != std::string::npos) {
+      send_json(socket, R"({"ok":true,"result":[]})");
       return;
     }
 
-    try {
-      const auto body = nlohmann::json::parse(request->body());
-      if (body.value("action", "") == "send_group_msg") {
-        send_group_request_count_.fetch_add(1);
-        record_message_identity(body);
-        if (is_in_outage()) {
-          timed_out_request_count_.fetch_add(1);
-          keep_socket_open_for(socket, config_.qq_timeout * 3);
-          return;
-        }
+    if (target.find("/sendMessage") == std::string::npos) {
+      send_json(socket, R"({"ok":true,"result":true})");
+      return;
+    }
 
-        successful_request_count_.fetch_add(1);
-        const auto message_id = successful_request_count_.load();
-        send_json(
-            socket,
-            nlohmann::json(
-                {{"status", "ok"},
-                 {"data", {{"message_id", static_cast<int64_t>(message_id)}}}})
-                .dump());
-        return;
-      }
+    send_message_count_.fetch_add(1);
+    try {
+      record_message_identity(nlohmann::json::parse(request->body()));
     } catch (...) {
     }
 
-    send_json(socket, R"({"status":"ok","data":{}})");
+    if (is_in_outage()) {
+      timed_out_request_count_.fetch_add(1);
+      keep_socket_open_for(socket, config_.tg_timeout * 3);
+      return;
+    }
+
+    const auto message_id = successful_request_count_.fetch_add(1) + 1;
+    send_json(
+        socket,
+        nlohmann::json(
+            {{"ok", true},
+             {"result", {{"message_id", static_cast<int64_t>(message_id)}}}})
+            .dump());
   }
 
 private:
-  void keep_socket_open_for(const std::shared_ptr<tcp::socket> &socket,
-                            std::chrono::milliseconds duration) {
-    auto timer =
-        std::make_shared<asio::steady_timer>(socket->get_executor(), duration);
-    timer->async_wait([socket, timer](beast::error_code) {
-      boost::system::error_code ignored;
-      socket->close(ignored);
-    });
-  }
-
   auto is_in_outage() -> bool {
     const auto now = std::chrono::steady_clock::now();
     if (now < outage_until_) {
       return true;
     }
 
-    if (outage_count_.load() == 0 && send_group_request_count_.load() >= 1) {
-      outage_until_ = now + config_.qq_outage_duration;
+    if (outage_count_.load() == 0 && send_message_count_.load() >= 1) {
+      outage_until_ = now + config_.tg_outage_duration;
       outage_count_.fetch_add(1);
       return true;
     }
@@ -388,8 +395,8 @@ private:
     if (now >= next_outage_decision_at_) {
       next_outage_decision_at_ = now + std::chrono::seconds(1);
       if (outage_distribution_(rng_) <
-          config_.qq_outage_probability_per_second) {
-        outage_until_ = now + config_.qq_outage_duration;
+          config_.tg_outage_probability_per_second) {
+        outage_until_ = now + config_.tg_outage_duration;
         outage_count_.fetch_add(1);
         return true;
       }
@@ -457,38 +464,38 @@ private:
       std::chrono::steady_clock::time_point::min()};
   std::mutex seen_message_mutex_;
   std::unordered_set<std::string> seen_messages_;
-  std::atomic<size_t> send_group_request_count_{0};
+  std::atomic<size_t> send_message_count_{0};
   std::atomic<size_t> successful_request_count_{0};
   std::atomic<size_t> timed_out_request_count_{0};
   std::atomic<size_t> duplicate_request_count_{0};
   std::atomic<size_t> outage_count_{0};
 };
 
-class BridgeTGToQQRetryTimeoutTest : public testing::Test {
+class BridgeQQToTGRetryTimeoutTest : public testing::Test {
 protected:
   void SetUp() override {
     obcx::common::Logger::initialize(spdlog::level::warn);
     stress_config_ = load_stress_config();
 
-    telegram_server_ = std::make_unique<MockTelegramServer>(stress_config_);
-    qq_server_ = std::make_unique<MockQQServer>(stress_config_);
-    telegram_server_->start();
+    qq_server_ = std::make_unique<MockQQEventServer>(stress_config_);
+    telegram_server_ = std::make_unique<MockTelegramSendServer>(stress_config_);
     qq_server_->start();
+    telegram_server_->start();
 
     db_path_ = make_temp_path(".db");
     config_path_ = make_temp_path(".toml");
 
     std::ofstream config_file(config_path_);
-    config_file << "[bots.telegram_bot.connection]\n";
+    config_file << "[bots.qq_bot.connection]\n";
+    config_file << "host = \"127.0.0.1\"\n";
+    config_file << "port = " << qq_server_->port() << "\n";
+    config_file << "\n[bots.telegram_bot.connection]\n";
     config_file << "access_token = \"" << kTelegramToken << "\"\n";
     config_file << "host = \"127.0.0.1\"\n";
     config_file << "port = " << telegram_server_->port() << "\n";
-    config_file << "\n[bots.qq_bot.connection]\n";
-    config_file << "host = \"127.0.0.1\"\n";
-    config_file << "port = " << qq_server_->port() << "\n";
-    config_file << "\n[plugins.tg_to_qq]\n";
+    config_file << "\n[plugins.qq_to_tg]\n";
     config_file << "enabled = true\n";
-    config_file << "\n[plugins.tg_to_qq.config]\n";
+    config_file << "\n[plugins.qq_to_tg.config]\n";
     config_file << "database_file = \"" << db_path_.string() << "\"\n";
     config_file << "enable_retry_queue = true\n";
     config_file << "bridge_files_dir = \""
@@ -498,8 +505,8 @@ protected:
     config_file << "group_to_group = [\n";
     config_file << "  { telegram_group_id = \"" << kTelegramGroupId
                 << "\", qq_group_id = \"" << kQQGroupId
-                << "\", show_tg_to_qq_sender = true,"
-                   " enable_tg_to_qq = true },\n";
+                << "\", show_qq_to_tg_sender = true,"
+                   " enable_qq_to_tg = true },\n";
     config_file << "]\n";
     config_file.close();
 
@@ -508,46 +515,46 @@ protected:
 
     scheduler_ = std::make_shared<obcx::core::TaskScheduler>(16);
 
-    auto telegram_bot = std::make_unique<obcx::core::TGBot>(
-        obcx::adapter::telegram::ProtocolAdapter{}, scheduler_);
     auto qq_bot = std::make_unique<obcx::core::QQBot>(
         obcx::adapter::onebot11::ProtocolAdapter{}, scheduler_);
+    auto telegram_bot = std::make_unique<obcx::core::TGBot>(
+        obcx::adapter::telegram::ProtocolAdapter{}, scheduler_);
 
-    telegram_bot_ = telegram_bot.get();
     qq_bot_ = qq_bot.get();
+    telegram_bot_ = telegram_bot.get();
+
+    obcx::common::ConnectionConfig qq_config;
+    qq_config.host = "127.0.0.1";
+    qq_config.port = qq_server_->port();
+    qq_config.connect_timeout = std::chrono::milliseconds(80);
+    qq_config.use_ssl = false;
 
     obcx::common::ConnectionConfig telegram_config;
     telegram_config.host = "127.0.0.1";
     telegram_config.port = telegram_server_->port();
     telegram_config.access_token = std::string(kTelegramToken);
-    telegram_config.connect_timeout = std::chrono::milliseconds(80);
+    telegram_config.connect_timeout = stress_config_.tg_timeout;
     telegram_config.poll_timeout = std::chrono::milliseconds(1);
-    telegram_config.poll_force_close = std::chrono::milliseconds(80);
+    telegram_config.poll_force_close = stress_config_.tg_timeout;
     telegram_config.poll_retry_interval = std::chrono::milliseconds(20);
     telegram_config.use_ssl = false;
 
-    obcx::common::ConnectionConfig qq_config;
-    qq_config.host = "127.0.0.1";
-    qq_config.port = qq_server_->port();
-    qq_config.connect_timeout = stress_config_.qq_timeout;
-    qq_config.use_ssl = false;
-
-    telegram_bot_->connect(
-        obcx::network::ConnectionManagerFactory::ConnectionType::TelegramHTTP,
-        telegram_config);
     qq_bot_->connect(
         obcx::network::ConnectionManagerFactory::ConnectionType::Onebot11HTTP,
         qq_config);
+    telegram_bot_->connect(
+        obcx::network::ConnectionManagerFactory::ConnectionType::TelegramHTTP,
+        telegram_config);
 
-    bots_.push_back(std::move(telegram_bot));
     bots_.push_back(std::move(qq_bot));
+    bots_.push_back(std::move(telegram_bot));
     obcx::interface::IPlugin::set_bots(&bots_, &bots_mutex_);
 
-    plugin_ = std::make_unique<plugins::TGToQQPlugin>();
+    plugin_ = std::make_unique<plugins::QQToTGPlugin>();
     ASSERT_TRUE(plugin_->initialize());
 
-    telegram_thread_ = std::thread([this]() { telegram_bot_->run(); });
     qq_thread_ = std::thread([this]() { qq_bot_->run(); });
+    telegram_thread_ = std::thread([this]() { telegram_bot_->run(); });
   }
 
   void TearDown() override {
@@ -556,18 +563,18 @@ protected:
       plugin_.reset();
     }
 
-    if (telegram_bot_) {
-      telegram_bot_->stop();
-    }
     if (qq_bot_) {
       qq_bot_->stop();
     }
-
-    if (telegram_thread_.joinable()) {
-      telegram_thread_.join();
+    if (telegram_bot_) {
+      telegram_bot_->stop();
     }
+
     if (qq_thread_.joinable()) {
       qq_thread_.join();
+    }
+    if (telegram_thread_.joinable()) {
+      telegram_thread_.join();
     }
 
     bots_.clear();
@@ -580,11 +587,11 @@ protected:
 
     storage::DatabaseManager::reset_instance();
 
-    if (telegram_server_) {
-      telegram_server_->stop();
-    }
     if (qq_server_) {
       qq_server_->stop();
+    }
+    if (telegram_server_) {
+      telegram_server_->stop();
     }
 
     std::error_code ignored;
@@ -592,45 +599,45 @@ protected:
     std::filesystem::remove(config_path_, ignored);
   }
 
-  std::unique_ptr<MockTelegramServer> telegram_server_;
-  std::unique_ptr<MockQQServer> qq_server_;
+  std::unique_ptr<MockQQEventServer> qq_server_;
+  std::unique_ptr<MockTelegramSendServer> telegram_server_;
   StressConfig stress_config_;
   std::filesystem::path db_path_;
   std::filesystem::path config_path_;
   std::shared_ptr<obcx::core::TaskScheduler> scheduler_;
   std::vector<std::unique_ptr<obcx::core::IBot>> bots_;
   std::mutex bots_mutex_;
-  obcx::core::TGBot *telegram_bot_{nullptr};
   obcx::core::QQBot *qq_bot_{nullptr};
-  std::unique_ptr<plugins::TGToQQPlugin> plugin_;
-  std::thread telegram_thread_;
+  obcx::core::TGBot *telegram_bot_{nullptr};
+  std::unique_ptr<plugins::QQToTGPlugin> plugin_;
   std::thread qq_thread_;
+  std::thread telegram_thread_;
 };
 
-TEST_F(BridgeTGToQQRetryTimeoutTest,
-       ConcurrentTelegramBurstToUnresponsiveQQRetriesWithoutCrash) {
+TEST_F(BridgeQQToTGRetryTimeoutTest,
+       ConcurrentQQStreamToFlakyTelegramRetriesWithoutCrash) {
   ASSERT_TRUE(wait_until(std::chrono::seconds(5), [this]() {
-    return telegram_server_->get_updates_count() > 0;
-  })) << "Telegram bot did not start polling the mock server";
+    return qq_server_->poll_count() > 0;
+  })) << "QQ bot did not start polling the mock OneBot server";
 
   std::this_thread::sleep_for(stress_config_.duration);
 
-  ASSERT_GE(telegram_server_->generated_message_count(),
-            telegram_server_->total_message_count())
-      << "Telegram mock did not run for the configured stress duration";
-  ASSERT_GT(telegram_server_->emitted_message_count(), 0U)
-      << "Telegram mock did not deliver any updates to the bot";
-  ASSERT_GT(qq_server_->send_group_request_count(), 0U)
-      << "QQ mock did not receive any forwarded messages";
+  ASSERT_GE(qq_server_->generated_message_count(),
+            qq_server_->total_message_count())
+      << "QQ mock did not run for the configured stress duration";
+  ASSERT_GT(qq_server_->emitted_message_count(), 0U)
+      << "QQ mock did not deliver any events to the bot";
+  ASSERT_GT(telegram_server_->send_message_count(), 0U)
+      << "Telegram mock did not receive any forwarded messages";
 
-  ASSERT_GT(qq_server_->outage_count(), 0U)
-      << "QQ mock never entered an outage window";
-  ASSERT_GT(qq_server_->timed_out_request_count(), 0U)
-      << "QQ outage windows did not force any send timeouts";
+  ASSERT_GT(telegram_server_->outage_count(), 0U)
+      << "Telegram mock never entered an outage window";
+  ASSERT_GT(telegram_server_->timed_out_request_count(), 0U)
+      << "Telegram outage windows did not force any send timeouts";
 
   ASSERT_TRUE(wait_until(std::chrono::seconds(30), [this]() {
-    return qq_server_->duplicate_request_count() > 0;
-  })) << "retry queue did not retry any timed-out QQ sends";
+    return telegram_server_->duplicate_request_count() > 0;
+  })) << "retry queue did not retry any timed-out Telegram sends";
 
   plugin_->shutdown();
   plugin_.reset();

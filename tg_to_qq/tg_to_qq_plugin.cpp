@@ -12,6 +12,14 @@
 #include <nlohmann/json.hpp>
 
 namespace plugins {
+
+struct TGToQQPlugin::RuntimeState {
+  std::atomic_bool shutting_down{false};
+  std::mutex mutex;
+  obcx::core::QQBot *qq_bot{nullptr};
+  std::shared_ptr<bridge::TelegramHandler> telegram_handler;
+};
+
 TGToQQPlugin::TGToQQPlugin() {
   PLUGIN_DEBUG("tg_to_qq", "TGToQQPlugin constructor called");
 }
@@ -49,6 +57,8 @@ bool TGToQQPlugin::initialize() {
       return false;
     }
 
+    runtime_state_ = std::make_shared<RuntimeState>();
+
     // Initialize retry queue manager if enabled (in-memory, non-persistent)
     if (config_.enable_retry_queue) {
       // Create a dedicated io_context for retry queue (non-static)
@@ -71,15 +81,20 @@ bool TGToQQPlugin::initialize() {
       });
 
       // Register callback for sending messages to QQ
+      auto runtime_state = runtime_state_;
       retry_manager_->register_message_send_callback(
           "qq",
-          [this](const bridge::MessageRetryEntry &retry_info,
-                 const obcx::common::Message &message)
+          [runtime_state](const bridge::MessageRetryEntry &retry_info,
+                          const obcx::common::Message &message)
               -> boost::asio::awaitable<std::optional<std::string>> {
+            if (runtime_state->shutting_down.load(std::memory_order_acquire)) {
+              co_return std::nullopt;
+            }
+
             // Find QQ bot
             obcx::core::QQBot *qq_bot = nullptr;
             {
-              auto [lock, bots] = get_bots();
+              auto [lock, bots] = obcx::interface::IPlugin::get_bots();
               for (auto &bot_ptr : bots) {
                 if (auto *qq =
                         dynamic_cast<obcx::core::QQBot *>(bot_ptr.get())) {
@@ -90,7 +105,7 @@ bool TGToQQPlugin::initialize() {
             }
 
             if (!qq_bot) {
-              PLUGIN_WARN(get_name(), "QQ bot not found for retry callback");
+              PLUGIN_WARN("tg_to_qq", "QQ bot not found for retry callback");
               co_return std::nullopt;
             }
 
@@ -108,7 +123,7 @@ bool TGToQQPlugin::initialize() {
               }
               co_return std::nullopt;
             } catch (const std::exception &e) {
-              PLUGIN_ERROR(get_name(), "Retry send to QQ failed: {}", e.what());
+              PLUGIN_ERROR("tg_to_qq", "Retry send to QQ failed: {}", e.what());
               co_return std::nullopt;
             }
           });
@@ -120,8 +135,8 @@ bool TGToQQPlugin::initialize() {
     }
 
     // Create TelegramHandler instance
-    telegram_handler_ =
-        std::make_unique<bridge::TelegramHandler>(db_manager_, retry_manager_);
+    runtime_state_->telegram_handler =
+        std::make_shared<bridge::TelegramHandler>(db_manager_, retry_manager_);
 
     // Register event callbacks
     try {
@@ -131,11 +146,12 @@ bool TGToQQPlugin::initialize() {
       // 找到Telegram bot并注册消息回调
       for (auto &bot_ptr : bots) {
         if (auto *tg_bot = dynamic_cast<obcx::core::TGBot *>(bot_ptr.get())) {
+          auto runtime_state = runtime_state_;
           tg_bot->on_event<obcx::common::MessageEvent>(
-              [this](obcx::core::IBot &bot,
-                     const obcx::common::MessageEvent &event)
+              [runtime_state](obcx::core::IBot &bot,
+                              const obcx::common::MessageEvent &event)
                   -> boost::asio::awaitable<void> {
-                co_await handle_tg_message(bot, event);
+                co_await handle_tg_message(runtime_state, bot, event);
               });
           PLUGIN_INFO(
               get_name(),
@@ -175,8 +191,12 @@ void TGToQQPlugin::shutdown() {
   try {
     PLUGIN_INFO(get_name(), "Shutting down TG to QQ Plugin...");
 
-    // Clear cached bot pointer first
-    qq_bot_ = nullptr;
+    if (runtime_state_) {
+      runtime_state_->shutting_down.store(true, std::memory_order_release);
+      std::lock_guard lock(runtime_state_->mutex);
+      runtime_state_->qq_bot = nullptr;
+      runtime_state_->telegram_handler.reset();
+    }
 
     // Stop retry manager if running (this cancels any pending async operations)
     if (retry_manager_) {
@@ -197,9 +217,6 @@ void TGToQQPlugin::shutdown() {
     retry_io_thread_.reset();
     retry_io_context_.reset();
 
-    // Release Telegram handler
-    telegram_handler_.reset();
-
     // Don't reset db_manager_ - it's a singleton shared with other plugins
     db_manager_ = nullptr;
 
@@ -211,52 +228,76 @@ void TGToQQPlugin::shutdown() {
 }
 
 boost::asio::awaitable<void> TGToQQPlugin::handle_tg_message(
-    obcx::core::IBot &bot, const obcx::common::MessageEvent &event) {
+    std::shared_ptr<RuntimeState> state, obcx::core::IBot &bot,
+    const obcx::common::MessageEvent &event) {
+  if (!state || state->shutting_down.load(std::memory_order_acquire)) {
+    co_return;
+  }
+
   // 确保这是Telegram bot的消息
   if (auto *tg_bot = dynamic_cast<obcx::core::TGBot *>(&bot)) {
-    PLUGIN_INFO(get_name(),
+    PLUGIN_INFO("tg_to_qq",
                 "TG to QQ Plugin: Processing Telegram message from chat {}",
                 event.group_id.value_or("unknown"));
 
     try {
-      // 获取所有bot实例的带锁访问
-      if (qq_bot_ == nullptr) {
-        auto [lock, bots] = get_bots();
+      obcx::core::QQBot *qq_bot = nullptr;
+      std::shared_ptr<bridge::TelegramHandler> telegram_handler;
 
-        // 找到QQ bot
+      {
+        std::lock_guard state_lock(state->mutex);
+        qq_bot = state->qq_bot;
+        telegram_handler = state->telegram_handler;
+      }
+
+      // 获取所有bot实例的带锁访问
+      if (qq_bot == nullptr) {
+        auto [lock, bots] = obcx::interface::IPlugin::get_bots();
+
         for (auto &bot_ptr : bots) {
           if (auto *qq = dynamic_cast<obcx::core::QQBot *>(bot_ptr.get())) {
-            qq_bot_ = qq;
+            qq_bot = qq;
             break;
+          }
+        }
+
+        if (qq_bot != nullptr) {
+          std::lock_guard state_lock(state->mutex);
+          if (!state->shutting_down.load(std::memory_order_acquire)) {
+            state->qq_bot = qq_bot;
           }
         }
       }
 
-      if (qq_bot_ != nullptr && telegram_handler_) {
+      if (state->shutting_down.load(std::memory_order_acquire)) {
+        co_return;
+      }
+
+      if (qq_bot != nullptr && telegram_handler) {
         // Check if this is an edited message
         bool is_edited = (event.sub_type == "edited") ||
                          (event.data.contains("is_edited") &&
                           event.data["is_edited"].get<bool>());
 
         if (is_edited) {
-          PLUGIN_INFO(get_name(),
+          PLUGIN_INFO("tg_to_qq",
                       "Detected edited message, handling as edit event");
-          co_await telegram_handler_->handle_message_edited(*tg_bot, *qq_bot_,
-                                                            event);
+          co_await telegram_handler->handle_message_edited(*tg_bot, *qq_bot,
+                                                           event);
         } else {
           PLUGIN_INFO(
-              get_name(),
+              "tg_to_qq",
               "Found QQ bot, performing TG->QQ message forwarding using "
               "TelegramHandler");
-          co_await telegram_handler_->forward_to_qq(*tg_bot, *qq_bot_, event);
+          co_await telegram_handler->forward_to_qq(*tg_bot, *qq_bot, event);
         }
       } else {
         PLUGIN_WARN(
-            get_name(),
+            "tg_to_qq",
             "QQ bot or TelegramHandler not found for TG->QQ forwarding");
       }
     } catch (const std::exception &e) {
-      PLUGIN_ERROR(get_name(), "Error accessing bot list: {}", e.what());
+      PLUGIN_ERROR("tg_to_qq", "Error accessing bot list: {}", e.what());
     }
   }
 
