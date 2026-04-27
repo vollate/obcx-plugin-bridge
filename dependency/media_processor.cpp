@@ -18,11 +18,11 @@ auto MediaProcessor::get_qq_file_info(const std::string &file_url,
   try {
     // 从URL中提取文件名
     std::string filename = "file";
-    size_t pos = file_url.find_last_of("/");
+    size_t pos = file_url.find_last_of('/');
     if (pos != std::string::npos && pos + 1 < file_url.length()) {
       filename = file_url.substr(pos + 1);
       // 移除查询参数
-      size_t query_pos = filename.find("?");
+      size_t query_pos = filename.find('?');
       if (query_pos != std::string::npos) {
         filename = filename.substr(0, query_pos);
       }
@@ -71,7 +71,7 @@ auto MediaProcessor::get_path_manager() -> const PathManager & {
   static std::unique_ptr<PathManager> path_manager_instance;
   static std::once_flag init_flag;
 
-  std::call_once(init_flag, []() {
+  std::call_once(init_flag, []() -> void {
     if (bridge::config::BRIDGE_FILES_DIR.empty()) {
       throw std::runtime_error(
           "PathManager: BRIDGE_FILES_DIR is not configured. Please ensure "
@@ -93,8 +93,8 @@ auto MediaProcessor::is_gif_content_type(const std::string &content_type)
 
   // 转换为小写比较
   std::string lower_content_type = content_type;
-  std::transform(lower_content_type.begin(), lower_content_type.end(),
-                 lower_content_type.begin(), ::tolower);
+  std::ranges::transform(lower_content_type, lower_content_type.begin(),
+                         ::tolower);
 
   // 检测GIF类型
   bool is_gif = (lower_content_type == "image/gif" ||
@@ -112,8 +112,7 @@ auto MediaProcessor::detect_mime_type_from_content(const std::string &content)
   }
 
   // 检查文件头标识（Magic Numbers）
-  const unsigned char *data =
-      reinterpret_cast<const unsigned char *>(content.data());
+  const auto *data = reinterpret_cast<const unsigned char *>(content.data());
   size_t size = content.size();
 
   // GIF: "GIF87a" 或 "GIF89a"

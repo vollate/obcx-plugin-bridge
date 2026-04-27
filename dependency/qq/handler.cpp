@@ -210,7 +210,7 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
                      qq_group_id, telegram_group_id);
       } else {
         // Topic模式：发送到特定topic
-        auto &tg_bot = static_cast<obcx::core::TGBot &>(telegram_bot);
+        auto &tg_bot = dynamic_cast<obcx::core::TGBot &>(telegram_bot);
         response = co_await tg_bot.send_topic_message(
             telegram_group_id, topic_id, message_to_send);
         PLUGIN_DEBUG("qq_to_tg",

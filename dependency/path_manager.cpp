@@ -72,7 +72,7 @@ auto PathManager::host_to_container_absolute(
   std::string normalized_host_path = normalize_path(host_absolute_path);
 
   // 检查路径是否以主机基础路径开头
-  if (normalized_host_path.find(host_base_) == 0) {
+  if (normalized_host_path.starts_with(host_base_)) {
     // 提取相对路径部分
     std::string relative_part =
         normalized_host_path.substr(host_base_.length());
@@ -97,7 +97,7 @@ auto PathManager::container_to_host_absolute(
       normalize_path(container_absolute_path);
 
   // 检查路径是否以容器基础路径开头
-  if (normalized_container_path.find(container_base_) == 0) {
+  if (normalized_container_path.starts_with(container_base_)) {
     // 提取相对路径部分
     std::string relative_part =
         normalized_container_path.substr(container_base_.length());

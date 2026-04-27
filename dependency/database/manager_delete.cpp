@@ -9,14 +9,14 @@ namespace storage {
 auto DatabaseManager::delete_message_mapping(
     const std::string &source_platform, const std::string &source_message_id,
     const std::string &target_platform) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         DELETE FROM message_mappings
         WHERE source_platform = ? AND source_message_id = ? AND target_platform = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare delete statement: {}",
@@ -45,7 +45,7 @@ auto DatabaseManager::delete_message_mapping(
 // === QQ表情包映射表 DELETE 操作 ===
 
 auto DatabaseManager::cleanup_old_image_type_cache(int max_age_days) -> int {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   if (!db_) {
     PLUGIN_ERROR("bridge", "数据库连接未初始化");
@@ -65,7 +65,7 @@ auto DatabaseManager::cleanup_old_image_type_cache(int max_age_days) -> int {
       AND last_used_at < ?
     )";
 
-    sqlite3_stmt *stmt;
+    sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
       PLUGIN_ERROR("bridge", "清理缓存SQL准备失败: {}", sqlite3_errmsg(db_));
       return -1;
@@ -99,14 +99,14 @@ auto DatabaseManager::remove_message_retry(const std::string &source_platform,
                                            const std::string &source_message_id,
                                            const std::string &target_platform)
     -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         DELETE FROM message_retry_queue
         WHERE source_platform = ? AND source_message_id = ? AND target_platform = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge",
@@ -136,14 +136,14 @@ auto DatabaseManager::remove_message_retry(const std::string &source_platform,
 auto DatabaseManager::remove_media_download_retry(const std::string &platform,
                                                   const std::string &file_id)
     -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         DELETE FROM media_download_retry_queue
         WHERE platform = ? AND file_id = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge",

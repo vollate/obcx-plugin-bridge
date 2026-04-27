@@ -3,6 +3,7 @@
 #include "media_processor.hpp"
 #include "qq/message_formatter.hpp"
 
+#include <algorithm>
 #include <boost/asio/io_context.hpp>
 #include <common/logger.hpp>
 #include <core/qq_bot.hpp>
@@ -183,7 +184,7 @@ auto QQMediaProcessor::process_file_segment(
     try {
       std::string response;
       // 根据消息来源选择API：群聊使用get_group_file_url，私聊使用get_private_file_url
-      auto *qq_bot_ptr = static_cast<obcx::core::QQBot *>(&qq_bot);
+      auto *qq_bot_ptr = dynamic_cast<obcx::core::QQBot *>(&qq_bot);
       if (event.group_id.has_value()) {
         // 群聊文件
         std::string group_id = event.group_id.value();
@@ -556,14 +557,14 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
                 url);
 
     // 解析QQ文件URL获取主机和路径信息
-    std::string url_str(url);
+    const std::string &url_str(url);
     size_t protocol_pos = url_str.find("://");
     if (protocol_pos == std::string::npos) {
       throw std::runtime_error("无效的QQ文件URL格式");
     }
 
     size_t host_start = protocol_pos + 3;
-    size_t path_start = url_str.find("/", host_start);
+    size_t path_start = url_str.find('/', host_start);
     if (path_start == std::string::npos) {
       throw std::runtime_error("QQ文件URL中未找到路径部分");
     }
@@ -720,7 +721,7 @@ auto QQMediaProcessor::handle_sticker_cache(
       std::string response;
       if (topic_id == -1) {
         // 群组模式：发送到群组
-        response = co_await static_cast<obcx::core::TGBot &>(telegram_bot)
+        response = co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
                        .send_group_photo(telegram_group_id,
                                          cached_mapping->telegram_file_id,
                                          caption_info);
@@ -737,7 +738,7 @@ auto QQMediaProcessor::handle_sticker_cache(
           sticker_message.push_back(caption_segment);
         }
         sticker_message.push_back(img_segment);
-        response = co_await static_cast<obcx::core::TGBot &>(telegram_bot)
+        response = co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
                        .send_topic_message(telegram_group_id, topic_id,
                                            sticker_message);
       }
@@ -816,9 +817,9 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
     found_urls.insert(found_urls.end(), regex_urls.begin(), regex_urls.end());
 
     // 去重
-    std::sort(found_urls.begin(), found_urls.end());
-    found_urls.erase(std::unique(found_urls.begin(), found_urls.end()),
-                     found_urls.end());
+    std::ranges::sort(found_urls);
+    auto duplicate_urls = std::ranges::unique(found_urls);
+    found_urls.erase(duplicate_urls.begin(), duplicate_urls.end());
 
     result.urls = found_urls;
     result.success = !found_urls.empty() || !result.title.empty();

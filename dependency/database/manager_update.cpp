@@ -10,7 +10,7 @@ auto DatabaseManager::update_message_forwarding(
     const std::string &platform, const std::string &message_id,
     const std::string &forwarded_to_platform,
     const std::string &forwarded_message_id) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         UPDATE messages
@@ -18,7 +18,7 @@ auto DatabaseManager::update_message_forwarding(
         WHERE platform = ? AND message_id = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare statement: {}",
@@ -51,7 +51,7 @@ auto DatabaseManager::update_message_mapping(
     const std::string &source_platform, const std::string &source_message_id,
     const std::string &target_platform,
     const std::string &new_target_message_id) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         UPDATE message_mappings
@@ -59,7 +59,7 @@ auto DatabaseManager::update_message_mapping(
         WHERE source_platform = ? AND source_message_id = ? AND target_platform = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare update statement: {}",
@@ -91,7 +91,7 @@ auto DatabaseManager::update_message_mapping(
 auto DatabaseManager::update_sticker_last_used(const std::string &platform,
                                                const std::string &sticker_hash)
     -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         UPDATE sticker_cache
@@ -130,7 +130,7 @@ auto DatabaseManager::update_sticker_conversion(
     const std::string &platform, const std::string &sticker_hash,
     const std::string &conversion_status,
     const std::optional<std::string> &converted_file_path) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         UPDATE sticker_cache
@@ -175,7 +175,7 @@ auto DatabaseManager::update_sticker_conversion(
 
 auto DatabaseManager::update_qq_sticker_last_used(
     const std::string &qq_sticker_hash) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
     UPDATE qq_sticker_mapping
@@ -216,7 +216,7 @@ auto DatabaseManager::update_message_retry(
     const std::string &target_platform, int retry_count,
     const std::chrono::system_clock::time_point &next_retry_at,
     const std::string &failure_reason) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         UPDATE message_retry_queue
@@ -224,7 +224,7 @@ auto DatabaseManager::update_message_retry(
         WHERE source_platform = ? AND source_message_id = ? AND target_platform = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge",
@@ -260,7 +260,7 @@ auto DatabaseManager::update_media_download_retry(
     const std::string &platform, const std::string &file_id, int retry_count,
     const std::chrono::system_clock::time_point &next_retry_at,
     const std::string &failure_reason, bool use_proxy) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         UPDATE media_download_retry_queue
@@ -268,7 +268,7 @@ auto DatabaseManager::update_media_download_retry(
         WHERE platform = ? AND file_id = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge",
@@ -303,7 +303,7 @@ auto DatabaseManager::update_media_download_retry(
 auto DatabaseManager::update_platform_heartbeat(
     const std::string &platform,
     const std::chrono::system_clock::time_point &heartbeat_time) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         INSERT OR REPLACE INTO platform_heartbeats
@@ -311,7 +311,7 @@ auto DatabaseManager::update_platform_heartbeat(
         VALUES (?, ?, strftime('%s','now'));
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge",

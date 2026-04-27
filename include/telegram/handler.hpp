@@ -28,7 +28,7 @@ public:
    * @param retry_manager 重试队列管理器（可选）
    */
   explicit TelegramHandler(
-      std::shared_ptr<storage::DatabaseManager> db_manager,
+      const std::shared_ptr<storage::DatabaseManager> &db_manager,
       std::shared_ptr<RetryQueueManager> retry_manager = nullptr);
 
   /**

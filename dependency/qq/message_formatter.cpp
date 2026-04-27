@@ -121,7 +121,7 @@ auto QQMessageFormatter::process_forward_message(
 
     // 获取合并转发内容
     std::string forward_response =
-        co_await static_cast<obcx::core::QQBot &>(qq_bot).get_forward_msg(
+        co_await dynamic_cast<obcx::core::QQBot &>(qq_bot).get_forward_msg(
             forward_id);
     nlohmann::json forward_json = nlohmann::json::parse(forward_response);
 
@@ -260,7 +260,7 @@ auto QQMessageFormatter::process_forward_message(
                   "📸 合并转发消息中的图片 ({}/{})", batch + 1, total_batches);
 
               std::string media_response =
-                  co_await static_cast<obcx::core::TGBot &>(telegram_bot)
+                  co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
                       .send_media_group(telegram_group_id, batch_media, caption,
                                         opt_topic_id, std::nullopt);
 
@@ -456,7 +456,7 @@ auto QQMessageFormatter::send_media_group(
         }
 
         std::string media_response =
-            co_await static_cast<obcx::core::TGBot &>(telegram_bot)
+            co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
                 .send_media_group(telegram_group_id, media_list, caption,
                                   opt_topic_id, opt_reply_id);
 

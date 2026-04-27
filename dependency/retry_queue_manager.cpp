@@ -55,7 +55,7 @@ void RetryQueueManager::stop() {
 
   // Clear all pending retries
   {
-    std::lock_guard<std::mutex> lock(message_retry_mutex_);
+    std::scoped_lock lock(message_retry_mutex_);
     size_t msg_count = message_retry_queue_.size();
     message_retry_queue_.clear();
     if (msg_count > 0) {
@@ -63,7 +63,7 @@ void RetryQueueManager::stop() {
     }
   }
   {
-    std::lock_guard<std::mutex> lock(media_retry_mutex_);
+    std::scoped_lock lock(media_retry_mutex_);
     size_t media_count = media_retry_queue_.size();
     media_retry_queue_.clear();
     if (media_count > 0) {
@@ -96,7 +96,7 @@ void RetryQueueManager::add_message_retry(
       calculate_next_retry_time(0, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
 
   {
-    std::lock_guard<std::mutex> lock(message_retry_mutex_);
+    std::scoped_lock lock(message_retry_mutex_);
     message_retry_queue_.push_back(std::move(entry));
   }
 
@@ -125,7 +125,7 @@ void RetryQueueManager::add_media_download_retry(
       calculate_next_retry_time(0, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
 
   {
-    std::lock_guard<std::mutex> lock(media_retry_mutex_);
+    std::scoped_lock lock(media_retry_mutex_);
     media_retry_queue_.push_back(std::move(entry));
   }
 
@@ -200,7 +200,7 @@ auto RetryQueueManager::process_message_retries()
   // Get entries ready for retry
   std::vector<MessageRetryEntry> ready_entries;
   {
-    std::lock_guard<std::mutex> lock(message_retry_mutex_);
+    std::scoped_lock lock(message_retry_mutex_);
     for (auto it = message_retry_queue_.begin();
          it != message_retry_queue_.end();) {
       if (it->next_retry_at <= now) {
@@ -228,7 +228,7 @@ auto RetryQueueManager::process_message_retries()
         // Put back in queue for later
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
-        std::lock_guard<std::mutex> lock(message_retry_mutex_);
+        std::scoped_lock lock(message_retry_mutex_);
         message_retry_queue_.push_back(std::move(entry));
         continue;
       }
@@ -266,7 +266,7 @@ auto RetryQueueManager::process_message_retries()
                            entry.next_retry_at - now)
                            .count());
 
-          std::lock_guard<std::mutex> lock(message_retry_mutex_);
+          std::scoped_lock lock(message_retry_mutex_);
           message_retry_queue_.push_back(std::move(entry));
         }
       }
@@ -278,21 +278,21 @@ auto RetryQueueManager::process_message_retries()
       if (running_ && entry.retry_count < entry.max_retry_count) {
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
-        std::lock_guard<std::mutex> lock(message_retry_mutex_);
+        std::scoped_lock lock(message_retry_mutex_);
         message_retry_queue_.push_back(std::move(entry));
       }
     }
   }
 }
 
-boost::asio::awaitable<void>
-RetryQueueManager::process_media_download_retries() {
+auto RetryQueueManager::process_media_download_retries()
+    -> boost::asio::awaitable<void> {
   auto now = std::chrono::system_clock::now();
 
   // Get entries ready for retry
   std::vector<MediaDownloadRetryEntry> ready_entries;
   {
-    std::lock_guard<std::mutex> lock(media_retry_mutex_);
+    std::scoped_lock lock(media_retry_mutex_);
     for (auto it = media_retry_queue_.begin();
          it != media_retry_queue_.end();) {
       if (it->next_retry_at <= now) {
@@ -319,7 +319,7 @@ RetryQueueManager::process_media_download_retries() {
                     entry.platform);
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
-        std::lock_guard<std::mutex> lock(media_retry_mutex_);
+        std::scoped_lock lock(media_retry_mutex_);
         media_retry_queue_.push_back(std::move(entry));
         continue;
       }
@@ -347,7 +347,7 @@ RetryQueueManager::process_media_download_retries() {
             entry.retry_count = 0; // Reset count for direct connection
             entry.next_retry_at = calculate_next_retry_time(
                 0, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
-            std::lock_guard<std::mutex> lock(media_retry_mutex_);
+            std::scoped_lock lock(media_retry_mutex_);
             media_retry_queue_.push_back(std::move(entry));
           } else {
             PLUGIN_WARN("bridge",
@@ -357,7 +357,7 @@ RetryQueueManager::process_media_download_retries() {
         } else if (running_) {
           entry.next_retry_at = calculate_next_retry_time(
               entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
-          std::lock_guard<std::mutex> lock(media_retry_mutex_);
+          std::scoped_lock lock(media_retry_mutex_);
           media_retry_queue_.push_back(std::move(entry));
         }
       }
@@ -369,16 +369,16 @@ RetryQueueManager::process_media_download_retries() {
       if (running_ && entry.retry_count < entry.max_retry_count) {
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
-        std::lock_guard<std::mutex> lock(media_retry_mutex_);
+        std::scoped_lock lock(media_retry_mutex_);
         media_retry_queue_.push_back(std::move(entry));
       }
     }
   }
 }
 
-std::chrono::system_clock::time_point
-RetryQueueManager::calculate_next_retry_time(int retry_count,
-                                             int base_interval_seconds) const {
+auto RetryQueueManager::calculate_next_retry_time(
+    int retry_count, int base_interval_seconds) const
+    -> std::chrono::system_clock::time_point {
   // Exponential backoff: 2^retry_count * base_interval, with max limit
   int delay_seconds =
       static_cast<int>(std::pow(2, retry_count)) * base_interval_seconds;
@@ -387,17 +387,17 @@ RetryQueueManager::calculate_next_retry_time(int retry_count,
   return std::chrono::system_clock::now() + std::chrono::seconds(delay_seconds);
 }
 
-size_t RetryQueueManager::get_pending_message_retry_count() const {
-  std::lock_guard<std::mutex> lock(message_retry_mutex_);
+auto RetryQueueManager::get_pending_message_retry_count() const -> size_t {
+  std::scoped_lock lock(message_retry_mutex_);
   return message_retry_queue_.size();
 }
 
-size_t RetryQueueManager::get_pending_media_retry_count() const {
-  std::lock_guard<std::mutex> lock(media_retry_mutex_);
+auto RetryQueueManager::get_pending_media_retry_count() const -> size_t {
+  std::scoped_lock lock(media_retry_mutex_);
   return media_retry_queue_.size();
 }
 
-std::string RetryQueueManager::get_retry_statistics() const {
+auto RetryQueueManager::get_retry_statistics() const -> std::string {
   std::ostringstream stats;
 
   size_t msg_count = get_pending_message_retry_count();

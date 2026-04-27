@@ -76,7 +76,7 @@ auto QQToTGPlugin::initialize() -> bool {
           std::make_shared<bridge::RetryQueueManager>(*retry_io_context_);
 
       // Start io_context in a dedicated thread
-      retry_io_thread_ = std::make_unique<std::thread>([this]() {
+      retry_io_thread_ = std::make_unique<std::thread>([this]() -> void {
         PLUGIN_INFO(get_name(), "Retry queue io_context thread started");
         retry_io_context_->run();
         PLUGIN_INFO(get_name(), "Retry queue io_context thread stopped");
@@ -224,7 +224,7 @@ void QQToTGPlugin::shutdown() {
 
     if (runtime_state_) {
       runtime_state_->shutting_down.store(true, std::memory_order_release);
-      std::lock_guard lock(runtime_state_->mutex);
+      std::scoped_lock lock(runtime_state_->mutex);
       runtime_state_->tg_bot = nullptr;
       runtime_state_->qq_handler.reset();
       runtime_state_->db_manager.reset();
@@ -278,7 +278,7 @@ auto QQToTGPlugin::handle_qq_message(std::shared_ptr<RuntimeState> state,
       std::shared_ptr<bridge::QQHandler> qq_handler;
 
       {
-        std::lock_guard state_lock(state->mutex);
+        std::scoped_lock state_lock(state->mutex);
         tg_bot = state->tg_bot;
         qq_handler = state->qq_handler;
       }
@@ -294,7 +294,7 @@ auto QQToTGPlugin::handle_qq_message(std::shared_ptr<RuntimeState> state,
         }
 
         if (tg_bot != nullptr) {
-          std::lock_guard state_lock(state->mutex);
+          std::scoped_lock state_lock(state->mutex);
           if (!state->shutting_down.load(std::memory_order_acquire)) {
             state->tg_bot = tg_bot;
           }
@@ -334,7 +334,7 @@ auto QQToTGPlugin::handle_qq_heartbeat(
   if (auto *qq_bot = dynamic_cast<obcx::core::QQBot *>(&bot)) {
     std::shared_ptr<storage::DatabaseManager> db_manager;
     {
-      std::lock_guard state_lock(state->mutex);
+      std::scoped_lock state_lock(state->mutex);
       db_manager = state->db_manager;
     }
 
@@ -368,7 +368,7 @@ auto QQToTGPlugin::handle_qq_notice(std::shared_ptr<RuntimeState> state,
       std::shared_ptr<bridge::QQHandler> qq_handler;
 
       {
-        std::lock_guard state_lock(state->mutex);
+        std::scoped_lock state_lock(state->mutex);
         tg_bot = state->tg_bot;
         qq_handler = state->qq_handler;
       }
@@ -384,7 +384,7 @@ auto QQToTGPlugin::handle_qq_notice(std::shared_ptr<RuntimeState> state,
         }
 
         if (tg_bot != nullptr) {
-          std::lock_guard state_lock(state->mutex);
+          std::scoped_lock state_lock(state->mutex);
           if (!state->shutting_down.load(std::memory_order_acquire)) {
             state->tg_bot = tg_bot;
           }

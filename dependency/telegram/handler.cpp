@@ -14,7 +14,7 @@
 namespace bridge {
 
 TelegramHandler::TelegramHandler(
-    std::shared_ptr<storage::DatabaseManager> db_manager,
+    const std::shared_ptr<storage::DatabaseManager> &db_manager,
     std::shared_ptr<RetryQueueManager> retry_manager)
     : db_manager_(db_manager), retry_manager_(std::move(retry_manager)),
       media_processor_(
@@ -22,9 +22,11 @@ TelegramHandler::TelegramHandler(
       command_handler_(
           std::make_unique<telegram::TelegramCommandHandler>(db_manager)),
       event_handler_(std::make_unique<telegram::TelegramEventHandler>(
-          db_manager, [this](obcx::core::IBot &tg_bot, obcx::core::IBot &qq_bot,
-                             obcx::common::MessageEvent event) {
-            return forward_to_qq(tg_bot, qq_bot, event);
+          db_manager,
+          [this](obcx::core::IBot &tg_bot, obcx::core::IBot &qq_bot,
+                 obcx::common::MessageEvent event)
+              -> boost::asio::awaitable<void> {
+            return forward_to_qq(tg_bot, qq_bot, std::move(event));
           })) {}
 
 auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,

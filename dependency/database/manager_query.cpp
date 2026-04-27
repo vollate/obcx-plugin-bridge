@@ -13,7 +13,7 @@ namespace storage {
 auto DatabaseManager::get_message(const std::string &platform,
                                   const std::string &message_id)
     -> std::optional<MessageInfo> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         SELECT platform, message_id, group_id, user_id, content, raw_message, message_type,
@@ -21,7 +21,7 @@ auto DatabaseManager::get_message(const std::string &platform,
         FROM messages WHERE platform = ? AND message_id = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare statement: {}",
@@ -83,14 +83,14 @@ auto DatabaseManager::get_user(const std::string &platform,
                                const std::string &user_id,
                                const std::string &group_id)
     -> std::optional<UserInfo> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         SELECT platform, user_id, group_id, username, nickname, title, first_name, last_name, last_updated
         FROM users WHERE platform = ? AND user_id = ? AND group_id = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare statement: {}",
@@ -254,7 +254,7 @@ auto DatabaseManager::query_user_display_name(const std::string &platform,
 auto DatabaseManager::get_target_message_id(
     const std::string &source_platform, const std::string &source_message_id,
     const std::string &target_platform) -> std::optional<std::string> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   // 验证参数不为空
   if (source_message_id.empty()) {
@@ -271,7 +271,7 @@ auto DatabaseManager::get_target_message_id(
         WHERE source_platform = ? AND source_message_id = ? AND target_platform = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare statement: {}",
@@ -300,7 +300,7 @@ auto DatabaseManager::get_target_message_id(
 auto DatabaseManager::get_source_message_id(
     const std::string &target_platform, const std::string &target_message_id,
     const std::string &source_platform) -> std::optional<std::string> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   // 验证参数不为空
   if (target_message_id.empty()) {
@@ -317,7 +317,7 @@ auto DatabaseManager::get_source_message_id(
         WHERE target_platform = ? AND target_message_id = ? AND source_platform = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare statement: {}",
@@ -348,7 +348,7 @@ auto DatabaseManager::get_source_message_id(
 auto DatabaseManager::get_sticker_cache(const std::string &platform,
                                         const std::string &sticker_hash)
     -> std::optional<StickerCacheInfo> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         SELECT platform, sticker_id, sticker_hash, original_name, file_type, mime_type,
@@ -436,7 +436,7 @@ auto DatabaseManager::get_sticker_cache(const std::string &platform,
 
 auto DatabaseManager::get_qq_sticker_mapping(const std::string &qq_sticker_hash)
     -> std::optional<QQStickerMapping> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
     SELECT qq_sticker_hash, telegram_file_id, file_type, created_at, last_used_at, is_gif, content_type, last_checked_at
@@ -496,7 +496,7 @@ auto DatabaseManager::get_qq_sticker_mapping(const std::string &qq_sticker_hash)
 }
 
 auto DatabaseManager::get_cache_statistics() -> std::string {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   if (!db_) {
     return "数据库连接未初始化";
@@ -507,7 +507,7 @@ auto DatabaseManager::get_cache_statistics() -> std::string {
   try {
     // 统计总记录数
     const char *count_sql = "SELECT COUNT(*) FROM qq_sticker_mapping";
-    sqlite3_stmt *stmt;
+    sqlite3_stmt *stmt = nullptr;
 
     if (sqlite3_prepare_v2(db_, count_sql, -1, &stmt, nullptr) == SQLITE_OK) {
       if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -581,7 +581,7 @@ auto DatabaseManager::get_cache_statistics() -> std::string {
 
 auto DatabaseManager::get_pending_message_retries(int limit)
     -> std::vector<MessageRetryInfo> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
   std::vector<MessageRetryInfo> retries;
 
   const std::string sql = R"(
@@ -594,7 +594,7 @@ auto DatabaseManager::get_pending_message_retries(int limit)
         LIMIT ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge",
@@ -652,7 +652,7 @@ auto DatabaseManager::get_pending_message_retries(int limit)
 
 auto DatabaseManager::get_pending_media_download_retries(int limit)
     -> std::vector<MediaDownloadRetryInfo> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
   std::vector<MediaDownloadRetryInfo> retries;
 
   const std::string sql = R"(
@@ -665,7 +665,7 @@ auto DatabaseManager::get_pending_media_download_retries(int limit)
         LIMIT ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR(
@@ -715,7 +715,7 @@ auto DatabaseManager::get_pending_media_download_retries(int limit)
 
 auto DatabaseManager::get_platform_heartbeat(const std::string &platform)
     -> std::optional<PlatformHeartbeatInfo> {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         SELECT platform, last_heartbeat_at, updated_at
@@ -723,7 +723,7 @@ auto DatabaseManager::get_platform_heartbeat(const std::string &platform)
         WHERE platform = ?;
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge",

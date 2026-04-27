@@ -12,7 +12,7 @@ std::mutex DatabaseManager::instance_mutex_;
 
 auto DatabaseManager::instance(const std::string &db_path)
     -> std::shared_ptr<DatabaseManager> {
-  std::lock_guard lock(instance_mutex_);
+  std::scoped_lock lock(instance_mutex_);
   if (!instance_) {
     if (db_path.empty()) {
       PLUGIN_ERROR("bridge",
@@ -26,7 +26,7 @@ auto DatabaseManager::instance(const std::string &db_path)
 }
 
 void DatabaseManager::reset_instance() {
-  std::lock_guard lock(instance_mutex_);
+  std::scoped_lock lock(instance_mutex_);
   instance_.reset();
   PLUGIN_DEBUG("bridge", "DatabaseManager instance reset");
 }
@@ -51,7 +51,7 @@ DatabaseManager::~DatabaseManager() {
 // === 初始化函数 ===
 
 auto DatabaseManager::initialize() -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   // 已经初始化过则直接返回
   if (initialized_ && db_) {

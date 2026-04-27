@@ -37,7 +37,7 @@ auto TGToQQPlugin::get_description() const -> std::string {
   return "Telegram to QQ message forwarding plugin (simplified version)";
 }
 
-bool TGToQQPlugin::initialize() {
+auto TGToQQPlugin::initialize() -> bool {
   try {
     PLUGIN_INFO(get_name(), "Initializing TG to QQ Plugin...");
 
@@ -74,7 +74,7 @@ bool TGToQQPlugin::initialize() {
           std::make_shared<bridge::RetryQueueManager>(*retry_io_context_);
 
       // Start io_context in a dedicated thread
-      retry_io_thread_ = std::make_unique<std::thread>([this]() {
+      retry_io_thread_ = std::make_unique<std::thread>([this]() -> void {
         PLUGIN_INFO(get_name(), "Retry queue io_context thread started");
         retry_io_context_->run();
         PLUGIN_INFO(get_name(), "Retry queue io_context thread stopped");
@@ -193,7 +193,7 @@ void TGToQQPlugin::shutdown() {
 
     if (runtime_state_) {
       runtime_state_->shutting_down.store(true, std::memory_order_release);
-      std::lock_guard lock(runtime_state_->mutex);
+      std::scoped_lock lock(runtime_state_->mutex);
       runtime_state_->qq_bot = nullptr;
       runtime_state_->telegram_handler.reset();
     }
@@ -227,9 +227,10 @@ void TGToQQPlugin::shutdown() {
   }
 }
 
-boost::asio::awaitable<void> TGToQQPlugin::handle_tg_message(
-    std::shared_ptr<RuntimeState> state, obcx::core::IBot &bot,
-    const obcx::common::MessageEvent &event) {
+auto TGToQQPlugin::handle_tg_message(std::shared_ptr<RuntimeState> state,
+                                     obcx::core::IBot &bot,
+                                     const obcx::common::MessageEvent &event)
+    -> boost::asio::awaitable<void> {
   if (!state || state->shutting_down.load(std::memory_order_acquire)) {
     co_return;
   }
@@ -245,7 +246,7 @@ boost::asio::awaitable<void> TGToQQPlugin::handle_tg_message(
       std::shared_ptr<bridge::TelegramHandler> telegram_handler;
 
       {
-        std::lock_guard state_lock(state->mutex);
+        std::scoped_lock state_lock(state->mutex);
         qq_bot = state->qq_bot;
         telegram_handler = state->telegram_handler;
       }
@@ -262,7 +263,7 @@ boost::asio::awaitable<void> TGToQQPlugin::handle_tg_message(
         }
 
         if (qq_bot != nullptr) {
-          std::lock_guard state_lock(state->mutex);
+          std::scoped_lock state_lock(state->mutex);
           if (!state->shutting_down.load(std::memory_order_acquire)) {
             state->qq_bot = qq_bot;
           }

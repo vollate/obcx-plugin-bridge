@@ -8,7 +8,7 @@ namespace storage {
 // === 消息表 INSERT 操作 ===
 
 auto DatabaseManager::save_message(const MessageInfo &message_info) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         INSERT OR REPLACE INTO messages
@@ -17,7 +17,7 @@ auto DatabaseManager::save_message(const MessageInfo &message_info) -> bool {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare statement: {}",
@@ -120,7 +120,7 @@ auto DatabaseManager::save_message_from_event(
 
 auto DatabaseManager::save_or_update_user(const UserInfo &user_info,
                                           bool force_update) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   std::string sql;
   if (force_update) {
@@ -161,7 +161,7 @@ auto DatabaseManager::save_or_update_user(const UserInfo &user_info,
     )";
   }
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare statement: {}",
@@ -256,7 +256,7 @@ auto DatabaseManager::save_user_from_event(
 auto DatabaseManager::ensure_user_exists(const std::string &platform,
                                          const std::string &user_id,
                                          const std::string &group_id) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   // INSERT OR IGNORE：若用户已存在则不做任何修改，保留已有的名称字段
   const std::string sql = R"(
@@ -264,7 +264,7 @@ auto DatabaseManager::ensure_user_exists(const std::string &platform,
       VALUES (?, ?, ?, CURRENT_TIMESTAMP);
   )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare ensure_user_exists statement: {}",
@@ -294,7 +294,7 @@ auto DatabaseManager::ensure_user_exists(const std::string &platform,
 
 auto DatabaseManager::add_message_mapping(const MessageMapping &mapping)
     -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   // 验证消息ID不为空
   if (mapping.source_message_id.empty() || mapping.target_message_id.empty()) {
@@ -315,7 +315,7 @@ auto DatabaseManager::add_message_mapping(const MessageMapping &mapping)
         VALUES (?, ?, ?, ?);
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare statement: {}",
@@ -351,7 +351,7 @@ auto DatabaseManager::add_message_mapping(const MessageMapping &mapping)
 
 auto DatabaseManager::save_sticker_cache(const StickerCacheInfo &cache_info)
     -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         INSERT OR REPLACE INTO sticker_cache (
@@ -439,7 +439,7 @@ auto DatabaseManager::save_sticker_cache(const StickerCacheInfo &cache_info)
 
 auto DatabaseManager::save_qq_sticker_mapping(const QQStickerMapping &mapping)
     -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
     INSERT OR REPLACE INTO qq_sticker_mapping
@@ -502,7 +502,7 @@ auto DatabaseManager::save_qq_sticker_mapping(const QQStickerMapping &mapping)
 
 auto DatabaseManager::add_message_retry(const MessageRetryInfo &retry_info)
     -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         INSERT OR REPLACE INTO message_retry_queue
@@ -512,7 +512,7 @@ auto DatabaseManager::add_message_retry(const MessageRetryInfo &retry_info)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge", "Failed to prepare message retry statement: {}",
@@ -559,7 +559,7 @@ auto DatabaseManager::add_message_retry(const MessageRetryInfo &retry_info)
 
 auto DatabaseManager::add_media_download_retry(
     const MediaDownloadRetryInfo &retry_info) -> bool {
-  std::lock_guard lock(db_mutex_);
+  std::scoped_lock lock(db_mutex_);
 
   const std::string sql = R"(
         INSERT OR REPLACE INTO media_download_retry_queue
@@ -569,7 +569,7 @@ auto DatabaseManager::add_media_download_retry(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     )";
 
-  sqlite3_stmt *stmt;
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     PLUGIN_ERROR("bridge",

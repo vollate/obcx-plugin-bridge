@@ -42,7 +42,7 @@ auto DatabaseManager::calculate_hash(const std::string &input) -> std::string {
   }
 
   unsigned char hash[EVP_MAX_MD_SIZE];
-  unsigned int hash_len;
+  unsigned int hash_len = 0;
   if (EVP_DigestFinal_ex(context, hash, &hash_len) != 1) {
     PLUGIN_ERROR("bridge", "EVP_DigestFinal_ex失败");
     EVP_MD_CTX_free(context);

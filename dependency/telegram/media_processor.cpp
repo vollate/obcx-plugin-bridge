@@ -52,13 +52,13 @@ auto TelegramMediaProcessor::process_media_file(
     media_info.file_type = file_type;
 
     auto download_url_opt =
-        co_await static_cast<obcx::core::TGBot &>(telegram_bot)
+        co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
             .get_media_download_url(media_info);
     if (!download_url_opt.has_value()) {
       throw std::runtime_error("无法获取文件下载链接");
     }
 
-    std::string file_url = download_url_opt.value();
+    const std::string &file_url = download_url_opt.value();
     auto [final_url, filename] =
         MediaProcessor::get_qq_file_info(file_url, file_type);
 
@@ -151,7 +151,7 @@ auto TelegramMediaProcessor::process_photo(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &static_cast<obcx::core::TGBot &>(telegram_bot);
+    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
     auto *conn_manager =
         dynamic_cast<obcx::network::TelegramConnectionManager *>(
             tg_bot->get_connection_manager());
@@ -198,7 +198,7 @@ auto TelegramMediaProcessor::process_video(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &static_cast<obcx::core::TGBot &>(telegram_bot);
+    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
     auto *conn_manager =
         dynamic_cast<obcx::network::TelegramConnectionManager *>(
             tg_bot->get_connection_manager());
@@ -244,7 +244,7 @@ auto TelegramMediaProcessor::process_audio(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &static_cast<obcx::core::TGBot &>(telegram_bot);
+    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
     auto *conn_manager =
         dynamic_cast<obcx::network::TelegramConnectionManager *>(
             tg_bot->get_connection_manager());
@@ -290,7 +290,7 @@ auto TelegramMediaProcessor::process_document(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &static_cast<obcx::core::TGBot &>(telegram_bot);
+    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
     auto *conn_manager =
         dynamic_cast<obcx::network::TelegramConnectionManager *>(
             tg_bot->get_connection_manager());
@@ -433,7 +433,7 @@ auto TelegramMediaProcessor::process_video_note(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &static_cast<obcx::core::TGBot &>(telegram_bot);
+    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
     auto *conn_manager =
         dynamic_cast<obcx::network::TelegramConnectionManager *>(
             tg_bot->get_connection_manager());
@@ -480,7 +480,7 @@ auto TelegramMediaProcessor::process_other_file(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &static_cast<obcx::core::TGBot &>(telegram_bot);
+    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
     auto *conn_manager =
         dynamic_cast<obcx::network::TelegramConnectionManager *>(
             tg_bot->get_connection_manager());
@@ -587,8 +587,9 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
                 media_info.file_id);
 
     // 获取下载URL
-    auto download_urls = co_await static_cast<obcx::core::TGBot &>(telegram_bot)
-                             .get_media_download_urls({media_info});
+    auto download_urls =
+        co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
+            .get_media_download_urls({media_info});
     if (download_urls.empty() || !download_urls[0].has_value()) {
       PLUGIN_ERROR("tg_to_qq", "获取表情包下载URL失败: {}", media_info.file_id);
       co_return std::nullopt;
@@ -820,8 +821,9 @@ auto TelegramMediaProcessor::download_animation_with_cache(
     PLUGIN_INFO("tg_to_qq", "动画缓存未命中，开始下载: {}", media_info.file_id);
 
     // 获取下载URL
-    auto download_urls = co_await static_cast<obcx::core::TGBot &>(telegram_bot)
-                             .get_media_download_urls({media_info});
+    auto download_urls =
+        co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
+            .get_media_download_urls({media_info});
     if (download_urls.empty() || !download_urls[0].has_value()) {
       PLUGIN_ERROR("tg_to_qq", "获取动画下载URL失败: {}", media_info.file_id);
       co_return std::nullopt;
