@@ -190,6 +190,13 @@ int MAX_RETRY_INTERVAL_SEC;
 std::string BRIDGE_FILES_DIR;
 std::string BRIDGE_FILES_CONTAINER_DIR;
 
+// GIF转换配置
+size_t GIF_MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+int GIF_MAX_DURATION = 5;
+int GIF_MAX_FPS = 15;
+int GIF_MAX_WIDTH = 0;
+int GIF_MAX_COLORS = 256;
+
 void load_config() {
   try {
     auto &loader = obcx::common::ConfigLoader::instance();
@@ -302,6 +309,28 @@ void load_config() {
           "plugins.qq_to_tg.config or plugins.tg_to_qq.config");
     }
 
+    // 加载GIF转换配置（从 tg_to_qq 插件配置读取）
+    if (auto val = loader.get_value<int64_t>(
+            "plugins.tg_to_qq.config.gif_max_file_size")) {
+      GIF_MAX_FILE_SIZE = static_cast<size_t>(*val);
+    }
+    if (auto val = loader.get_value<int>(
+            "plugins.tg_to_qq.config.gif_max_duration")) {
+      GIF_MAX_DURATION = *val;
+    }
+    if (auto val =
+            loader.get_value<int>("plugins.tg_to_qq.config.gif_max_fps")) {
+      GIF_MAX_FPS = *val;
+    }
+    if (auto val =
+            loader.get_value<int>("plugins.tg_to_qq.config.gif_max_width")) {
+      GIF_MAX_WIDTH = *val;
+    }
+    if (auto val =
+            loader.get_value<int>("plugins.tg_to_qq.config.gif_max_colors")) {
+      GIF_MAX_COLORS = *val;
+    }
+
     PLUGIN_INFO("bridge", "Configuration loaded successfully");
     PLUGIN_INFO("bridge", "Telegram Bot Token: {}...",
                 TELEGRAM_BOT_TOKEN.substr(0, 20));
@@ -337,6 +366,11 @@ void load_config() {
     MAX_RETRY_INTERVAL_SEC = 300;
     BRIDGE_FILES_DIR = "/tmp/bridge_files";
     BRIDGE_FILES_CONTAINER_DIR = "/root/llonebot/bridge_files";
+    GIF_MAX_FILE_SIZE = 5 * 1024 * 1024;
+    GIF_MAX_DURATION = 5;
+    GIF_MAX_FPS = 15;
+    GIF_MAX_WIDTH = 0;
+    GIF_MAX_COLORS = 256;
   }
 }
 

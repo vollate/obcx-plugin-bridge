@@ -4,11 +4,11 @@
 
 #include "path_manager.hpp"
 #include <common/logger.hpp>
-#include <common/media_converter.hpp>
 #include <core/tg_bot.hpp>
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
+#include <media_converter.hpp>
 #include <telegram/network/connection_manager.hpp>
 #include <utility>
 
@@ -688,8 +688,10 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
 
       // 使用MediaConverter进行转换
       bool conversion_success =
-          obcx::common::MediaConverter::convert_webm_to_gif_with_fallback(
-              original_file_path, converted_file_path, 5);
+          bridge::MediaConverter::convert_webm_to_gif_with_fallback(
+              original_file_path, converted_file_path,
+              bridge::config::GIF_MAX_DURATION,
+              bridge::config::GIF_MAX_FILE_SIZE);
 
       if (conversion_success && std::filesystem::exists(converted_file_path)) {
         PLUGIN_INFO("tg_to_qq", "webm贴纸到gif转换成功: {} -> {}",
@@ -923,8 +925,10 @@ auto TelegramMediaProcessor::download_animation_with_cache(
 
       // 使用MediaConverter进行转换
       bool conversion_success =
-          obcx::common::MediaConverter::convert_webm_to_gif_with_fallback(
-              original_file_path, converted_file_path, 5);
+          bridge::MediaConverter::convert_webm_to_gif_with_fallback(
+              original_file_path, converted_file_path,
+              bridge::config::GIF_MAX_DURATION,
+              bridge::config::GIF_MAX_FILE_SIZE);
 
       if (conversion_success && std::filesystem::exists(converted_file_path)) {
         PLUGIN_INFO("tg_to_qq", "webm到gif转换成功: {} -> {}",

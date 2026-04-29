@@ -1,6 +1,7 @@
 add_library(
   bridge_core SHARED
   config.cpp
+  media_converter.cpp
   media_processor.cpp
   retry_queue_manager.cpp
   path_manager.cpp

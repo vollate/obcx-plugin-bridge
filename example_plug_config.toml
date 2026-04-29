@@ -62,6 +62,12 @@ priority = 100  # Same priority as qq_to_tg
 [plugins.tg_to_qq.config]
 database_file = "bridge_bot.db"
 enable_retry_queue = true
+# GIF conversion settings (all optional, shown with defaults)
+# gif_max_file_size = 5242880  # Max output size in bytes (5MB)
+# gif_max_duration = 5         # Max animation duration in seconds
+# gif_max_fps = 15             # Max frame rate (0 = unlimited)
+# gif_max_width = 0            # Max width in pixels (0 = original)
+# gif_max_colors = 256         # Max palette colors (2-256)
 
 [group_mappings]
 
