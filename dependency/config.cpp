@@ -169,9 +169,6 @@ std::string PROXY_TYPE;
 // 数据库配置
 std::string DATABASE_FILE;
 
-// 超时配置
-int REQUEST_TIMEOUT_MS;
-
 // 小程序处理配置
 bool ENABLE_MINIAPP_PARSING;
 bool SHOW_RAW_JSON_ON_PARSE_FAIL;
@@ -225,7 +222,6 @@ void load_config() {
       QQ_HOST = qq_bot->get("host")->value_or<std::string>("127.0.0.1");
       QQ_PORT = qq_bot->get("port")->value_or<uint16_t>(3001);
       QQ_ACCESS_TOKEN = qq_bot->get("access_token")->value_or<std::string>("");
-      REQUEST_TIMEOUT_MS = qq_bot->get("timeout")->value_or<int>(30000);
     }
 
     // 设置默认值
@@ -353,7 +349,6 @@ void load_config() {
     PROXY_PORT = 20122;
     PROXY_TYPE = "http";
     DATABASE_FILE = "bridge_bot.db";
-    REQUEST_TIMEOUT_MS = 30000;
     ENABLE_MINIAPP_PARSING = true;
     SHOW_RAW_JSON_ON_PARSE_FAIL = true;
     MAX_JSON_DISPLAY_LENGTH = 2000;

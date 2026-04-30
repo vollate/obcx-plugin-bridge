@@ -208,9 +208,6 @@ extern std::string PROXY_TYPE;
 // 数据库配置
 extern std::string DATABASE_FILE;
 
-// 超时配置
-extern int REQUEST_TIMEOUT_MS;
-
 // 小程序处理配置
 extern bool ENABLE_MINIAPP_PARSING;
 extern bool SHOW_RAW_JSON_ON_PARSE_FAIL;

@@ -54,7 +54,8 @@ host = "127.0.0.1"
 port = 3001
 access_token = ""
 use_ssl = false
-timeout = 30000
+connect_timeout = 5000      # TCP 建连超时
+action_timeout = 30000      # OneBot action 响应超时（见"超时字段速查"）
 heartbeat_interval = 5000
 
 [bots.telegram_bot]
@@ -68,11 +69,44 @@ host = "api.telegram.org"
 port = 443
 access_token = "YOUR_BOT_TOKEN"
 use_ssl = true
-timeout = 30000
+connect_timeout = 5000      # HTTP 单次请求超时
+poll_timeout = 25000        # 长轮询服务端侧超时
+poll_force_close = 30000    # 长轮询客户端强制关闭（> poll_timeout）
+poll_retry_interval = 3000  # 轮询重试退避
 proxy_host = "127.0.0.1"    # 可选
 proxy_port = 10086           # 可选
 proxy_type = "http"          # 可选
 ```
+
+### 超时字段速查
+
+> 本节说明 bridge 插件实际使用的所有超时配置。框架侧的完整定义请看根目录 `README.md` 的"超时参数"章节。
+
+| 字段 | 所在块 | 默认 | 用途 |
+| --- | --- | --- | --- |
+| `connect_timeout` | `[bots.*.connection]` | 5000 ms | TCP / HTTP 单次请求的底层超时 |
+| `action_timeout` | `[bots.qq_bot.connection]` | 30000 ms | OneBot11 WebSocket 等待 action（例如 `send_group_msg`）echo 响应的超时。过短会在 llonebot 首次发送媒体时（通常 8–10 s）触发 retry queue，导致 QQ 群里出现重复消息 |
+| `poll_timeout` | `[bots.telegram_bot.connection]` | 25000 ms | 发给 Telegram `getUpdates` 的服务端长轮询超时 |
+| `poll_force_close` | `[bots.telegram_bot.connection]` | 30000 ms | 客户端强制关闭长轮询连接的安全超时，**必须大于 `poll_timeout`** |
+| `poll_retry_interval` | `[bots.telegram_bot.connection]` | 3000 ms | 轮询失败后的退避间隔 |
+| `heartbeat_interval` | `[bots.*.connection]` | 30000 ms | 心跳间隔 |
+
+#### 插件内部的重试节奏（硬编码，暂不支持 TOML）
+
+定义于 `include/retry_queue_manager.hpp`：
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS` | 2 s | 文本/普通消息首次重试间隔 |
+| `DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS` | 5 s | 媒体消息首次重试间隔 |
+| `MAX_RETRY_INTERVAL_SECONDS` | 300 s | 指数退避上限 |
+| `MESSAGE_RETRY_MAX_ATTEMPTS` | 5 | 文本消息最大重试次数（`config.cpp`） |
+| `MEDIA_RETRY_MAX_ATTEMPTS` | 3 | 媒体消息最大重试次数（`config.cpp`） |
+| `RETRY_QUEUE_CHECK_INTERVAL_SEC` | 10 s | retry queue 扫描节拍 |
+
+退避公式：`next_interval = min(2^retry_count × base, MAX_RETRY_INTERVAL_SECONDS)`。
+
+> **重要**：`action_timeout` 过短会和 retry queue 互相作用放大错误——action 请求超时触发重试，但原请求往往已经在 llonebot 侧成功，出现双发。实测 llonebot 第一次上传某张图/贴纸时的响应延迟约 8 s，因此 `action_timeout` 建议保持在 **15 s 以上**（默认 30 s 是安全值）。
 
 ### 插件配置
 

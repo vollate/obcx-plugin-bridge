@@ -20,7 +20,10 @@ port = 3001
 access_token = ""         # leave empty if no access token for llonebot
 secret = ""
 use_ssl = false
-timeout = 30000
+connect_timeout = 5000      # TCP connect timeout (ms)
+action_timeout = 30000      # OneBot action echo timeout; must exceed upstream
+                            # latency (llonebot can take ~8s on first media send),
+                            # otherwise retry queue fires -> duplicate delivery
 heartbeat_interval = 5000
 
 [bots.telegram_bot]
@@ -34,7 +37,10 @@ host = "api.telegram.org"
 port = 443
 access_token = "2222"
 use_ssl = true
-timeout = 30000
+connect_timeout = 5000      # HTTP request timeout (ms)
+poll_timeout = 25000        # Telegram long-poll server-side timeout (ms)
+poll_force_close = 30000    # Client-side force-close; must be > poll_timeout
+poll_retry_interval = 3000  # Backoff between polling retries
 
 # Proxy configuration for Telegram (optional)
 proxy_host = "127.0.0.1"
