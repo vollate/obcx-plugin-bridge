@@ -691,7 +691,8 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
           bridge::MediaConverter::convert_webm_to_gif_with_fallback(
               original_file_path, converted_file_path,
               bridge::config::GIF_MAX_DURATION,
-              bridge::config::GIF_MAX_FILE_SIZE);
+              bridge::config::GIF_MAX_FILE_SIZE, bridge::config::GIF_MAX_WIDTH,
+              bridge::config::GIF_MAX_FPS, bridge::config::GIF_MAX_COLORS);
 
       if (conversion_success && std::filesystem::exists(converted_file_path)) {
         PLUGIN_INFO("tg_to_qq", "webm贴纸到gif转换成功: {} -> {}",
@@ -928,7 +929,8 @@ auto TelegramMediaProcessor::download_animation_with_cache(
           bridge::MediaConverter::convert_webm_to_gif_with_fallback(
               original_file_path, converted_file_path,
               bridge::config::GIF_MAX_DURATION,
-              bridge::config::GIF_MAX_FILE_SIZE);
+              bridge::config::GIF_MAX_FILE_SIZE, bridge::config::GIF_MAX_WIDTH,
+              bridge::config::GIF_MAX_FPS, bridge::config::GIF_MAX_COLORS);
 
       if (conversion_success && std::filesystem::exists(converted_file_path)) {
         PLUGIN_INFO("tg_to_qq", "webm到gif转换成功: {} -> {}",

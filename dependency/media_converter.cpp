@@ -90,12 +90,14 @@ auto MediaConverter::convert_webm_to_gif_async(const std::string &webm_path,
 
 auto MediaConverter::convert_webm_to_gif_with_fallback(
     const std::string &webm_path, const std::string &output_path,
-    int max_duration, size_t max_file_size) -> bool {
+    int max_duration, size_t max_file_size, int max_width, int max_fps,
+    int max_colors) -> bool {
   try {
     PLUGIN_INFO(
         LOG_TAG,
         "开始WebM到GIF转换(带回退), 输入: {}, 输出: {}, 大小限制: {} 字节",
-        webm_path, output_path, max_file_size);
+        webm_path, output_path,
+        max_file_size == 0 ? "无限制" : std::to_string(max_file_size));
 
     // Define compression tiers: {name, width (0=original), fps (0=original),
     // colors}
@@ -106,11 +108,11 @@ auto MediaConverter::convert_webm_to_gif_with_fallback(
       int max_colors;
     };
 
-    constexpr Tier tiers[] = {
-        {"quality", 0, 15, 256},    // Original res, capped fps
-        {"balanced", 320, 10, 128}, // Moderate compression
-        {"compact", 200, 8, 64},    // Aggressive compression
-        {"minimal", 160, 5, 32},    // Maximum compression
+    const Tier tiers[] = {
+        {"quality", max_width, max_fps, max_colors}, // Default: old lossless
+        {"balanced", 320, 0, 256}, // Matches the old compressed fallback
+        {"compact", 200, 8, 64},   // Aggressive compression
+        {"minimal", 160, 5, 32},   // Maximum compression
     };
 
     for (const auto &tier : tiers) {

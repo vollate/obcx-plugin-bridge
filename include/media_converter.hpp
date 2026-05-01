@@ -15,8 +15,9 @@ namespace bridge {
  */
 class MediaConverter {
 public:
-  /// Default maximum output file size (5MB)
-  static constexpr size_t DEFAULT_MAX_FILE_SIZE = size_t{5} * 1024 * 1024;
+  /// Default maximum output file size (0 = unlimited, preserve old lossless
+  /// default)
+  static constexpr size_t DEFAULT_MAX_FILE_SIZE = 0;
 
   /**
    * @brief Convert WebM to GIF with configurable quality parameters
@@ -47,8 +48,9 @@ public:
    * @brief Convert WebM to GIF with multi-tier fallback and size constraint
    *
    * Tries progressively more aggressive compression tiers:
-   *   1. Quality:  original resolution, 15fps, 256 colors
-   *   2. Balanced: 320px width, 10fps, 128 colors
+   *   1. Quality:  configured/default limits (defaults to original size/fps,
+   *      256 colors)
+   *   2. Balanced: 320px width, original fps, 256 colors
    *   3. Compact:  200px width, 8fps, 64 colors
    *   4. Minimal:  160px width, 5fps, 32 colors
    *
@@ -58,13 +60,17 @@ public:
    * @param webm_path Path to WebM input file
    * @param output_path Output GIF file path
    * @param max_duration Maximum conversion duration in seconds (default 5)
-   * @param max_file_size Maximum acceptable output size in bytes (default 5MB)
+   * @param max_file_size Maximum acceptable output size in bytes (0 =
+   * unlimited)
+   * @param max_width Maximum output width (0 = keep original resolution)
+   * @param max_fps Maximum frame rate (0 = keep original frame rate)
+   * @param max_colors Maximum palette colors (2-256)
    * @return true if any tier produced a valid file within the size limit
    */
   static auto convert_webm_to_gif_with_fallback(
       const std::string &webm_path, const std::string &output_path,
-      int max_duration = 5, size_t max_file_size = DEFAULT_MAX_FILE_SIZE)
-      -> bool;
+      int max_duration = 5, size_t max_file_size = DEFAULT_MAX_FILE_SIZE,
+      int max_width = 0, int max_fps = 0, int max_colors = 256) -> bool;
 
   /**
    * @brief Convert TGS (Telegram animated sticker) to GIF

@@ -2,10 +2,6 @@
 [global]
 locale = "zh_CN.UTF8"
 #locale = "en_US.UTF8"
-# Plugin directories
-[plugin_directories]
-local = "./plugins"
-build = "./build/plugins"
 
 # Bot configurations - both QQ and Telegram bots are needed for bridge
 [bots.qq_bot]
@@ -69,9 +65,9 @@ priority = 100  # Same priority as qq_to_tg
 database_file = "bridge_bot.db"
 enable_retry_queue = true
 # GIF conversion settings (all optional, shown with defaults)
-# gif_max_file_size = 5242880  # Max output size in bytes (5MB)
+# gif_max_file_size = 0        # Max output size in bytes (0 = unlimited)
 # gif_max_duration = 5         # Max animation duration in seconds
-# gif_max_fps = 15             # Max frame rate (0 = unlimited)
+# gif_max_fps = 0              # Max frame rate (0 = unlimited)
 # gif_max_width = 0            # Max width in pixels (0 = original)
 # gif_max_colors = 256         # Max palette colors (2-256)
 

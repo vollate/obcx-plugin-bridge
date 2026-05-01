@@ -188,9 +188,9 @@ std::string BRIDGE_FILES_DIR;
 std::string BRIDGE_FILES_CONTAINER_DIR;
 
 // GIF转换配置
-size_t GIF_MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+size_t GIF_MAX_FILE_SIZE = 0; // 0 = unlimited, preserve old lossless default
 int GIF_MAX_DURATION = 5;
-int GIF_MAX_FPS = 15;
+int GIF_MAX_FPS = 0;
 int GIF_MAX_WIDTH = 0;
 int GIF_MAX_COLORS = 256;
 
@@ -310,8 +310,8 @@ void load_config() {
             "plugins.tg_to_qq.config.gif_max_file_size")) {
       GIF_MAX_FILE_SIZE = static_cast<size_t>(*val);
     }
-    if (auto val = loader.get_value<int>(
-            "plugins.tg_to_qq.config.gif_max_duration")) {
+    if (auto val =
+            loader.get_value<int>("plugins.tg_to_qq.config.gif_max_duration")) {
       GIF_MAX_DURATION = *val;
     }
     if (auto val =
@@ -361,9 +361,9 @@ void load_config() {
     MAX_RETRY_INTERVAL_SEC = 300;
     BRIDGE_FILES_DIR = "/tmp/bridge_files";
     BRIDGE_FILES_CONTAINER_DIR = "/root/llonebot/bridge_files";
-    GIF_MAX_FILE_SIZE = 5 * 1024 * 1024;
+    GIF_MAX_FILE_SIZE = 0;
     GIF_MAX_DURATION = 5;
-    GIF_MAX_FPS = 15;
+    GIF_MAX_FPS = 0;
     GIF_MAX_WIDTH = 0;
     GIF_MAX_COLORS = 256;
   }

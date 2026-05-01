@@ -136,9 +136,9 @@ enable_retry_queue = true
 
 ```toml
 [plugins.tg_to_qq.config]
-gif_max_file_size = 5242880  # 最大输出文件大小，单位字节（默认 5MB）
+gif_max_file_size = 0        # 最大输出文件大小，单位字节，0 = 不限制（默认 0）
 gif_max_duration = 5         # 最大动画时长，单位秒（默认 5）
-gif_max_fps = 15             # 最大帧率，0 = 不限（默认 15）
+gif_max_fps = 0              # 最大帧率，0 = 不限（默认 0）
 gif_max_width = 0            # 最大宽度，0 = 保持原始分辨率（默认 0）
 gif_max_colors = 256         # 最大调色板颜色数，范围 2-256（默认 256）
 ```
@@ -147,8 +147,8 @@ gif_max_colors = 256         # 最大调色板颜色数，范围 2-256（默认 
 
 | 级别 | 宽度 | 帧率 | 颜色数 | 说明 |
 |------|------|------|--------|------|
-| quality | 原始 | 15fps | 256 | 最高质量 |
-| balanced | 320px | 10fps | 128 | 平衡 |
+| quality | 原始 | 原始 | 256 | 最高质量 |
+| balanced | 320px | 原始 | 256 | 与旧版压缩回退一致 |
 | compact | 200px | 8fps | 64 | 压缩 |
 | minimal | 160px | 5fps | 32 | 最大压缩 |
 

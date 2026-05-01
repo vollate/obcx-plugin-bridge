@@ -227,11 +227,11 @@ extern std::string BRIDGE_FILES_DIR;           // 主机端路径
 extern std::string BRIDGE_FILES_CONTAINER_DIR; // 容器端路径
 
 // GIF转换配置
-extern size_t GIF_MAX_FILE_SIZE;   // 最大GIF文件大小（字节），默认5MB
-extern int GIF_MAX_DURATION;       // 最大转换时长（秒），默认5
-extern int GIF_MAX_FPS;            // 最大帧率（0=不限），默认15
-extern int GIF_MAX_WIDTH;          // 最大宽度（0=不限），默认0
-extern int GIF_MAX_COLORS;         // 最大调色板颜色数，默认256
+extern size_t GIF_MAX_FILE_SIZE; // 最大GIF文件大小（字节），默认0=不限
+extern int GIF_MAX_DURATION;     // 最大转换时长（秒），默认5
+extern int GIF_MAX_FPS;          // 最大帧率（0=不限），默认0
+extern int GIF_MAX_WIDTH;        // 最大宽度（0=不限），默认0
+extern int GIF_MAX_COLORS;       // 最大调色板颜色数，默认256
 
 /**
  * @brief 从配置文件加载配置
