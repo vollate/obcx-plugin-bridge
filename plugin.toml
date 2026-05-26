@@ -1,7 +1,7 @@
 [plugin]
-name = "bridge_bot"
+name = "bridge"
 version = "0.1.0"
-description = "Bridges messages between QQ and Telegram platforms"
+description = "Forward messages between QQ and Telegram platforms, like a switch"
 authors = ["Vollate"]
 license = "MIT"
 
