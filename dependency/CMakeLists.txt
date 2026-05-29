@@ -9,7 +9,12 @@ add_library(
   qq/command_handler.cpp
   qq/event_handler.cpp
   qq/handler.cpp
-  qq/media_processor.cpp
+  qq/media_processor/dispatch.cpp
+  qq/media_processor/image.cpp
+  qq/media_processor/file.cpp
+  qq/media_processor/at.cpp
+  qq/media_processor/simple_segments.cpp
+  qq/media_processor/miniapp.cpp
   qq/message_formatter.cpp
   # telegram
   telegram/command_handler.cpp
