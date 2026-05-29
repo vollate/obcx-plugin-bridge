@@ -19,7 +19,10 @@ add_library(
   # telegram
   telegram/command_handler.cpp
   telegram/event_handler.cpp
-  telegram/media_processor.cpp
+  telegram/media_processor/animation.cpp
+  telegram/media_processor/dispatch.cpp
+  telegram/media_processor/files.cpp
+  telegram/media_processor/sticker.cpp
   telegram/message_formatter.cpp
   telegram/handler.cpp
   # database
@@ -37,4 +40,3 @@ if ("$ENV{IN_NIX_SHELL}" STREQUAL "")
 else()
     target_link_libraries(bridge_core PUBLIC SQLite::SQLite3)
 endif()
-

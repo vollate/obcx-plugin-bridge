@@ -1,5 +1,6 @@
 #include "database/manager.hpp"
 
+#include <common/json_utils.hpp>
 #include <common/logger.hpp>
 #include <nlohmann/json.hpp>
 
@@ -107,9 +108,13 @@ auto DatabaseManager::save_message_from_event(
 
   // 检查是否有回复消息
   for (const auto &segment : event.message) {
-    if (segment.type == "reply" && segment.data.contains("id")) {
-      msg_info.reply_to_message_id = segment.data["id"];
-      break;
+    if (segment.type == "reply") {
+      msg_info.reply_to_message_id =
+          obcx::common::JsonUtils::get_optional_id_as_string(segment.data,
+                                                             "id");
+      if (msg_info.reply_to_message_id.has_value()) {
+        break;
+      }
     }
   }
 

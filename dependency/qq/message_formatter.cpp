@@ -1,5 +1,6 @@
 #include "qq/message_formatter.hpp"
 
+#include <common/json_utils.hpp>
 #include <common/logger.hpp>
 #include <core/qq_bot.hpp>
 #include <core/tg_bot.hpp>
@@ -57,8 +58,9 @@ auto QQMessageFormatter::format_reply_message(
   for (const auto &segment : event.message) {
     if (segment.type == "reply") {
       // 获取被引用的QQ消息ID
-      if (segment.data.contains("id")) {
-        reply_message_id = segment.data.at("id");
+      reply_message_id = obcx::common::JsonUtils::get_optional_id_as_string(
+          segment.data, "id");
+      if (reply_message_id.has_value()) {
         PLUGIN_DEBUG("qq_to_tg", "检测到QQ引用消息，引用ID: {}",
                      reply_message_id.value());
         break;
@@ -449,9 +451,12 @@ auto QQMessageFormatter::send_media_group(
         // 获取回复消息ID（如果有）
         std::optional<std::string> opt_reply_id;
         for (const auto &seg : message_to_send) {
-          if (seg.type == "reply" && seg.data.contains("id")) {
-            opt_reply_id = seg.data.at("id");
-            break;
+          if (seg.type == "reply") {
+            opt_reply_id = obcx::common::JsonUtils::get_optional_id_as_string(
+                seg.data, "id");
+            if (opt_reply_id.has_value()) {
+              break;
+            }
           }
         }
 
