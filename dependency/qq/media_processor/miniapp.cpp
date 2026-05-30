@@ -458,7 +458,7 @@ auto QQMediaProcessor::format_miniapp_message(
 
   if (parse_result.success) {
     // 成功解析的情况
-    message_text = "📱 ";
+    message_text = "\n📱 ";
 
     if (!parse_result.title.empty()) {
       message_text += fmt::format("[{}]", parse_result.title);
@@ -468,11 +468,11 @@ auto QQMediaProcessor::format_miniapp_message(
 
     if (!parse_result.description.empty() &&
         parse_result.description != parse_result.title) {
-      message_text += fmt::format("\nTitle: {}", parse_result.description);
+      message_text += fmt::format("\nTitle:\n{}", parse_result.description);
     }
 
     if (!parse_result.urls.empty()) {
-      message_text += "\n🔗 链接:";
+      message_text += "\n🔗 链接:\n";
       for (const auto &url : parse_result.urls) {
         if (url.starts_with("m.q.qq.com")) {
           continue;
