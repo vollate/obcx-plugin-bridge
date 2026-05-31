@@ -4,8 +4,6 @@
 
 namespace storage {
 
-// === 消息表 UPDATE 操作 ===
-
 auto DatabaseManager::update_message_forwarding(
     const std::string &platform, const std::string &message_id,
     const std::string &forwarded_to_platform,
@@ -45,8 +43,6 @@ auto DatabaseManager::update_message_forwarding(
   return true;
 }
 
-// === 消息映射表 UPDATE 操作 ===
-
 auto DatabaseManager::update_message_mapping(
     const std::string &source_platform, const std::string &source_message_id,
     const std::string &target_platform,
@@ -85,8 +81,6 @@ auto DatabaseManager::update_message_mapping(
     return false;
   }
 }
-
-// === 表情包缓存表 UPDATE 操作 ===
 
 auto DatabaseManager::update_sticker_last_used(const std::string &platform,
                                                const std::string &sticker_hash)
@@ -171,8 +165,6 @@ auto DatabaseManager::update_sticker_conversion(
   return true;
 }
 
-// === QQ表情包映射表 UPDATE 操作 ===
-
 auto DatabaseManager::update_qq_sticker_last_used(
     const std::string &qq_sticker_hash) -> bool {
   std::scoped_lock lock(db_mutex_);
@@ -208,8 +200,6 @@ auto DatabaseManager::update_qq_sticker_last_used(
 
   return true;
 }
-
-// === 消息重试队列表 UPDATE 操作 ===
 
 auto DatabaseManager::update_message_retry(
     const std::string &source_platform, const std::string &source_message_id,
@@ -254,8 +244,6 @@ auto DatabaseManager::update_message_retry(
   return true;
 }
 
-// === 媒体下载重试队列表 UPDATE 操作 ===
-
 auto DatabaseManager::update_media_download_retry(
     const std::string &platform, const std::string &file_id, int retry_count,
     const std::chrono::system_clock::time_point &next_retry_at,
@@ -297,8 +285,6 @@ auto DatabaseManager::update_media_download_retry(
 
   return true;
 }
-
-// === 平台心跳表 UPDATE 操作 ===
 
 auto DatabaseManager::update_platform_heartbeat(
     const std::string &platform,

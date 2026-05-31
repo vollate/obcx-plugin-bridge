@@ -1,7 +1,3 @@
-// Telegram媒体处理器：普通文件下载与QQ消息段转换。
-//
-// 包括 photo、video、audio/voice、document、video_note 和兜底文件处理。
-
 #include "telegram/media_processor.hpp"
 
 #include "media_processor.hpp"

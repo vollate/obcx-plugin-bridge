@@ -1,12 +1,3 @@
-// QQ媒体处理器：图片 / 表情包 / GIF 相关逻辑。
-//
-// 包括：
-//   - process_image_segment: 图片段总入口
-//   - is_sticker: 表情包检测
-//   - handle_sticker_cache: 通过 hash 缓存命中后直接发送
-//   - detect_gif_format: 通过下载文件前若干字节本地检测GIF
-//   - to_hex_string: 调试输出辅助
-
 #include "qq/media_processor.hpp"
 
 #include "config.hpp"
@@ -35,11 +26,9 @@ auto QQMediaProcessor::process_image_segment(
 
   obcx::common::MessageSegment converted_segment = segment;
 
-  // 检测是否为GIF图片或表情包
   std::string file_name = segment.data.value("file", "");
   std::string url = segment.data.value("url", "");
 
-  // 判断是否是GIF
   bool is_gif = false;
   if (!file_name.empty() && (file_name.find(".gif") != std::string::npos ||
                              file_name.find(".GIF") != std::string::npos)) {
@@ -49,57 +38,49 @@ auto QQMediaProcessor::process_image_segment(
     is_gif = true;
   }
 
-  // 对于subType=1的情况，使用数据库缓存和本地检测
+  // subType=1 在 QQ 上是动图表情：扩展名/URL 不一定带 gif，所以先查缓存，
+  // 不命中再去下载文件头嗅探。失败时保守地按 GIF 处理。
   if (segment.data.contains("subType") && segment.data.at("subType") == 1 &&
       !url.empty()) {
     try {
-      // 首先检查数据库缓存
       std::string qq_sticker_hash =
           storage::DatabaseManager::calculate_hash(url);
       auto cached_mapping =
           db_manager_->get_qq_sticker_mapping(qq_sticker_hash);
 
       if (cached_mapping && cached_mapping->is_gif.has_value()) {
-        // 使用缓存的结果
         is_gif = cached_mapping->is_gif.value();
         PLUGIN_DEBUG("qq_to_tg", "使用缓存的图片类型检测结果: {} -> is_gif={}",
                      url, is_gif);
       } else {
-        // 缓存未命中，进行本地检测
         is_gif = co_await detect_gif_format(url);
       }
     } catch (const std::exception &e) {
-      // 异常情况下回退到旧逻辑
       is_gif = true;
       PLUGIN_ERROR("qq_to_tg", "图片类型检测异常，回退到默认行为: {} - {}", url,
                    e.what());
     }
   }
 
-  // 检测是否为表情包
   if (is_sticker(segment)) {
-    // QQ表情包处理：使用缓存系统优化
     bool handled = co_await handle_sticker_cache(
         telegram_bot, segment, telegram_group_id, topic_id, sender_display_name,
         bridge_config);
     if (handled) {
-      co_return std::nullopt; // 已直接发送，不需要添加到普通消息中
+      co_return std::nullopt; // 已直接发送，不再加进普通消息
     }
 
-    // 缓存未命中或出错时，继续普通流程
     if (is_gif) {
       converted_segment.type = "animation";
     } else {
-      converted_segment.type = "image"; // 使用photo而不是image以启用压缩
+      converted_segment.type = "image";
     }
     PLUGIN_DEBUG("qq_to_tg", "检测到QQ表情包，使用压缩模式转发: {}", file_name);
   } else if (is_gif) {
-    // 普通GIF动图转换为Telegram animation
     converted_segment.type = "animation";
     PLUGIN_DEBUG("qq_to_tg", "检测到QQ GIF动图，转为Telegram动画: {}",
                  file_name);
   } else {
-    // 普通图片保持不变
     PLUGIN_DEBUG("qq_to_tg", "转发QQ图片文件: {}", file_name);
   }
 
@@ -111,16 +92,14 @@ auto QQMediaProcessor::is_sticker(const obcx::common::MessageSegment &segment)
   std::string file_name = segment.data.value("file", "");
   std::string url = segment.data.value("url", "");
 
-  // 1. 检查文件名是否包含表情包特征
   if (!file_name.empty() && (file_name.find("sticker") != std::string::npos ||
                              file_name.find("emoji") != std::string::npos)) {
     return true;
   }
-  // 2. 检查子类型 - subType=1可能表示动图表情
+  // subType=1 在 QQ 表示 GIF 动图表情，也算表情包。
   if (segment.data.contains("subType") && segment.data.at("subType") == 1) {
-    return true; // GIF表情包也算
+    return true;
   }
-  // 3. 检查URL中的表情包特征
   if (!url.empty() && (url.find("emoticon") != std::string::npos ||
                        url.find("sticker") != std::string::npos ||
                        url.find("emoji") != std::string::npos)) {
@@ -137,16 +116,13 @@ auto QQMediaProcessor::handle_sticker_cache(
     const GroupBridgeConfig *bridge_config) -> boost::asio::awaitable<bool> {
 
   try {
-    // 计算QQ表情包的唯一hash
     std::string qq_sticker_hash = storage::DatabaseManager::calculate_hash(
         segment.data.value("file", "") + "_" + segment.data.value("url", ""));
 
-    // 查询缓存
     auto cached_mapping = db_manager_->get_qq_sticker_mapping(qq_sticker_hash);
     if (cached_mapping.has_value()) {
       db_manager_->update_qq_sticker_last_used(qq_sticker_hash);
 
-      // 根据模式获取显示发送者配置
       bool show_sender_for_sticker = false;
       if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
         show_sender_for_sticker = bridge_config->show_qq_to_tg_sender;
@@ -163,13 +139,11 @@ auto QQMediaProcessor::handle_sticker_cache(
 
       std::string response;
       if (topic_id == -1) {
-        // 群组模式：发送到群组
         response = co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
                        .send_group_photo(telegram_group_id,
                                          cached_mapping->telegram_file_id,
                                          caption_info);
       } else {
-        // Topic模式：使用topic消息发送
         obcx::common::Message sticker_message;
         obcx::common::MessageSegment img_segment;
         img_segment.type = "image";
@@ -188,9 +162,8 @@ auto QQMediaProcessor::handle_sticker_cache(
 
       PLUGIN_INFO("qq_to_tg", "使用缓存的QQ表情包发送成功: {} -> {}",
                   qq_sticker_hash, cached_mapping->telegram_file_id);
-      co_return true; // 直接返回，不添加到普通消息中
+      co_return true;
     }
-    // 缓存未命中，使用普通方式发送并保存file_id
     PLUGIN_INFO("qq_to_tg", "QQ表情包缓存未命中，将上传并缓存: {}",
                 qq_sticker_hash);
     co_return false;
@@ -208,7 +181,6 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
                 "subType=1图片缓存未命中，开始下载文件进行本地检测: {}",
                 url);
 
-    // 解析QQ文件URL获取主机和路径信息
     const std::string &url_str(url);
     size_t protocol_pos = url_str.find("://");
     if (protocol_pos == std::string::npos) {
@@ -228,13 +200,12 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
                  "[图片类型检测] QQ文件URL解析完成 - Host: {}, Path: {}", host,
                  path);
 
-    // 创建专用的HttpClient配置（直连，无代理）
+    // QQ 图片下载强制直连，不能走 Telegram 代理。
     obcx::common::ConnectionConfig qq_config;
     qq_config.host = host;
-    qq_config.port = 443; // HTTPS默认端口
+    qq_config.port = 443;
     qq_config.use_ssl = true;
-    qq_config.access_token = ""; // QQ文件下载不需要令牌
-    // 确保直连，不使用代理
+    qq_config.access_token = "";
     qq_config.proxy_host = "";
     qq_config.proxy_port = 0;
     qq_config.proxy_type = "";
@@ -245,28 +216,22 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
                  "[图片类型检测] 创建专用QQ文件下载HttpClient - 主机: {}:{}",
                  host, qq_config.port);
 
-    // 为QQ文件下载创建临时IO上下文
     boost::asio::io_context temp_ioc;
 
-    // 创建专用的HttpClient实例（直连，无代理）
     auto qq_http_client =
         std::make_unique<obcx::network::HttpClient>(temp_ioc, qq_config);
 
-    // 使用空的头部映射，让HttpClient设置完整的Firefox浏览器头部
-    // 添加Range头部只请求前32个字节（足够检测所有常见图片格式的Magic Numbers）
+    // Range: 0-31 足以覆盖所有常见图片格式的 magic number。
     std::map<std::string, std::string> headers;
     headers["Range"] = "bytes=0-31";
 
-    // 发送GET请求获取文件前32个字节
     obcx::network::HttpResponse response =
         co_await qq_http_client->get(path, headers);
 
     if (response.is_success()) {
-      // 获取文件的前几个字节内容
       std::string file_header = response.body;
 
       if (!file_header.empty()) {
-        // 使用文件头部Magic Numbers检测MIME类型
         std::string detected_mime =
             MediaProcessor::detect_mime_type_from_content(file_header);
         bool is_gif = MediaProcessor::is_gif_from_content(file_header);
@@ -278,12 +243,11 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
         PLUGIN_DEBUG("qq_to_tg", "[图片类型检测] 文件头部16进制: {}",
                      to_hex_string(file_header));
 
-        // 创建新的缓存记录
         std::string qq_sticker_hash =
             storage::DatabaseManager::calculate_hash(url);
         storage::QQStickerMapping new_mapping;
         new_mapping.qq_sticker_hash = qq_sticker_hash;
-        new_mapping.telegram_file_id = ""; // 暂时为空
+        new_mapping.telegram_file_id = "";
         new_mapping.file_type = is_gif ? "animation" : "photo";
         new_mapping.is_gif = is_gif;
         new_mapping.content_type = detected_mime;

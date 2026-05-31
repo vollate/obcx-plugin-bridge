@@ -17,9 +17,7 @@ auto QQCommandHandler::handle_checkalive_command(
   try {
     const std::string qq_group_id = event.group_id.value();
 
-    // 获取QQ平台的心跳信息
     auto qq_heartbeat = db_manager_->get_platform_heartbeat("qq");
-    // 获取Telegram平台的心跳信息
     auto telegram_heartbeat = db_manager_->get_platform_heartbeat("telegram");
 
     std::string response_text;
@@ -30,7 +28,6 @@ auto QQCommandHandler::handle_checkalive_command(
                               qq_time_point.time_since_epoch())
                               .count();
 
-      // 计算距离现在的时间差
       auto now = std::chrono::system_clock::now();
       auto qq_duration =
           std::chrono::duration_cast<std::chrono::seconds>(now - qq_time_point)
@@ -57,7 +54,6 @@ auto QQCommandHandler::handle_checkalive_command(
                               tg_time_point.time_since_epoch())
                               .count();
 
-      // 计算距离现在的时间差
       auto now = std::chrono::system_clock::now();
       auto tg_duration =
           std::chrono::duration_cast<std::chrono::seconds>(now - tg_time_point)
@@ -68,7 +64,6 @@ auto QQCommandHandler::handle_checkalive_command(
           fmt::format("最后活动: {} ({} 秒前)\n", tg_timestamp, tg_duration);
 
       if (tg_duration > 300) {
-        // 5分钟无活动认为异常
         response_text += "⚠️ Telegram平台可能离线";
       } else {
         response_text += "✅ Telegram平台正常";
@@ -77,7 +72,6 @@ auto QQCommandHandler::handle_checkalive_command(
       response_text += "💬 Telegram平台状态: ❌ 无活动记录";
     }
 
-    // 发送回复消息
     co_await send_reply_message(qq_bot, qq_group_id, event.message_id,
                                 response_text);
 
@@ -93,10 +87,8 @@ auto QQCommandHandler::send_reply_message(
     const std::string &reply_to_message_id, const std::string &text)
     -> boost::asio::awaitable<void> {
   try {
-    // 构造回复消息
     obcx::common::Message reply_message;
 
-    // 添加回复segment
     obcx::common::MessageSegment reply_segment;
     reply_segment.type = "reply";
     reply_segment.data["id"] = reply_to_message_id;
@@ -107,7 +99,6 @@ auto QQCommandHandler::send_reply_message(
     text_segment.data["text"] = text;
     reply_message.push_back(text_segment);
 
-    // 发送到QQ
     co_await qq_bot.send_group_message(qq_group_id, reply_message);
 
   } catch (const std::exception &e) {

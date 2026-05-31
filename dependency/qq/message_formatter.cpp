@@ -25,12 +25,10 @@ auto QQMessageFormatter::format_sender_info(
   std::string sender_display_name = co_await get_user_display_name(
       qq_bot, event.user_id, event.group_id.value_or(""));
 
-  // 根据配置决定是否添加发送者信息
   bool show_sender = false;
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
     show_sender = bridge_config->show_qq_to_tg_sender;
   } else {
-    // Topic模式：获取对应topic的配置
     const TopicBridgeConfig *topic_config =
         bridge::get_topic_config(telegram_group_id, topic_id);
     show_sender = topic_config ? topic_config->show_qq_to_tg_sender : false;
@@ -55,11 +53,9 @@ auto QQMessageFormatter::format_reply_message(
     const obcx::common::MessageEvent &event,
     obcx::common::Message &message_to_send) -> boost::asio::awaitable<bool> {
 
-  // 检查是否有引用消息
   std::optional<std::string> reply_message_id;
   for (const auto &segment : event.message) {
     if (segment.type == "reply") {
-      // 获取被引用的QQ消息ID
       reply_message_id = obcx::common::JsonUtils::get_optional_id_as_string(
           segment.data, "id");
       if (reply_message_id.has_value()) {
@@ -70,15 +66,14 @@ auto QQMessageFormatter::format_reply_message(
     }
   }
 
-  // 如果有引用消息，尝试查找对应平台的消息ID
   if (reply_message_id.has_value()) {
     std::optional<std::string> target_telegram_message_id;
 
-    // 情况1: 如果被回复的QQ消息曾经转发到Telegram过，找到TG的消息ID
+    // 被回复的 QQ 消息可能有两种来源：原生 QQ 消息（之前转发到 TG 过），
+    // 或本身是从 TG 转发来的。先查 qq->tg 映射，没命中再查 tg 原始消息。
     target_telegram_message_id = db_manager_->get_target_message_id(
         "qq", reply_message_id.value(), "telegram");
 
-    // 情况2: 如果被回复的QQ消息来源于Telegram，找到TG的原始消息ID
     if (!target_telegram_message_id.has_value()) {
       target_telegram_message_id = db_manager_->get_source_message_id(
           "qq", reply_message_id.value(), "telegram");
@@ -91,7 +86,6 @@ auto QQMessageFormatter::format_reply_message(
                      : "未找到");
 
     if (target_telegram_message_id.has_value()) {
-      // 创建Telegram引用消息段
       obcx::common::MessageSegment reply_segment;
       reply_segment.type = "reply";
       reply_segment.data["id"] = target_telegram_message_id.value();
@@ -115,7 +109,6 @@ auto QQMessageFormatter::process_forward_message(
     obcx::common::Message &message_to_send) -> boost::asio::awaitable<void> {
 
   try {
-    // 获取转发消息ID
     std::string forward_id = segment.data.value("id", "");
     if (forward_id.empty()) {
       co_return;
@@ -123,7 +116,6 @@ auto QQMessageFormatter::process_forward_message(
 
     PLUGIN_DEBUG("qq_to_tg", "处理合并转发消息，ID: {}", forward_id);
 
-    // 获取合并转发内容
     std::string forward_response =
         co_await dynamic_cast<obcx::core::QQBot &>(qq_bot).get_forward_msg(
             forward_id);
@@ -133,26 +125,22 @@ auto QQMessageFormatter::process_forward_message(
         forward_json.contains("data") && forward_json["data"].is_object()) {
       auto forward_data = forward_json["data"];
 
-      // 添加合并转发标题
       obcx::common::MessageSegment forward_title_segment;
       forward_title_segment.type = "text";
       forward_title_segment.data["text"] = "\n📋 合并转发消息:\n";
       message_to_send.push_back(forward_title_segment);
 
-      // 收集合并转发中的所有图片
+      // 合并转发节点里的图片要单独走 sendMediaGroup，不能塞进文本里。
       std::vector<obcx::common::MessageSegment> forward_images;
 
-      // 处理转发消息中的每个节点
       if (forward_data.contains("messages") &&
           forward_data["messages"].is_array()) {
         for (const auto &msg_node : forward_data["messages"]) {
           if (msg_node.is_object()) {
-            // 获取发送者信息
             std::string node_sender =
                 msg_node.value("sender", nlohmann::json::object())
                     .value("nickname", "未知用户");
 
-            // 处理content数组
             std::string node_content = "";
             if (msg_node.contains("content") &&
                 msg_node["content"].is_array()) {
@@ -170,11 +158,10 @@ auto QQMessageFormatter::process_forward_message(
                         "[表情:{}]",
                         content_seg["data"]["id"].get<std::string>());
                   } else if (seg_type == "image") {
-                    // 收集图片信息用于后续发送
+                    // 占位文字：图片本体在收集后批量发送，节点文本里只保留序号引用。
                     node_content +=
                         fmt::format("[图片{}]", forward_images.size() + 1);
 
-                    // 创建图片消息段
                     obcx::common::MessageSegment img_segment;
                     img_segment.type = "image";
                     if (content_seg.contains("data")) {
@@ -190,7 +177,6 @@ auto QQMessageFormatter::process_forward_message(
                         img_segment.data["file"] =
                             img_data["file"].get<std::string>();
                       }
-                      // 复制其他可能有用的字段
                       if (img_data.contains("subType")) {
                         img_segment.data["subType"] = img_data["subType"];
                       }
@@ -211,11 +197,10 @@ auto QQMessageFormatter::process_forward_message(
               }
             } else if (msg_node.contains("content") &&
                        msg_node["content"].is_string()) {
-              // 兼容字符串格式的content
+              // 兼容老版本 content 直接是字符串的格式
               node_content = msg_node["content"].get<std::string>();
             }
 
-            // 添加每个转发消息的内容
             obcx::common::MessageSegment node_segment;
             node_segment.type = "text";
             node_segment.data["text"] =
@@ -225,13 +210,12 @@ auto QQMessageFormatter::process_forward_message(
         }
       }
 
-      // 如果收集到了图片，使用sendMediaGroup批量发送（每批最多10张）
+      // 合并转发收集到的图片同样走 sendMediaGroup（每批最多10张）。
       if (!forward_images.empty()) {
         PLUGIN_INFO("qq_to_tg",
                     "合并转发消息中发现 {} 张图片，准备使用MediaGroup发送",
                     forward_images.size());
 
-        // 构建完整的媒体组列表 (type, url)
         std::vector<std::pair<std::string, std::string>> all_media;
         for (const auto &img_seg : forward_images) {
           std::string url =
@@ -242,7 +226,6 @@ auto QQMessageFormatter::process_forward_message(
           }
         }
 
-        // 分批发送（每批最多10张）
         if (!all_media.empty()) {
           std::optional<int64_t> opt_topic_id =
               (topic_id == -1) ? std::nullopt
@@ -289,7 +272,6 @@ auto QQMessageFormatter::process_forward_message(
               PLUGIN_ERROR("qq_to_tg",
                            "通过MediaGroup发送第 {}/{} 批图片失败: {}",
                            batch + 1, total_batches, e.what());
-              // 失败时添加错误提示到文本消息
               obcx::common::MessageSegment error_segment;
               error_segment.type = "text";
               error_segment.data["text"] =
@@ -314,7 +296,6 @@ auto QQMessageFormatter::process_forward_message(
           forward_images.size());
     } else {
       PLUGIN_WARN("qq_to_tg", "获取合并转发内容失败: {}", forward_response);
-      // 添加失败提示
       obcx::common::MessageSegment error_segment;
       error_segment.type = "text";
       error_segment.data["text"] = "[合并转发消息获取失败]";
@@ -322,7 +303,6 @@ auto QQMessageFormatter::process_forward_message(
     }
   } catch (const std::exception &e) {
     PLUGIN_ERROR("qq_to_tg", "处理合并转发消息时出错: {}", e.what());
-    // 添加错误提示
     obcx::common::MessageSegment error_segment;
     error_segment.type = "text";
     error_segment.data["text"] = "[合并转发消息处理失败]";
@@ -335,11 +315,9 @@ auto QQMessageFormatter::process_node_message(
     obcx::common::Message &message_to_send) -> boost::asio::awaitable<void> {
 
   try {
-    // node段包含用户ID、昵称和内容
     std::string node_user_id = segment.data.value("user_id", "");
     std::string node_nickname = segment.data.value("nickname", "未知用户");
 
-    // 内容可能是字符串或消息段数组
     if (segment.data.contains("content")) {
       auto content = segment.data.at("content");
 
@@ -347,11 +325,9 @@ auto QQMessageFormatter::process_node_message(
       node_segment.type = "text";
 
       if (content.is_string()) {
-        // 简单文本内容
         node_segment.data["text"] = fmt::format("👤 {}: {}\n", node_nickname,
                                                 content.get<std::string>());
       } else if (content.is_array()) {
-        // 复杂消息段内容
         std::string node_text = fmt::format("👤 {}: ", node_nickname);
         for (const auto &content_segment : content) {
           if (content_segment.is_object() && content_segment.contains("type")) {
@@ -404,25 +380,23 @@ auto QQMessageFormatter::send_media_group(
     const obcx::common::MessageEvent &event) -> boost::asio::awaitable<bool> {
 
   if (image_segments.size() <= 1) {
-    co_return false; // 不需要MediaGroup
+    co_return false;
   }
 
   PLUGIN_INFO("qq_to_tg", "检测到多张图片({})，使用MediaGroup发送",
               image_segments.size());
 
   bool any_batch_sent = false;
-  // 累积本次 sendMediaGroup 中所有失败的图片 URL（用于在最后一批的 caption 末
-  // 尾追加提示，避免每批都重复一遍）。失败的 URL 一律已用占位图替换。
+  // 累积所有批次中被占位图替换掉的 URL，仅在最后一批的 caption 末尾追加一次
+  // 提示，避免每批都重复一遍。
   std::vector<std::string> total_replaced;
   for (size_t sent_count = 0; sent_count < image_segments.size();
        sent_count += 10) {
-    // 计算这一批次应该发送多少张图片（最多10张）
     size_t batch_size =
         std::min(static_cast<size_t>(10), image_segments.size() - sent_count);
     PLUGIN_DEBUG("qq_to_tg",
                  "准备发送MediaGroup图片，起始索引: {}, 本批次数量: {}",
                  sent_count, batch_size);
-    // 构建媒体组列表 (type, url)
     std::vector<std::pair<std::string, std::string>> media_list;
     for (size_t i = 0; i < batch_size; ++i) {
       std::string url = image_segments[sent_count + i].data.value(
@@ -433,9 +407,8 @@ auto QQMessageFormatter::send_media_group(
       }
     }
 
-    // 把 QQ 上报的 URL 先各自做一次可达性探测；不可达的 URL 在指数退避重试后
-    // 仍失败的会被替换成占位图（或丢弃）。这样 Telegram 拉取整批 media 时，
-    // 不会因为其中一个 URL 临时返回 5xx/超时而把整批 sendMediaGroup 拖垮。
+    // 先做可达性探测：单张 5xx/超时可能让整批 sendMediaGroup 失败，所以
+    // 在送给 Telegram 前把不可达 URL 替换成占位图，保持批大小不变。
     std::vector<std::string> replaced;
     if (!media_list.empty()) {
       media_list = co_await ImageUrlValidator::sanitize(media_list, replaced);
@@ -443,13 +416,10 @@ auto QQMessageFormatter::send_media_group(
                             replaced.end());
     }
 
-    // 如果有有效的图片URL，使用sendMediaGroup发送
     if (!media_list.empty()) {
       try {
-        // 收集文本内容作为caption
         std::string caption;
 
-        // 根据配置决定是否显示发送者
         bool show_sender = false;
         if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
           show_sender = bridge_config->show_qq_to_tg_sender;
@@ -464,7 +434,6 @@ auto QQMessageFormatter::send_media_group(
           caption = fmt::format("[{}]", sender_display_name);
         }
 
-        // 添加其他文本段的内容到caption
         for (const auto &seg : other_segments) {
           if (seg.type == "text" && seg.data.contains("text")) {
             if (!caption.empty()) {
@@ -474,8 +443,7 @@ auto QQMessageFormatter::send_media_group(
           }
         }
 
-        // 把本次 sendMediaGroup 中因为探测失败而被占位替换的图片数量
-        // 追加到 caption 末尾。仅在最后一批追加，避免每批都重复一遍。
+        // 仅在最后一批 caption 末尾追加替换提示。
         const bool is_last_batch =
             sent_count + batch_size >= image_segments.size();
         if (is_last_batch && !total_replaced.empty()) {
@@ -489,7 +457,6 @@ auto QQMessageFormatter::send_media_group(
         std::optional<int64_t> opt_topic_id =
             (topic_id == -1) ? std::nullopt : std::optional<int64_t>(topic_id);
 
-        // 获取回复消息ID（如果有）
         std::optional<std::string> opt_reply_id;
         for (const auto &seg : message_to_send) {
           if (seg.type == "reply") {
@@ -509,7 +476,6 @@ auto QQMessageFormatter::send_media_group(
         PLUGIN_INFO("qq_to_tg", "成功通过MediaGroup发送 {} 张图片",
                     media_list.size());
 
-        // 解析响应获取消息ID用于映射
         if (!media_response.empty()) {
           try {
             nlohmann::json response_json =
@@ -517,7 +483,7 @@ auto QQMessageFormatter::send_media_group(
             if (response_json.contains("result") &&
                 response_json["result"].is_array() &&
                 !response_json["result"].empty()) {
-              // 使用第一个消息的ID作为映射
+              // MediaGroup 会返回多条消息ID，这里只用第一条建立映射。
               auto first_msg = response_json["result"][0];
               if (first_msg.contains("message_id")) {
                 std::string tg_msg_id =
@@ -544,7 +510,7 @@ auto QQMessageFormatter::send_media_group(
         PLUGIN_ERROR("qq_to_tg",
                      "通过MediaGroup发送图片失败: {}，回退到单图发送",
                      e.what());
-        co_return false; // 发送失败，回退到单图发送模式
+        co_return false;
       }
     }
   }
@@ -595,7 +561,7 @@ auto QQMessageFormatter::fetch_and_save_user_info(
       storage::UserInfo user_info;
       user_info.platform = "qq";
       user_info.user_id = user_id;
-      user_info.group_id = group_id; // 群组特定的用户信息
+      user_info.group_id = group_id;
       user_info.last_updated = std::chrono::system_clock::now();
 
       std::string general_nickname, card, title;
@@ -612,8 +578,7 @@ auto QQMessageFormatter::fetch_and_save_user_info(
         title = data["title"];
       }
 
-      // 优先级：群名片 > 群头衔 > 一般昵称
-      // 将最优先的名称存储在nickname字段中，便于显示逻辑处理
+      // 显示名优先级：群名片 > 群头衔 > 一般昵称
       if (!card.empty()) {
         user_info.nickname = card;
         PLUGIN_DEBUG("qq_to_tg", "使用QQ群名片作为显示名称: {} -> {}", user_id,
@@ -628,12 +593,11 @@ auto QQMessageFormatter::fetch_and_save_user_info(
                      user_id, general_nickname);
       }
 
-      // 同时保存群头衔到title字段供后续使用
+      // title 单独保留一份，供需要群头衔的逻辑使用。
       if (!title.empty()) {
         user_info.title = title;
       }
 
-      // 保存用户信息
       db_manager->save_or_update_user(user_info, true);
       PLUGIN_DEBUG("qq_to_tg", "获取QQ用户信息成功：{} -> {}", user_id,
                    user_info.nickname);

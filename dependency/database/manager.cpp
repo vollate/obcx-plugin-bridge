@@ -5,8 +5,6 @@
 
 namespace storage {
 
-// === 单例管理 ===
-
 std::shared_ptr<DatabaseManager> DatabaseManager::instance_ = nullptr;
 std::mutex DatabaseManager::instance_mutex_;
 
@@ -31,8 +29,6 @@ void DatabaseManager::reset_instance() {
   PLUGIN_DEBUG("bridge", "DatabaseManager instance reset");
 }
 
-// === 构造函数和析构函数 ===
-
 DatabaseManager::DatabaseManager(std::string db_path)
     : db_path_(std::move(db_path)), db_(nullptr) {
   PLUGIN_DEBUG("bridge", "DatabaseManager constructed with path: {}", db_path_);
@@ -48,12 +44,9 @@ DatabaseManager::~DatabaseManager() {
   }
 }
 
-// === 初始化函数 ===
-
 auto DatabaseManager::initialize() -> bool {
   std::scoped_lock lock(db_mutex_);
 
-  // 已经初始化过则直接返回
   if (initialized_ && db_) {
     PLUGIN_DEBUG("bridge", "Database already initialized");
     return true;
@@ -72,7 +65,6 @@ auto DatabaseManager::initialize() -> bool {
 
   PLUGIN_INFO("bridge", "Database opened successfully: {}", db_path_);
 
-  // 启用外键约束
   if (!execute_sql("PRAGMA foreign_keys = ON;")) {
     return false;
   }
@@ -84,8 +76,6 @@ auto DatabaseManager::initialize() -> bool {
   initialized_ = true;
   return true;
 }
-
-// === SQL执行辅助函数 ===
 
 auto DatabaseManager::execute_sql(const std::string &sql) -> bool {
   char *error_msg = nullptr;

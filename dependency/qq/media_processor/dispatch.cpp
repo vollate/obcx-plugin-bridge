@@ -1,8 +1,3 @@
-// QQ媒体处理器：构造函数与消息段分发逻辑。
-//
-// 这里只负责按 segment.type 把工作分派到具体的处理函数。
-// 每种 segment 的实际实现位于同一目录下的对应 .cpp 文件中。
-
 #include "qq/media_processor.hpp"
 
 #include <common/logger.hpp>
@@ -56,7 +51,6 @@ auto QQMediaProcessor::process_qq_media_segment(
     } else if (segment.type == "miniapp") {
       co_return co_await process_miniapp_segment(segment);
     } else {
-      // 保持原样
       co_return segment;
     }
   } catch (const std::exception &e) {

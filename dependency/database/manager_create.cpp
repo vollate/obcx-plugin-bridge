@@ -4,10 +4,7 @@
 
 namespace storage {
 
-// === 表创建操作 ===
-
 auto DatabaseManager::create_tables() -> bool {
-  // 创建消息表
   const std::string create_messages_table = R"(
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +28,6 @@ auto DatabaseManager::create_tables() -> bool {
     return false;
   }
 
-  // 创建用户表
   const std::string create_users_table = R"(
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,7 +48,6 @@ auto DatabaseManager::create_tables() -> bool {
     return false;
   }
 
-  // 创建消息ID映射表
   const std::string create_mappings_table = R"(
         CREATE TABLE IF NOT EXISTS message_mappings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,7 +64,6 @@ auto DatabaseManager::create_tables() -> bool {
     return false;
   }
 
-  // 创建表情包缓存表
   const std::string create_sticker_cache_table = R"(
         CREATE TABLE IF NOT EXISTS sticker_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,7 +88,6 @@ auto DatabaseManager::create_tables() -> bool {
     return false;
   }
 
-  // QQ表情包映射表
   const std::string create_qq_sticker_mapping_table = R"(
     CREATE TABLE IF NOT EXISTS qq_sticker_mapping (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,7 +107,6 @@ auto DatabaseManager::create_tables() -> bool {
     return false;
   }
 
-  // 创建消息重试队列表
   const std::string create_message_retry_table = R"(
         CREATE TABLE IF NOT EXISTS message_retry_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,7 +132,6 @@ auto DatabaseManager::create_tables() -> bool {
     return false;
   }
 
-  // 创建媒体下载重试队列表
   const std::string create_media_retry_table = R"(
         CREATE TABLE IF NOT EXISTS media_download_retry_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,7 +155,6 @@ auto DatabaseManager::create_tables() -> bool {
     return false;
   }
 
-  // 创建索引以提高查询性能
   const std::string create_retry_indexes = R"(
         CREATE INDEX IF NOT EXISTS idx_message_retry_next_retry ON message_retry_queue(next_retry_at);
         CREATE INDEX IF NOT EXISTS idx_media_retry_next_retry ON media_download_retry_queue(next_retry_at);
@@ -174,7 +164,6 @@ auto DatabaseManager::create_tables() -> bool {
     return false;
   }
 
-  // 创建平台心跳表
   const std::string create_heartbeat_table = R"(
         CREATE TABLE IF NOT EXISTS platform_heartbeats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

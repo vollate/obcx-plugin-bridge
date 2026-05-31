@@ -1,14 +1,12 @@
-// QQ媒体处理器：小程序 / ARK / 应用分享 等结构化卡片消息。
-//
-// QQ 的 OneBot 11 上报里，"json" / "app" / "ark" / "miniapp" 这几类段落
-// 实际承载的都是结构化的卡片数据，常见 app 字段：
+// QQ 的 OneBot 11 上报里 "json" / "app" / "ark" / "miniapp" 都是结构化卡片，
+// 顶层 "app" 字段决定具体类型，常见的有：
 //   "com.tencent.miniapp_01"  小程序卡片（meta.detail_1.qqdocurl）
 //   "com.tencent.structmsg"   分享卡片/文章/音乐（meta.news.jumpUrl）
 //   "com.tencent.map"         位置分享
 //   "com.tencent.multimsg"    合并转发
 //
-// 本文件参考 koishi-plugin-adapter-onebot / NoneBot 等社区实现，
-// 把结构化卡片解析为通用的 MiniAppParseResult，再统一渲染为文本消息。
+// 实现参考 koishi-plugin-adapter-onebot / NoneBot：把卡片解析成
+// MiniAppParseResult，再统一渲染成文本消息。
 
 #include "qq/media_processor.hpp"
 
@@ -24,14 +22,9 @@
 
 namespace bridge::qq {
 
-// =============================================================================
-// 辅助函数：本翻译单元内部使用
-// =============================================================================
 namespace {
 
-/**
- * @brief 反转义HTML实体（QQ小程序的URL中常出现 &amp; 等）
- */
+// 反转义 HTML 实体（QQ 的小程序 JSON 里 URL 常含 &amp; 等）。
 auto unescape_html_entities(std::string s) -> std::string {
   // 按更长的实体优先替换，避免错误地连锁替换
   struct Pair {
@@ -59,9 +52,7 @@ auto unescape_html_entities(std::string s) -> std::string {
   return s;
 }
 
-/**
- * @brief 安全获取JSON字符串字段（兼容字段类型为整数等情况）
- */
+// 把 JSON 字段安全地转成字符串（兼容字段被报为整数等情况）。
 auto json_to_string(const nlohmann::json &v) -> std::string {
   if (v.is_string()) {
     return v.get<std::string>();
@@ -81,13 +72,7 @@ auto json_to_string(const nlohmann::json &v) -> std::string {
   return "";
 }
 
-/**
- * @brief 在给定JSON对象中查找已知的URL字段，返回找到的所有URL
- *
- * 兼容QQ小程序/分享卡片中常见的字段：
- *   qqdocurl, jumpUrl, jump_url, musicUrl, music_url, sourceUrl, source_url,
- *   url, contentUrl, dataUrl
- */
+// 在 JSON 对象里按已知 key 收集 URL。各 key 来自 QQ 小程序/分享卡片的实测格式。
 auto pick_urls_from_object(const nlohmann::json &obj)
     -> std::vector<std::string> {
   static constexpr std::array<std::string_view, 10> kUrlKeys = {
@@ -109,9 +94,6 @@ auto pick_urls_from_object(const nlohmann::json &obj)
   return urls;
 }
 
-/**
- * @brief 在给定JSON对象中按优先级查找标题字段
- */
 auto pick_title_from_object(const nlohmann::json &obj) -> std::string {
   static constexpr std::array<std::string_view, 5> kTitleKeys = {
       "title", "tag", "brief", "name", "desc"};
@@ -130,9 +112,6 @@ auto pick_title_from_object(const nlohmann::json &obj) -> std::string {
   return "";
 }
 
-/**
- * @brief 在给定JSON对象中按优先级查找描述字段
- */
 auto pick_desc_from_object(const nlohmann::json &obj) -> std::string {
   static constexpr std::array<std::string_view, 5> kDescKeys = {
       "desc", "summary", "digest", "abstract", "brief"};
@@ -152,10 +131,6 @@ auto pick_desc_from_object(const nlohmann::json &obj) -> std::string {
 }
 
 } // namespace
-
-// =============================================================================
-// 各 segment 的入口：JSON / APP / ARK / MINIAPP
-// =============================================================================
 
 auto QQMediaProcessor::process_json_segment(
     const obcx::common::MessageSegment &segment)
@@ -196,7 +171,7 @@ auto QQMediaProcessor::process_app_segment(
     std::string app_data = segment.data.dump();
     auto parse_result = parse_miniapp_json(app_data);
     if (!parse_result.success) {
-      // 如果JSON解析失败，尝试直接提取字段
+      // app 段的兜底：用顶层字段拼出最低限度的展示内容
       parse_result.title = segment.data.value("title", "应用分享");
       parse_result.description = segment.data.value("content", "");
       parse_result.app_name = segment.data.value("name", "");
@@ -228,11 +203,10 @@ auto QQMediaProcessor::process_ark_segment(
     std::string ark_data = segment.data.dump();
     auto parse_result = parse_miniapp_json(ark_data);
     if (!parse_result.success) {
-      // ARK消息的特殊处理
       parse_result.title = segment.data.value("prompt", "ARK卡片");
       parse_result.description = segment.data.value("desc", "");
 
-      // 从kv数组中提取信息
+      // ARK 卡片的字段往往挂在 kv 数组里——按 key 名筛 URL 字段
       if (segment.data.contains("kv") && segment.data.at("kv").is_array()) {
         for (const auto &kv : segment.data.at("kv")) {
           if (kv.contains("key") && kv.contains("value")) {
@@ -270,7 +244,7 @@ auto QQMediaProcessor::process_miniapp_segment(
     std::string miniapp_data = segment.data.dump();
     auto parse_result = parse_miniapp_json(miniapp_data);
     if (!parse_result.success) {
-      // 小程序消息的直接字段提取
+      // miniapp 段的兜底：直接读 title/desc/appid/url 顶层字段
       parse_result.title = segment.data.value("title", "小程序");
       parse_result.description = segment.data.value("desc", "");
       parse_result.app_name = segment.data.value("appid", "");
@@ -291,10 +265,6 @@ auto QQMediaProcessor::process_miniapp_segment(
   co_return converted;
 }
 
-// =============================================================================
-// 核心解析与格式化
-// =============================================================================
-
 auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
     -> MiniAppParseResult {
   MiniAppParseResult result;
@@ -307,17 +277,10 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
   try {
     nlohmann::json j = nlohmann::json::parse(json_data);
 
-    // ---- 提取应用名称 ----
-    // QQ小程序JSON顶部通常含 "app" 字段，例如：
-    //   "com.tencent.miniapp_01"  小程序卡片
-    //   "com.tencent.structmsg"   分享卡片/新闻/音乐
-    //   "com.tencent.map"         位置分享
-    //   "com.tencent.multimsg"    合并转发
     if (j.contains("app")) {
       result.app_name = json_to_string(j["app"]);
     }
 
-    // ---- 提取顶层 prompt 作为标题候选 ----
     std::string prompt_title;
     if (j.contains("prompt")) {
       prompt_title = json_to_string(j["prompt"]);
@@ -327,19 +290,12 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
     std::string detail_title;
     std::string detail_desc;
 
-    // ---- 处理 meta 字段 ----
-    // meta下的子对象key不是固定的，可能为：
-    //   detail_1   (com.tencent.miniapp_01)
-    //   news       (com.tencent.structmsg 文章/网页分享)
-    //   music      (音乐分享)
-    //   detail     (旧格式 / ARK)
-    //   contact    (名片)
-    //   notification 等
-    // 因此需要遍历 meta 下所有对象类型的子节点。
+    // meta 下子对象的 key 不固定（detail_1 / news / music / detail / contact /
+    // notification ...），所以遍历所有对象类型的子节点统一抽取字段。
     if (j.contains("meta") && j["meta"].is_object()) {
       const auto &meta = j["meta"];
 
-      // 先尝试 meta 顶层（少数实现把字段直接放在 meta 下）
+      // 少数实现把字段直接放在 meta 顶层。
       auto meta_urls = pick_urls_from_object(meta);
       found_urls.insert(found_urls.end(), meta_urls.begin(), meta_urls.end());
 
@@ -349,31 +305,27 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
         }
         const auto &child = it.value();
 
-        // URL: qqdocurl > jumpUrl > url > ...
         auto child_urls = pick_urls_from_object(child);
         found_urls.insert(found_urls.end(), child_urls.begin(),
                           child_urls.end());
 
-        // 标题（优先使用第一个非空值）
         if (detail_title.empty()) {
           detail_title = pick_title_from_object(child);
         }
 
-        // 描述
         if (detail_desc.empty()) {
           detail_desc = pick_desc_from_object(child);
-          // 当 desc 与 title 来自同一个 "desc" 字段时避免重复
+          // desc 与 title 来自同一个 "desc" 字段时避免重复显示。
           if (detail_desc == detail_title) {
             detail_desc.clear();
           }
         }
 
-        // 当 child 自身又内嵌了一层（例如 host 子对象等），跳过——
-        // 这里仅做一层遍历即可覆盖绝大多数 OneBot 11 上报的格式。
+        // child 内若再嵌套一层（如 host 子对象）就不再下钻——一层遍历已
+        // 覆盖绝大多数 OneBot 11 上报格式。
       }
     }
 
-    // ---- 提取顶级 url ----
     if (j.contains("url") && j["url"].is_string()) {
       auto v = j["url"].get<std::string>();
       if (!v.empty()) {
@@ -381,14 +333,12 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
       }
     }
 
-    // ---- 顶级 desc 作为兜底描述 ----
     if (detail_desc.empty() && j.contains("desc")) {
       detail_desc = json_to_string(j["desc"]);
     }
 
-    // ---- 决定最终 title / description ----
-    // prompt 通常形如 "[QQ小程序] 哔哩哔哩"，作为简介更友好；
-    // 当 meta 中能取到具体标题时优先用具体标题，否则退到 prompt。
+    // prompt 形如 "[QQ小程序] 哔哩哔哩"，更友好；但 meta 里能拿到具体标题时
+    // 优先用具体标题。
     if (!detail_title.empty()) {
       result.title = detail_title;
     } else {
@@ -396,7 +346,7 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
     }
     result.description = detail_desc;
 
-    // ---- 兜底：用正则从原始JSON提取URL ----
+    // 结构化字段都没拿到 URL 时，用正则从原始 JSON 兜底。
     if (found_urls.empty()) {
       auto regex_urls = extract_urls_from_json(json_data);
       for (auto &u : regex_urls) {
@@ -404,11 +354,10 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
       }
     }
 
-    // ---- URL 后处理：清理 & 去重，保留首次出现的顺序 ----
+    // 清理尾部多余字符 + 去重，保留首次出现顺序。
     std::vector<std::string> deduped_urls;
     deduped_urls.reserve(found_urls.size());
     for (auto &u : found_urls) {
-      // 去除尾部多余字符（防止从结构化字段拿到的URL也带有多余转义）
       while (!u.empty() &&
              (u.back() == '"' || u.back() == ',' || u.back() == '}' ||
               u.back() == ' ' || u.back() == '\\')) {
@@ -457,7 +406,6 @@ auto QQMediaProcessor::format_miniapp_message(
   std::string message_text;
 
   if (parse_result.success) {
-    // 成功解析的情况
     message_text = "\n📱 ";
 
     if (!parse_result.title.empty()) {
@@ -481,12 +429,7 @@ auto QQMediaProcessor::format_miniapp_message(
       }
     }
 
-    // if (!parse_result.app_name.empty()) {
-    // message_text += fmt::format("\n📦 应用: {}", parse_result.app_name);
-    //}
-
   } else {
-    // 解析失败的情况
     message_text = "📱 [无法解析的小程序]";
 
     if (config::SHOW_RAW_JSON_ON_PARSE_FAIL) {
@@ -508,9 +451,8 @@ auto QQMediaProcessor::extract_urls_from_json(const std::string &json_str)
     -> std::vector<std::string> {
   std::vector<std::string> urls;
 
-  // 使用正则表达式匹配JSON中的URL：排除引号、转义符、空白与JSON结构字符。
-  // 注意 QQ 的小程序 JSON 中常出现 &amp; 等HTML实体，
-  // 调用方应在拿到URL后做反转义。
+  // 用正则匹配URL：排除引号、转义符、空白与JSON结构字符。
+  // 注意：QQ 小程序 JSON 中常出现 &amp; 等 HTML 实体，调用方需要做反转义。
   std::regex url_regex(R"((https?://[^\s\"',}\]\\<>]+))");
   std::sregex_iterator url_iter(json_str.begin(), json_str.end(), url_regex);
   std::sregex_iterator url_end;

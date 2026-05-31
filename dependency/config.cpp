@@ -4,14 +4,12 @@
 
 namespace bridge {
 
-// 全局群组映射配置
 std::unordered_map<std::string, GroupBridgeConfig> GROUP_MAP;
 
 void load_group_mappings() {
   try {
     GROUP_MAP.clear();
 
-    // 获取配置
     auto config_section =
         obcx::common::ConfigLoader::instance().get_section("group_mappings");
     if (!config_section.has_value()) {
@@ -20,7 +18,6 @@ void load_group_mappings() {
     }
     const auto &config = config_section.value();
 
-    // 加载群组到群组的映射
     if (config.contains("group_to_group")) {
       const auto &group_to_group = config["group_to_group"];
 
@@ -53,7 +50,6 @@ void load_group_mappings() {
       }
     }
 
-    // 加载Topic到群组的映射
     if (config.contains("topic_to_group")) {
       const auto &topic_to_group = config["topic_to_group"];
 
@@ -75,8 +71,7 @@ void load_group_mappings() {
           if (!telegram_group_id.empty()) {
             std::vector<TopicBridgeConfig> topics;
 
-            // 查找对应的topics -
-            // 从全局topics数组中查找属于当前telegram_group_id的topics
+            // topics live in a flat global array; filter by telegram_group_id
             if (config.contains("topics")) {
               const auto &topics_array = config["topics"];
 
@@ -86,13 +81,12 @@ void load_group_mappings() {
                     continue;
                   const auto &topic_table = *topic_item.as_table();
 
-                  // 检查这个topic是否属于当前的telegram_group_id
                   std::string topic_telegram_group_id =
                       topic_table["telegram_group_id"].value_or<std::string>(
                           "");
 
                   if (topic_telegram_group_id != telegram_group_id) {
-                    continue; // 跳过不属于当前群的topic
+                    continue;
                   }
 
                   int64_t telegram_topic_id =
@@ -149,32 +143,25 @@ void initialize_config() {
 
 namespace config {
 
-// Bot tokens
 std::string TELEGRAM_BOT_TOKEN;
 
-// QQ服务器配置
 std::string QQ_HOST;
 uint16_t QQ_PORT;
 std::string QQ_ACCESS_TOKEN;
 
-// Telegram服务器配置
 std::string TELEGRAM_HOST;
 uint16_t TELEGRAM_PORT;
 
-// 代理配置
 std::string PROXY_HOST;
 uint16_t PROXY_PORT;
 std::string PROXY_TYPE;
 
-// 数据库配置
 std::string DATABASE_FILE;
 
-// 小程序处理配置
 bool ENABLE_MINIAPP_PARSING;
 bool SHOW_RAW_JSON_ON_PARSE_FAIL;
 int MAX_JSON_DISPLAY_LENGTH;
 
-// 重试队列配置
 bool ENABLE_RETRY_QUEUE;
 int MESSAGE_RETRY_MAX_ATTEMPTS;
 int MEDIA_RETRY_MAX_ATTEMPTS;
@@ -183,18 +170,15 @@ int MEDIA_RETRY_BASE_INTERVAL_SEC;
 int RETRY_QUEUE_CHECK_INTERVAL_SEC;
 int MAX_RETRY_INTERVAL_SEC;
 
-// 文件存储路径配置
 std::string BRIDGE_FILES_DIR;
 std::string BRIDGE_FILES_CONTAINER_DIR;
 
-// GIF转换配置
 size_t GIF_MAX_FILE_SIZE = 0; // 0 = unlimited, preserve old lossless default
 int GIF_MAX_DURATION = 5;
 int GIF_MAX_FPS = 0;
 int GIF_MAX_WIDTH = 0;
 int GIF_MAX_COLORS = 256;
 
-// QQ→TG 图片URL预校验配置
 int IMAGE_URL_PROBE_MAX_ATTEMPTS = 3;
 int IMAGE_URL_PROBE_BASE_DELAY_MS = 500;
 int IMAGE_URL_PROBE_TIMEOUT_MS = 5000;
@@ -207,7 +191,6 @@ void load_config() {
     PLUGIN_DEBUG("bridge", "Config file path: {}", loader.get_config_path());
     PLUGIN_DEBUG("bridge", "Config loaded: {}", loader.is_loaded());
 
-    // 加载 Telegram Bot Token
     if (auto telegram_bot =
             loader.get_section("bots.telegram_bot.connection")) {
       TELEGRAM_BOT_TOKEN =
@@ -216,7 +199,6 @@ void load_config() {
           telegram_bot->get("host")->value_or<std::string>("api.telegram.org");
       TELEGRAM_PORT = telegram_bot->get("port")->value_or<uint16_t>(443);
 
-      // 代理配置（可选）
       PROXY_HOST =
           telegram_bot->get("proxy_host")->value_or<std::string>("127.0.0.1");
       PROXY_PORT = telegram_bot->get("proxy_port")->value_or<uint16_t>(20122);
@@ -224,14 +206,12 @@ void load_config() {
           telegram_bot->get("proxy_type")->value_or<std::string>("http");
     }
 
-    // 加载 QQ Bot 配置
     if (auto qq_bot = loader.get_section("bots.qq_bot.connection")) {
       QQ_HOST = qq_bot->get("host")->value_or<std::string>("127.0.0.1");
       QQ_PORT = qq_bot->get("port")->value_or<uint16_t>(3001);
       QQ_ACCESS_TOKEN = qq_bot->get("access_token")->value_or<std::string>("");
     }
 
-    // 设置默认值
     ENABLE_MINIAPP_PARSING = true;
     SHOW_RAW_JSON_ON_PARSE_FAIL = true;
     MAX_JSON_DISPLAY_LENGTH = 2000;
@@ -243,11 +223,10 @@ void load_config() {
     RETRY_QUEUE_CHECK_INTERVAL_SEC = 10;
     MAX_RETRY_INTERVAL_SEC = 300;
 
-    // 从插件配置加载数据库配置
-    // 尝试从 qq_to_tg 或 tg_to_qq 插件配置中读取
+    // database_file / bridge_files_dir may live under either plugin section;
+    // try qq_to_tg first then fall back to tg_to_qq.
     bool config_loaded = false;
 
-    // 先尝试从 qq_to_tg 读取
     // 注意：需要使用 at_path 访问嵌套配置
     if (auto qq_to_tg_config = loader.get_value<std::string>(
             "plugins.qq_to_tg.config.database_file")) {
@@ -259,7 +238,7 @@ void load_config() {
       ENABLE_RETRY_QUEUE = *retry;
     }
 
-    // bridge_files_dir 是必需的配置
+    // bridge_files_dir is required (must come from one of the two sections)
     if (auto dir = loader.get_value<std::string>(
             "plugins.qq_to_tg.config.bridge_files_dir")) {
       BRIDGE_FILES_DIR = *dir;
@@ -275,7 +254,6 @@ void load_config() {
       BRIDGE_FILES_CONTAINER_DIR = *dir;
     }
 
-    // 再尝试从 tg_to_qq 读取
     if (auto db = loader.get_value<std::string>(
             "plugins.tg_to_qq.config.database_file")) {
       if (DATABASE_FILE.empty()) {
@@ -287,7 +265,6 @@ void load_config() {
       ENABLE_RETRY_QUEUE = *retry;
     }
 
-    // 如果 qq_to_tg 没有配置 bridge_files_dir，从 tg_to_qq 读取
     if (!config_loaded) {
       if (auto dir = loader.get_value<std::string>(
               "plugins.tg_to_qq.config.bridge_files_dir")) {
@@ -305,14 +282,12 @@ void load_config() {
       }
     }
 
-    // 如果两个插件配置都没有提供 bridge_files_dir，报错
     if (!config_loaded) {
       throw std::runtime_error(
           "bridge_files_dir must be configured in either "
           "plugins.qq_to_tg.config or plugins.tg_to_qq.config");
     }
 
-    // 加载GIF转换配置（从 tg_to_qq 插件配置读取）
     if (auto val = loader.get_value<int64_t>(
             "plugins.tg_to_qq.config.gif_max_file_size")) {
       GIF_MAX_FILE_SIZE = static_cast<size_t>(*val);
@@ -345,7 +320,6 @@ void load_config() {
 
   } catch (const std::exception &e) {
     PLUGIN_ERROR("bridge", "Failed to load configuration: {}", e.what());
-    // 设置默认值
     TELEGRAM_BOT_TOKEN = "";
     QQ_HOST = "127.0.0.1";
     QQ_PORT = 3001;

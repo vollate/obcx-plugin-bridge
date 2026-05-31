@@ -4,8 +4,6 @@
 
 namespace storage {
 
-// === 消息映射表 DELETE 操作 ===
-
 auto DatabaseManager::delete_message_mapping(
     const std::string &source_platform, const std::string &source_message_id,
     const std::string &target_platform) -> bool {
@@ -42,8 +40,6 @@ auto DatabaseManager::delete_message_mapping(
   }
 }
 
-// === QQ表情包映射表 DELETE 操作 ===
-
 auto DatabaseManager::cleanup_old_image_type_cache(int max_age_days) -> int {
   std::scoped_lock lock(db_mutex_);
 
@@ -53,12 +49,10 @@ auto DatabaseManager::cleanup_old_image_type_cache(int max_age_days) -> int {
   }
 
   try {
-    // 计算截止时间戳（max_age_days 天前）
     auto cutoff_time = std::chrono::system_clock::now() -
                        std::chrono::hours(24 * max_age_days);
     int64_t cutoff_timestamp = time_point_to_timestamp(cutoff_time);
 
-    // 删除过期的缓存记录（以last_used_at为准）
     const char *sql = R"(
       DELETE FROM qq_sticker_mapping
       WHERE last_used_at IS NOT NULL
@@ -92,8 +86,6 @@ auto DatabaseManager::cleanup_old_image_type_cache(int max_age_days) -> int {
     return -1;
   }
 }
-
-// === 消息重试队列表 DELETE 操作 ===
 
 auto DatabaseManager::remove_message_retry(const std::string &source_platform,
                                            const std::string &source_message_id,
@@ -130,8 +122,6 @@ auto DatabaseManager::remove_message_retry(const std::string &source_platform,
 
   return true;
 }
-
-// === 媒体下载重试队列表 DELETE 操作 ===
 
 auto DatabaseManager::remove_media_download_retry(const std::string &platform,
                                                   const std::string &file_id)

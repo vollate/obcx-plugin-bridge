@@ -19,11 +19,8 @@ auto TelegramEventHandler::handle_message_deleted(
     obcx::common::Event event) -> boost::asio::awaitable<void> {
 
   try {
-    // Telegram的删除事件通常也是MessageEvent，但需要特殊的标识
-    // 这里假设删除事件会在context中包含"deleted": true标识
-    // 具体实现需要根据Telegram adapter的事件格式调整
-
-    // 暂时跳过，因为需要先了解Telegram删除事件的具体格式
+    // Telegram的删除事件目前未实现：需要先了解 adapter 暴露的删除事件格式
+    // （例如可能在 context 中通过 "deleted": true 标记）
     PLUGIN_DEBUG("tg_to_qq", "Telegram消息删除事件处理尚未完全实现");
     co_return;
 
@@ -37,7 +34,6 @@ auto TelegramEventHandler::handle_message_edited(
     obcx::common::MessageEvent event) -> boost::asio::awaitable<void> {
 
   try {
-    // 确保是群消息编辑
     if (event.message_type != "group" || !event.group_id.has_value()) {
       co_return;
     }
@@ -46,7 +42,6 @@ auto TelegramEventHandler::handle_message_edited(
     PLUGIN_INFO("tg_to_qq", "处理Telegram群 {} 中消息 {} 的编辑事件",
                 telegram_group_id, event.message_id);
 
-    // 查找对应的QQ消息ID
     auto target_message_id =
         db_manager_->get_target_message_id("telegram", event.message_id, "qq");
 
@@ -59,11 +54,10 @@ auto TelegramEventHandler::handle_message_edited(
     bool recall_success = false;
 
     try {
-      // 先尝试撤回QQ上的原消息
+      // 编辑流程：先撤回旧的QQ消息，再重发编辑后的内容
       auto recall_response =
           co_await qq_bot.delete_message(target_message_id.value());
 
-      // 解析撤回响应
       nlohmann::json recall_json = nlohmann::json::parse(recall_response);
 
       if (recall_json.contains("status") && recall_json["status"] == "ok") {
@@ -84,11 +78,9 @@ auto TelegramEventHandler::handle_message_edited(
                 recall_success ? "成功" : "失败");
 
     try {
-      // 标记此消息为编辑消息，以便forward_function_可以识别并更新映射而非创建新映射
-      // 通过在event.data中添加标记
+      // 标记此消息为编辑消息，让 forward_function_ 走"更新映射"分支而非新建
       const_cast<nlohmann::json &>(event.data)["is_edited_resend"] = true;
 
-      // 使用传入的转发函数重发编辑后的内容
       co_await forward_function_(telegram_bot, qq_bot, event);
 
       PLUGIN_INFO("tg_to_qq", "成功重发编辑后的消息");
@@ -96,7 +88,6 @@ auto TelegramEventHandler::handle_message_edited(
     } catch (const std::exception &e) {
       PLUGIN_ERROR("tg_to_qq", "重发编辑后的消息时出错: {}", e.what());
 
-      // 如果是撤回成功但重发失败的情况，需要恢复映射或处理
       if (recall_success) {
         PLUGIN_WARN("tg_to_qq",
                     "撤回成功但重发失败，原QQ消息已被撤回但新消息发送失败");

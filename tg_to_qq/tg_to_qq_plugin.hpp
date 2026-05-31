@@ -9,7 +9,6 @@
 #include <mutex>
 #include <thread>
 
-// Forward declarations
 namespace bridge {
 class TelegramHandler;
 }
@@ -33,7 +32,6 @@ public:
   TGToQQPlugin();
   ~TGToQQPlugin() override;
 
-  // IPlugin interface
   [[nodiscard]] auto get_name() const -> std::string override;
   [[nodiscard]] auto get_version() const -> std::string override;
   [[nodiscard]] auto get_description() const -> std::string override;
@@ -44,7 +42,6 @@ public:
 private:
   struct RuntimeState;
 
-  // 简化配置
   struct Config {
     std::string database_file = "bridge_bot.db";
     bool enable_retry_queue = false;
@@ -56,15 +53,14 @@ private:
                                 const obcx::common::MessageEvent &event)
       -> boost::asio::awaitable<void>;
 
-  // Configuration
   Config config_;
 
-  // Bridge components
   std::shared_ptr<storage::DatabaseManager> db_manager_;
   std::shared_ptr<bridge::RetryQueueManager> retry_manager_;
   std::shared_ptr<RuntimeState> runtime_state_;
 
-  // Retry queue io_context (non-static to avoid reload issues)
+  // Dedicated io_context for the retry queue, kept independent of the
+  // plugin host's executor so reload cycles don't tear it down mid-flight.
   std::unique_ptr<boost::asio::io_context> retry_io_context_;
   std::unique_ptr<
       boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>

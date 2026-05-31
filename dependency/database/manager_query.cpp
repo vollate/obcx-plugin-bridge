@@ -8,8 +8,6 @@
 
 namespace storage {
 
-// === 消息表 SELECT 操作 ===
-
 auto DatabaseManager::get_message(const std::string &platform,
                                   const std::string &message_id)
     -> std::optional<MessageInfo> {
@@ -77,8 +75,6 @@ auto DatabaseManager::get_message(const std::string &platform,
   return std::nullopt;
 }
 
-// === 用户表 SELECT 操作 ===
-
 auto DatabaseManager::get_user(const std::string &platform,
                                const std::string &user_id,
                                const std::string &group_id)
@@ -137,11 +133,10 @@ auto DatabaseManager::get_user(const std::string &platform,
     if (last_name)
       user_info.last_name = last_name;
 
-    // 读取 last_updated (DATETIME 格式，需要解析)
+    // SQLite CURRENT_TIMESTAMP 是 UTC 时间，格式: "YYYY-MM-DD HH:MM:SS"
     const char *last_updated_str =
         reinterpret_cast<const char *>(sqlite3_column_text(stmt, 8));
     if (last_updated_str) {
-      // SQLite CURRENT_TIMESTAMP 是 UTC 时间，格式: "YYYY-MM-DD HH:MM:SS"
       std::tm tm = {};
       std::istringstream ss(last_updated_str);
       ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
@@ -174,13 +169,11 @@ auto DatabaseManager::query_user_display_name(const std::string &platform,
         "bridge_db",
         "Database entry not found find for platform: {}, group_id {}, id: {}",
         platform, group_id, user_id);
-    // ensure_user_exists(platform, user_id, group_id);
     return std::nullopt;
   }
 
   const auto &user = user_info.value();
 
-  // 检查用户信息是否过期
   auto now = std::chrono::system_clock::now();
   if (now - user.last_updated > kUserInfoExpiration) {
     PLUGIN_DEBUG(
@@ -249,14 +242,11 @@ auto DatabaseManager::query_user_display_name(const std::string &platform,
   return std::nullopt;
 }
 
-// === 消息映射表 SELECT 操作 ===
-
 auto DatabaseManager::get_target_message_id(
     const std::string &source_platform, const std::string &source_message_id,
     const std::string &target_platform) -> std::optional<std::string> {
   std::scoped_lock lock(db_mutex_);
 
-  // 验证参数不为空
   if (source_message_id.empty()) {
     PLUGIN_DEBUG("bridge", "Empty source message ID for query: {}:{} -> {}",
                  source_platform, source_message_id, target_platform);
@@ -302,7 +292,6 @@ auto DatabaseManager::get_source_message_id(
     const std::string &source_platform) -> std::optional<std::string> {
   std::scoped_lock lock(db_mutex_);
 
-  // 验证参数不为空
   if (target_message_id.empty()) {
     PLUGIN_DEBUG("bridge", "Empty target message ID for query: {}:{} <- {}",
                  target_platform, target_message_id, source_platform);
@@ -342,8 +331,6 @@ auto DatabaseManager::get_source_message_id(
   PLUGIN_DEBUG("bridge", "No source message ID found");
   return std::nullopt;
 }
-
-// === 表情包缓存表 SELECT 操作 ===
 
 auto DatabaseManager::get_sticker_cache(const std::string &platform,
                                         const std::string &sticker_hash)
@@ -432,8 +419,6 @@ auto DatabaseManager::get_sticker_cache(const std::string &platform,
   return cache_info;
 }
 
-// === QQ表情包映射表 SELECT 操作 ===
-
 auto DatabaseManager::get_qq_sticker_mapping(const std::string &qq_sticker_hash)
     -> std::optional<QQStickerMapping> {
   std::scoped_lock lock(db_mutex_);
@@ -469,7 +454,6 @@ auto DatabaseManager::get_qq_sticker_mapping(const std::string &qq_sticker_hash)
     mapping.last_used_at =
         timestamp_to_time_point(sqlite3_column_int64(stmt, 4));
 
-    // 处理可选字段
     if (sqlite3_column_type(stmt, 5) != SQLITE_NULL) {
       mapping.is_gif = sqlite3_column_int(stmt, 5) == 1;
     }
@@ -505,7 +489,6 @@ auto DatabaseManager::get_cache_statistics() -> std::string {
   std::ostringstream stats;
 
   try {
-    // 统计总记录数
     const char *count_sql = "SELECT COUNT(*) FROM qq_sticker_mapping";
     sqlite3_stmt *stmt = nullptr;
 
@@ -517,7 +500,6 @@ auto DatabaseManager::get_cache_statistics() -> std::string {
       sqlite3_finalize(stmt);
     }
 
-    // 统计有图片类型信息的记录数
     const char *typed_sql = R"(
       SELECT COUNT(*) FROM qq_sticker_mapping
       WHERE is_gif IS NOT NULL
@@ -531,7 +513,6 @@ auto DatabaseManager::get_cache_statistics() -> std::string {
       sqlite3_finalize(stmt);
     }
 
-    // 统计GIF和非GIF的分布
     const char *gif_sql = R"(
       SELECT
         SUM(CASE WHEN is_gif = 1 THEN 1 ELSE 0 END) as gif_count,
@@ -550,7 +531,6 @@ auto DatabaseManager::get_cache_statistics() -> std::string {
       sqlite3_finalize(stmt);
     }
 
-    // 统计最近检测时间
     const char *recent_sql = R"(
       SELECT COUNT(*) FROM qq_sticker_mapping
       WHERE last_checked_at IS NOT NULL
@@ -576,8 +556,6 @@ auto DatabaseManager::get_cache_statistics() -> std::string {
 
   return stats.str();
 }
-
-// === 消息重试队列表 SELECT 操作 ===
 
 auto DatabaseManager::get_pending_message_retries(int limit)
     -> std::vector<MessageRetryInfo> {
@@ -648,8 +626,6 @@ auto DatabaseManager::get_pending_message_retries(int limit)
   return retries;
 }
 
-// === 媒体下载重试队列表 SELECT 操作 ===
-
 auto DatabaseManager::get_pending_media_download_retries(int limit)
     -> std::vector<MediaDownloadRetryInfo> {
   std::scoped_lock lock(db_mutex_);
@@ -710,8 +686,6 @@ auto DatabaseManager::get_pending_media_download_retries(int limit)
   sqlite3_finalize(stmt);
   return retries;
 }
-
-// === 平台心跳表 SELECT 操作 ===
 
 auto DatabaseManager::get_platform_heartbeat(const std::string &platform)
     -> std::optional<PlatformHeartbeatInfo> {

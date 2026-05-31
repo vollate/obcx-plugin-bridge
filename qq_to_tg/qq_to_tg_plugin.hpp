@@ -73,15 +73,13 @@ private:
                                const obcx::common::NoticeEvent &event)
       -> boost::asio::awaitable<void>;
 
-  // Configuration
   Config config_;
 
-  // Bridge components
   std::shared_ptr<storage::DatabaseManager> db_manager_;
   std::shared_ptr<bridge::RetryQueueManager> retry_manager_;
   std::shared_ptr<RuntimeState> runtime_state_;
 
-  // Retry queue io_context (non-static to avoid reload issues)
+  // 重试队列拥有自己的 io_context（非 static），插件热重载时不会与旧实例冲突。
   std::unique_ptr<boost::asio::io_context> retry_io_context_;
   std::unique_ptr<
       boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>

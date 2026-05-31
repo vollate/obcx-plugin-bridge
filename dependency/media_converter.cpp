@@ -19,7 +19,6 @@ auto MediaConverter::convert_webm_to_gif(const std::string &webm_path,
   try {
     PLUGIN_INFO(LOG_TAG, "开始WebM到GIF转换: {} -> {}", webm_path, output_path);
 
-    // Clamp max_colors to valid range
     if (max_colors < 2) {
       max_colors = 2;
     }
@@ -27,28 +26,26 @@ auto MediaConverter::convert_webm_to_gif(const std::string &webm_path,
       max_colors = 256;
     }
 
-    // Build the ffmpeg filter chain
     std::ostringstream filter;
 
-    // Step 1: optional fps limit (must come before split)
+    // fps filter must come before split (both palette branches need same fps)
     if (max_fps > 0) {
       filter << "fps=fps=" << max_fps << ",";
     }
 
-    // Step 2: optional scale
     if (max_width > 0) {
       filter << "scale=" << max_width
              << ":-1:flags=lanczos:force_original_aspect_ratio=decrease,";
     }
 
-    // Step 3: palette generation and application
+    // palettegen builds an optimal palette (reserve_transparent keeps alpha),
+    // paletteuse then maps frames onto it
     filter << "split[s0][s1];"
            << "[s0]palettegen=reserve_transparent=on"
            << ":max_colors=" << max_colors << ":stats_mode=full[p];"
            << "[s1][p]paletteuse=dither=bayer"
            << ":bayer_scale=5:diff_mode=rectangle";
 
-    // Assemble the full command
     std::ostringstream cmd;
     cmd << "ffmpeg -i \"" << webm_path << "\" "
         << "-t " << max_duration << " "

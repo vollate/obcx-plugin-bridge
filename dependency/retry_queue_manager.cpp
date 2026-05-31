@@ -53,7 +53,6 @@ void RetryQueueManager::stop() {
     retry_timer_->cancel();
   }
 
-  // Clear all pending retries
   {
     std::scoped_lock lock(message_retry_mutex_);
     size_t msg_count = message_retry_queue_.size();
@@ -84,7 +83,7 @@ void RetryQueueManager::add_message_retry(
   entry.source_platform = source_platform;
   entry.target_platform = target_platform;
   entry.source_message_id = source_message_id;
-  entry.message = message; // Store directly, no serialization
+  entry.message = message; // store directly; queue is in-memory only
   entry.group_id = group_id;
   entry.source_group_id = source_group_id;
   entry.target_topic_id = target_topic_id;
@@ -151,19 +150,16 @@ void RetryQueueManager::register_media_download_callback(
 auto RetryQueueManager::process_retry_queues() -> boost::asio::awaitable<void> {
   while (running_) {
     try {
-      // Process message retries
       co_await process_message_retries();
       if (!running_) {
         break;
       }
 
-      // Process media download retries
       co_await process_media_download_retries();
       if (!running_) {
         break;
       }
 
-      // Wait for next check interval
       retry_timer_->expires_after(
           std::chrono::seconds(RETRY_QUEUE_CHECK_INTERVAL_SECONDS));
       co_await retry_timer_->async_wait(boost::asio::use_awaitable);
@@ -179,7 +175,6 @@ auto RetryQueueManager::process_retry_queues() -> boost::asio::awaitable<void> {
                    e.what());
     }
 
-    // Brief wait before continuing on error
     if (running_) {
       try {
         retry_timer_->expires_after(std::chrono::seconds(5));
@@ -197,7 +192,6 @@ auto RetryQueueManager::process_message_retries()
     -> boost::asio::awaitable<void> {
   auto now = std::chrono::system_clock::now();
 
-  // Get entries ready for retry
   std::vector<MessageRetryEntry> ready_entries;
   {
     std::scoped_lock lock(message_retry_mutex_);
@@ -220,12 +214,11 @@ auto RetryQueueManager::process_message_retries()
 
   for (auto &entry : ready_entries) {
     try {
-      // Find callback for target platform
       auto callback_it = message_send_callbacks_.find(entry.target_platform);
       if (callback_it == message_send_callbacks_.end()) {
         PLUGIN_WARN("bridge", "No callback registered for target platform: {}",
                     entry.target_platform);
-        // Put back in queue for later
+        // No handler yet - keep entry alive so it can be retried later
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
         std::scoped_lock lock(message_retry_mutex_);
@@ -233,7 +226,6 @@ auto RetryQueueManager::process_message_retries()
         continue;
       }
 
-      // Try to send message
       PLUGIN_INFO("bridge", "Retrying message send: {} -> {} (attempt {})",
                   entry.source_platform, entry.target_platform,
                   entry.retry_count + 1);
@@ -241,12 +233,11 @@ auto RetryQueueManager::process_message_retries()
       auto result = co_await callback_it->second(entry, entry.message);
 
       if (result.has_value()) {
-        // Success - don't re-add to queue
+        // Success: do not re-add to queue
         PLUGIN_INFO("bridge", "Message retry successful: {} -> {} (msg_id: {})",
                     entry.source_platform, entry.target_platform,
                     result.value());
       } else {
-        // Failed - check if we should retry again
         entry.retry_count++;
 
         if (entry.retry_count >= entry.max_retry_count) {
@@ -254,9 +245,8 @@ auto RetryQueueManager::process_message_retries()
                       "Message retry failed after {} attempts: {} -> {}",
                       entry.max_retry_count, entry.source_platform,
                       entry.target_platform);
-          // Don't re-add - give up
+          // Give up: do not re-add
         } else if (running_) {
-          // Re-add with updated retry time
           entry.next_retry_at = calculate_next_retry_time(
               entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
           PLUGIN_DEBUG("bridge",
@@ -273,7 +263,6 @@ auto RetryQueueManager::process_message_retries()
 
     } catch (const std::exception &e) {
       PLUGIN_ERROR("bridge", "Error processing message retry: {}", e.what());
-      // Re-add to queue on error
       entry.retry_count++;
       if (running_ && entry.retry_count < entry.max_retry_count) {
         entry.next_retry_at = calculate_next_retry_time(
@@ -289,7 +278,6 @@ auto RetryQueueManager::process_media_download_retries()
     -> boost::asio::awaitable<void> {
   auto now = std::chrono::system_clock::now();
 
-  // Get entries ready for retry
   std::vector<MediaDownloadRetryEntry> ready_entries;
   {
     std::scoped_lock lock(media_retry_mutex_);
@@ -338,13 +326,13 @@ auto RetryQueueManager::process_media_download_retries()
         entry.retry_count++;
 
         if (entry.retry_count >= entry.max_retry_count) {
-          // Try direct connection if proxy failed
+          // Proxy exhausted: fall back to direct connection with fresh count
           if (running_ && entry.use_proxy) {
             PLUGIN_INFO("bridge",
                         "Proxy download failed, trying direct connection: {}",
                         entry.file_id);
             entry.use_proxy = false;
-            entry.retry_count = 0; // Reset count for direct connection
+            entry.retry_count = 0;
             entry.next_retry_at = calculate_next_retry_time(
                 0, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
             std::scoped_lock lock(media_retry_mutex_);

@@ -6,8 +6,6 @@
 
 namespace storage {
 
-// === 消息表 INSERT 操作 ===
-
 auto DatabaseManager::save_message(const MessageInfo &message_info) -> bool {
   std::scoped_lock lock(db_mutex_);
 
@@ -26,7 +24,6 @@ auto DatabaseManager::save_message(const MessageInfo &message_info) -> bool {
     return false;
   }
 
-  // 绑定参数
   sqlite3_bind_text(stmt, 1, message_info.platform.c_str(), -1, SQLITE_STATIC);
   sqlite3_bind_text(stmt, 2, message_info.message_id.c_str(), -1,
                     SQLITE_STATIC);
@@ -84,7 +81,6 @@ auto DatabaseManager::save_message_from_event(
   msg_info.content = event.raw_message;
   msg_info.timestamp = event.time;
 
-  // 将消息序列化为JSON存储
   nlohmann::json raw_json;
   raw_json["type"] = event.type;
   raw_json["post_type"] = event.post_type;
@@ -101,12 +97,10 @@ auto DatabaseManager::save_message_from_event(
 
   msg_info.raw_message = raw_json.dump();
 
-  // 确定消息类型
   if (!event.message.empty()) {
     msg_info.message_type = event.message[0].type;
   }
 
-  // 检查是否有回复消息
   for (const auto &segment : event.message) {
     if (segment.type == "reply") {
       msg_info.reply_to_message_id =
@@ -120,8 +114,6 @@ auto DatabaseManager::save_message_from_event(
 
   return save_message(msg_info);
 }
-
-// === 用户表 INSERT 操作 ===
 
 auto DatabaseManager::save_or_update_user(const UserInfo &user_info,
                                           bool force_update) -> bool {
@@ -212,10 +204,9 @@ auto DatabaseManager::save_user_from_event(
   user_info.group_id = (platform == "qq") ? event.group_id.value_or("") : "";
   user_info.last_updated = std::chrono::system_clock::now();
 
-  // 尝试从event.data中提取更多用户信息
   if (event.data.is_object()) {
     if (platform == "telegram") {
-      // 对于Telegram，从from字段提取用户信息
+      // Telegram messages carry user info under `from`
       if (event.data.contains("from") && event.data["from"].is_object()) {
         auto from = event.data["from"];
         if (from.contains("username") && from["username"].is_string()) {
@@ -229,7 +220,7 @@ auto DatabaseManager::save_user_from_event(
         }
       }
     } else if (platform == "qq") {
-      // 对于QQ，从sender字段提取用户信息
+      // QQ messages carry user info under `sender`
       if (event.data.contains("sender") && event.data["sender"].is_object()) {
         auto sender = event.data["sender"];
         if (sender.contains("nickname") && sender["nickname"].is_string()) {
@@ -250,9 +241,6 @@ auto DatabaseManager::save_user_from_event(
   if (user_info.nickname.empty() && user_info.username.empty() &&
       user_info.first_name.empty() && user_info.last_name.empty()) {
     return true; // 静默跳过，不是错误
-
-    // return ensure_user_exists(user_info.platform, user_info.user_id,
-    // user_info.group_id);
   }
 
   return save_or_update_user(user_info);
@@ -295,13 +283,10 @@ auto DatabaseManager::ensure_user_exists(const std::string &platform,
   return true;
 }
 
-// === 消息映射表 INSERT 操作 ===
-
 auto DatabaseManager::add_message_mapping(const MessageMapping &mapping)
     -> bool {
   std::scoped_lock lock(db_mutex_);
 
-  // 验证消息ID不为空
   if (mapping.source_message_id.empty() || mapping.target_message_id.empty()) {
     PLUGIN_ERROR(
         "bridge",
@@ -351,8 +336,6 @@ auto DatabaseManager::add_message_mapping(const MessageMapping &mapping)
                mapping.target_platform, mapping.target_message_id);
   return true;
 }
-
-// === 表情包缓存表 INSERT 操作 ===
 
 auto DatabaseManager::save_sticker_cache(const StickerCacheInfo &cache_info)
     -> bool {
@@ -440,8 +423,6 @@ auto DatabaseManager::save_sticker_cache(const StickerCacheInfo &cache_info)
   return true;
 }
 
-// === QQ表情包映射表 INSERT 操作 ===
-
 auto DatabaseManager::save_qq_sticker_mapping(const QQStickerMapping &mapping)
     -> bool {
   std::scoped_lock lock(db_mutex_);
@@ -470,7 +451,6 @@ auto DatabaseManager::save_qq_sticker_mapping(const QQStickerMapping &mapping)
   sqlite3_bind_int64(stmt, 4, time_point_to_timestamp(mapping.created_at));
   sqlite3_bind_int64(stmt, 5, time_point_to_timestamp(mapping.last_used_at));
 
-  // 处理可选字段
   if (mapping.is_gif.has_value()) {
     sqlite3_bind_int(stmt, 6, mapping.is_gif.value() ? 1 : 0);
   } else {
@@ -502,8 +482,6 @@ auto DatabaseManager::save_qq_sticker_mapping(const QQStickerMapping &mapping)
 
   return true;
 }
-
-// === 消息重试队列表 INSERT 操作 ===
 
 auto DatabaseManager::add_message_retry(const MessageRetryInfo &retry_info)
     -> bool {
@@ -559,8 +537,6 @@ auto DatabaseManager::add_message_retry(const MessageRetryInfo &retry_info)
 
   return true;
 }
-
-// === 媒体下载重试队列表 INSERT 操作 ===
 
 auto DatabaseManager::add_media_download_retry(
     const MediaDownloadRetryInfo &retry_info) -> bool {

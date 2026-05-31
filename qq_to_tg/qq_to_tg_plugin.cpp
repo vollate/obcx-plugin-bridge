@@ -42,16 +42,13 @@ auto QQToTGPlugin::initialize() -> bool {
   try {
     PLUGIN_INFO(get_name(), "Initializing QQ to TG Plugin...");
 
-    // Initialize bridge configuration system
     bridge::initialize_config();
 
-    // Load configuration
     if (!load_configuration()) {
       PLUGIN_ERROR(get_name(), "Failed to load plugin configuration");
       return false;
     }
 
-    // Initialize database manager (singleton)
     db_manager_ = storage::DatabaseManager::instance(config_.database_file);
     if (!db_manager_ || !db_manager_->initialize()) {
       PLUGIN_ERROR(get_name(), "Failed to initialize database");
@@ -61,28 +58,24 @@ auto QQToTGPlugin::initialize() -> bool {
     runtime_state_ = std::make_shared<RuntimeState>();
     runtime_state_->db_manager = db_manager_;
 
-    // Initialize retry queue manager if enabled (in-memory, non-persistent)
+    // Retry queue is in-memory (non-persistent); each plugin instance gets its
+    // own io_context to avoid collisions on hot-reload.
     if (config_.enable_retry_queue) {
-      // Create a dedicated io_context for retry queue (non-static)
       retry_io_context_ = std::make_unique<boost::asio::io_context>();
 
-      // Create work guard to keep io_context running
       retry_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
           boost::asio::io_context::executor_type>>(
           retry_io_context_->get_executor());
 
-      // Create retry manager
       retry_manager_ =
           std::make_shared<bridge::RetryQueueManager>(*retry_io_context_);
 
-      // Start io_context in a dedicated thread
       retry_io_thread_ = std::make_unique<std::thread>([this]() -> void {
         PLUGIN_INFO(get_name(), "Retry queue io_context thread started");
         retry_io_context_->run();
         PLUGIN_INFO(get_name(), "Retry queue io_context thread stopped");
       });
 
-      // Register callback for sending messages to Telegram
       auto runtime_state = runtime_state_;
       retry_manager_->register_message_send_callback(
           "telegram",
@@ -93,7 +86,6 @@ auto QQToTGPlugin::initialize() -> bool {
               co_return std::nullopt;
             }
 
-            // Find Telegram bot
             obcx::core::TGBot *tg_bot = nullptr;
             {
               auto [lock, bots] = obcx::interface::IPlugin::get_bots();
@@ -122,7 +114,6 @@ auto QQToTGPlugin::initialize() -> bool {
                     retry_info.group_id, message);
               }
 
-              // Parse response to get message_id
               auto json_response = nlohmann::json::parse(response);
               if (json_response.contains("result") &&
                   json_response["result"].contains("message_id")) {
@@ -139,25 +130,19 @@ auto QQToTGPlugin::initialize() -> bool {
           });
       PLUGIN_INFO(get_name(), "Registered Telegram message retry callback");
 
-      // Start the retry manager processing loop
       retry_manager_->start();
       PLUGIN_INFO(get_name(), "Retry queue manager started");
     }
 
-    // Create QQHandler instance
     runtime_state_->qq_handler =
         std::make_shared<bridge::QQHandler>(db_manager_, retry_manager_);
 
-    // Register event callbacks
     try {
-      // 获取所有bot实例的带锁访问
       auto [lock, bots] = get_bots();
 
-      // 找到QQ bot并注册消息回调和心跳回调
       for (auto &bot_ptr : bots) {
         if (auto *qq_bot = dynamic_cast<obcx::core::QQBot *>(bot_ptr.get())) {
           auto runtime_state = runtime_state_;
-          // 注册消息事件回调
           qq_bot->on_event<obcx::common::MessageEvent>(
               [runtime_state](obcx::core::IBot &bot,
                               const obcx::common::MessageEvent &event)
@@ -167,7 +152,6 @@ auto QQToTGPlugin::initialize() -> bool {
           PLUGIN_INFO(get_name(),
                       "Registered QQ message callback for QQ to TG plugin");
 
-          // 注册心跳事件回调
           qq_bot->on_event<obcx::common::HeartbeatEvent>(
               [runtime_state](obcx::core::IBot &bot,
                               const obcx::common::HeartbeatEvent &event)
@@ -177,7 +161,6 @@ auto QQToTGPlugin::initialize() -> bool {
           PLUGIN_INFO(get_name(),
                       "Registered QQ heartbeat callback for QQ to TG plugin");
 
-          // 注册通知事件回调（用于处理撤回消息等）
           qq_bot->on_event<obcx::common::NoticeEvent>(
               [runtime_state](obcx::core::IBot &bot,
                               const obcx::common::NoticeEvent &event)
@@ -208,8 +191,6 @@ auto QQToTGPlugin::initialize() -> bool {
 void QQToTGPlugin::deinitialize() {
   try {
     PLUGIN_INFO(get_name(), "Deinitializing QQ to TG Plugin...");
-    // Note: Bot callbacks will be automatically cleaned up when plugin is
-    // unloaded If needed, specific cleanup can be added here
     PLUGIN_INFO(get_name(), "QQ to TG Plugin deinitialized successfully");
   } catch (const std::exception &e) {
     PLUGIN_ERROR(get_name(),
@@ -230,16 +211,15 @@ void QQToTGPlugin::shutdown() {
       runtime_state_->db_manager.reset();
     }
 
-    // Stop retry manager if running (this cancels any pending async operations)
+    // Stop retry manager first so any in-flight retry coroutines are cancelled
+    // before we drop the io_context.
     if (retry_manager_) {
       retry_manager_->stop();
       retry_manager_.reset();
     }
 
-    // Release work guard to allow io_context to stop
     retry_work_guard_.reset();
 
-    // Stop io_context and join the thread
     if (retry_io_context_) {
       retry_io_context_->stop();
     }
@@ -249,7 +229,8 @@ void QQToTGPlugin::shutdown() {
     retry_io_thread_.reset();
     retry_io_context_.reset();
 
-    // Don't reset db_manager_ - it's a singleton shared with other plugins
+    // db_manager_ is a singleton shared with other plugins — drop our handle
+    // but don't destroy the underlying instance.
     db_manager_ = nullptr;
 
     PLUGIN_INFO(get_name(), "QQ to TG Plugin shutdown complete");
@@ -267,7 +248,6 @@ auto QQToTGPlugin::handle_qq_message(std::shared_ptr<RuntimeState> state,
     co_return;
   }
 
-  // 确保这是QQ bot的消息
   if (auto *qq_bot = dynamic_cast<obcx::core::QQBot *>(&bot)) {
     PLUGIN_INFO("qq_to_tg",
                 "QQ to TG Plugin: Processing QQ message from group {}",
@@ -330,7 +310,6 @@ auto QQToTGPlugin::handle_qq_heartbeat(
     co_return;
   }
 
-  // 确保这是QQ bot的心跳
   if (auto *qq_bot = dynamic_cast<obcx::core::QQBot *>(&bot)) {
     std::shared_ptr<storage::DatabaseManager> db_manager;
     {
@@ -338,7 +317,6 @@ auto QQToTGPlugin::handle_qq_heartbeat(
       db_manager = state->db_manager;
     }
 
-    // 更新QQ平台的心跳时间
     if (db_manager) {
       db_manager->update_platform_heartbeat("qq",
                                             std::chrono::system_clock::now());
@@ -358,7 +336,6 @@ auto QQToTGPlugin::handle_qq_notice(std::shared_ptr<RuntimeState> state,
     co_return;
   }
 
-  // 确保这是QQ bot的通知
   if (auto *qq_bot = dynamic_cast<obcx::core::QQBot *>(&bot)) {
     PLUGIN_DEBUG("qq_to_tg", "QQ to TG Plugin: Processing QQ notice, type: {}",
                  event.notice_type);
@@ -396,7 +373,6 @@ auto QQToTGPlugin::handle_qq_notice(std::shared_ptr<RuntimeState> state,
       }
 
       if (tg_bot && qq_handler) {
-        // 将 NoticeEvent 转换为 Event variant 并传递给 handler
         obcx::common::Event event_variant = event;
         co_await qq_handler->handle_recall_event(*tg_bot, *qq_bot,
                                                  event_variant);
@@ -414,7 +390,6 @@ auto QQToTGPlugin::handle_qq_notice(std::shared_ptr<RuntimeState> state,
 
 auto QQToTGPlugin::load_configuration() -> bool {
   try {
-    // 从插件配置加载设置
     config_.database_file = get_config_value<std::string>("database_file")
                                 .value_or("bridge_bot.db");
     config_.enable_retry_queue =
@@ -433,5 +408,4 @@ auto QQToTGPlugin::load_configuration() -> bool {
 
 } // namespace plugins
 
-// Export the plugin
 OBCX_PLUGIN_EXPORT(plugins::QQToTGPlugin)

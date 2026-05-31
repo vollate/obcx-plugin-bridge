@@ -16,19 +16,16 @@ auto MediaProcessor::get_qq_file_info(const std::string &file_url,
                                       const std::string &file_type)
     -> std::pair<std::string, std::string> {
   try {
-    // 从URL中提取文件名
     std::string filename = "file";
     size_t pos = file_url.find_last_of('/');
     if (pos != std::string::npos && pos + 1 < file_url.length()) {
       filename = file_url.substr(pos + 1);
-      // 移除查询参数
       size_t query_pos = filename.find('?');
       if (query_pos != std::string::npos) {
         filename = filename.substr(0, query_pos);
       }
     }
 
-    // 根据文件类型添加扩展名
     if (filename.find('.') == std::string::npos) {
       if (file_type == "photo" || file_type == "image") {
         filename += ".jpg";
@@ -67,7 +64,6 @@ auto MediaProcessor::cleanup_media_file(const std::string &file_path) -> void {
 }
 
 auto MediaProcessor::get_path_manager() -> const PathManager & {
-  // 使用单例模式，延迟初始化
   static std::unique_ptr<PathManager> path_manager_instance;
   static std::once_flag init_flag;
 
@@ -91,12 +87,10 @@ auto MediaProcessor::is_gif_content_type(const std::string &content_type)
     return false;
   }
 
-  // 转换为小写比较
   std::string lower_content_type = content_type;
   std::ranges::transform(lower_content_type, lower_content_type.begin(),
                          ::tolower);
 
-  // 检测GIF类型
   bool is_gif = (lower_content_type == "image/gif" ||
                  lower_content_type == "image/x-gif" ||
                  lower_content_type.find("gif") != std::string::npos);
@@ -111,7 +105,6 @@ auto MediaProcessor::detect_mime_type_from_content(const std::string &content)
     return "";
   }
 
-  // 检查文件头标识（Magic Numbers）
   const auto *data = reinterpret_cast<const unsigned char *>(content.data());
   size_t size = content.size();
 
@@ -146,7 +139,6 @@ auto MediaProcessor::detect_mime_type_from_content(const std::string &content)
     return "image/bmp";
   }
 
-  // 默认返回空字符串表示未知类型
   return "";
 }
 

@@ -32,7 +32,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
                                     obcx::core::IBot &qq_bot,
                                     obcx::common::MessageEvent event)
     -> boost::asio::awaitable<void> {
-  // 确保是群消息
   if (event.message_type != "group" || !event.group_id.has_value()) {
     co_return;
   }
@@ -41,7 +40,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
   std::string telegram_group_id;
   const GroupBridgeConfig *bridge_config = nullptr;
 
-  // 查找对应的Telegram群ID、topic ID和桥接配置
   auto [tg_id, topic_id] = get_tg_group_and_topic_id(qq_group_id);
   PLUGIN_DEBUG("qq_to_tg", "QQ群 {} 查找结果: TG群={}, topic_id={}",
                qq_group_id, tg_id, topic_id);
@@ -59,7 +57,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     co_return;
   }
 
-  // 检查是否启用QQ到TG转发
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
     if (!bridge_config->enable_qq_to_tg) {
       PLUGIN_DEBUG("qq_to_tg", "QQ群 {} 到Telegram群 {} 的转发已禁用，跳过",
@@ -67,7 +64,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
       co_return;
     }
   } else if (bridge_config->mode == BridgeMode::TOPIC_TO_GROUP) {
-    // Topic模式：需要检查具体的topic配置
     const TopicBridgeConfig *topic_config =
         bridge::get_topic_config(telegram_group_id, topic_id);
     if (!topic_config || !topic_config->enable_qq_to_tg) {
@@ -77,7 +73,8 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     }
   }
 
-  // 检查是否是 /checkalive 命令
+  // /checkalive 是唯一会被转发逻辑短路成回应的命令；其它 /
+  // 开头的消息一律不转发。
   if (event.raw_message.starts_with("/checkalive")) {
     PLUGIN_INFO("qq_to_tg", "检测到 /checkalive 命令，处理存活检查请求");
     co_await command_handler_->handle_checkalive_command(
@@ -85,20 +82,18 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     co_return;
   }
 
-  // 忽略其他所有 / 开头的命令，不转发
   if (event.raw_message.starts_with("/")) {
     PLUGIN_DEBUG("qq_to_tg", "忽略未处理的命令消息，不转发: {}",
                  event.raw_message.substr(0, 20));
     co_return;
   }
 
-  // 检查是否是回环消息（从Telegram转发过来的）
+  // 跳过从 Telegram 转发回来的回环消息
   if (event.raw_message.starts_with("[Telegram] ")) {
     PLUGIN_DEBUG("qq_to_tg", "检测到可能是回环的Telegram消息，跳过转发");
     co_return;
   }
 
-  // 检查消息是否已转发（避免重复）
   if (db_manager_->get_target_message_id("qq", event.message_id, "telegram")
           .has_value()) {
     PLUGIN_DEBUG("qq_to_tg", "QQ消息 {} 已转发到Telegram，跳过重复处理",
@@ -110,30 +105,24 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
               telegram_group_id);
 
   try {
-    // 保存/更新用户信息
     db_manager_->save_user_from_event(event, "qq");
-    // 保存消息信息
     db_manager_->save_message_from_event(event, "qq");
 
-    // 创建转发消息，保留原始消息的所有段（包括图片）
     obcx::common::Message message_to_send;
 
-    // 格式化发送者信息并获取显示名称
     std::string sender_display_name =
         co_await message_formatter_->format_sender_info(
             qq_bot, event, bridge_config, qq_group_id, telegram_group_id,
             topic_id, message_to_send);
 
-    // 处理回复消息
     co_await message_formatter_->format_reply_message(event, message_to_send);
 
-    // 先收集消息中的所有图片，用于批量处理
     std::vector<obcx::common::MessageSegment> image_segments;
     std::vector<obcx::common::MessageSegment> other_segments;
 
     for (const auto &segment : event.message) {
       if (segment.type == "reply") {
-        continue; // 跳过reply段，已经处理过了
+        continue; // reply 段已经在 format_reply_message 里消费过了
       }
 
       if (segment.type == "image") {
@@ -143,19 +132,17 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
       }
     }
 
-    // 尝试批量处理图片（如果有多张图片）
+    // 多张图片走 sendMediaGroup；单张或失败时退回到逐段发送（下方循环）。
     bool media_group_sent = co_await message_formatter_->send_media_group(
         telegram_bot, image_segments, other_segments, telegram_group_id,
         topic_id, sender_display_name, bridge_config, message_to_send, event);
 
     if (media_group_sent) {
-      co_return; // MediaGroup发送成功，直接返回
+      co_return;
     }
 
-    // 用于收集下载的临时文件路径，以便发送后清理
     std::vector<std::string> temp_files_to_cleanup;
 
-    // 处理单张图片或MediaGroup发送失败时的回退处理
     for (const auto &img_segment : image_segments) {
       auto converted_segment =
           co_await media_processor_->process_qq_media_segment(
@@ -168,9 +155,7 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
       }
     }
 
-    // 处理其他类型的消息段
     for (const auto &segment : other_segments) {
-      // 特殊处理合并转发消息
       if (segment.type == "forward") {
         co_await message_formatter_->process_forward_message(
             qq_bot, telegram_bot, segment, telegram_group_id, topic_id,
@@ -178,14 +163,12 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
         continue;
       }
 
-      // 处理单个node消息段（自定义转发节点）
       if (segment.type == "node") {
         co_await message_formatter_->process_node_message(segment,
                                                           message_to_send);
         continue;
       }
 
-      // 处理其他消息类型
       auto converted_segment =
           co_await media_processor_->process_qq_media_segment(
               qq_bot, telegram_bot, segment, event, telegram_group_id, topic_id,
@@ -196,20 +179,17 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
       }
     }
 
-    // 发送到Telegram群或特定topic（支持重试）
     std::optional<std::string> telegram_message_id;
     std::string failure_reason;
 
     try {
       std::string response;
       if (topic_id == -1) {
-        // 群组模式：发送到群组
         response = co_await telegram_bot.send_group_message(telegram_group_id,
                                                             message_to_send);
         PLUGIN_DEBUG("qq_to_tg", "群组模式：QQ群 {} 转发到Telegram群 {}",
                      qq_group_id, telegram_group_id);
       } else {
-        // Topic模式：发送到特定topic
         auto &tg_bot = dynamic_cast<obcx::core::TGBot &>(telegram_bot);
         response = co_await tg_bot.send_topic_message(
             telegram_group_id, topic_id, message_to_send);
@@ -218,7 +198,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
                      qq_group_id, telegram_group_id, topic_id);
       }
 
-      // 解析响应获取Telegram消息ID
       if (!response.empty()) {
         PLUGIN_DEBUG("qq_to_tg", "Telegram API响应: {}", response);
         nlohmann::json response_json = nlohmann::json::parse(response);
@@ -228,7 +207,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
           telegram_message_id = std::to_string(
               response_json["result"]["message_id"].get<int64_t>());
 
-          // 记录消息ID映射
           storage::MessageMapping mapping;
           mapping.source_platform = "qq";
           mapping.source_message_id = event.message_id;
@@ -255,7 +233,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
       PLUGIN_WARN("qq_to_tg", "发送QQ消息到Telegram时出错: {}", e.what());
     }
 
-    // 如果发送失败且启用了重试队列，添加到重试队列
     if (!telegram_message_id.has_value() && retry_manager_ &&
         config::ENABLE_RETRY_QUEUE) {
       PLUGIN_INFO("qq_to_tg", "消息发送失败，添加到重试队列: {} -> {}",
@@ -265,11 +242,9 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
           telegram_group_id, qq_group_id, topic_id,
           config::MESSAGE_RETRY_MAX_ATTEMPTS, failure_reason);
     } else if (!telegram_message_id.has_value()) {
-      // 如果没有启用重试或没有重试管理器，记录错误
       PLUGIN_ERROR("qq_to_tg", "消息发送失败且未启用重试: {}", failure_reason);
     }
 
-    // 清理临时文件
     for (const std::string &temp_file : temp_files_to_cleanup) {
       MediaProcessor::cleanup_media_file(temp_file);
     }

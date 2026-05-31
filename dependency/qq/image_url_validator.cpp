@@ -36,11 +36,8 @@ struct ParsedUrl {
   std::string path; // 始终以 '/' 开头
 };
 
-/**
- * @brief 把一个 http(s):// 链接拆成 host / path。
- *
- * 不做 query/fragment 拆分——直接把 host 之后所有内容作为 path 传给 HttpClient。
- */
+// 拆 http(s):// 链接为 host / path。不做 query/fragment 拆分——
+// host 之后所有内容（含 query）一律作为 path 传给 HttpClient。
 auto parse_url(const std::string &url) -> ParsedUrl {
   ParsedUrl p;
   if (url.starts_with("https://")) {
@@ -48,7 +45,7 @@ auto parse_url(const std::string &url) -> ParsedUrl {
   } else if (url.starts_with("http://")) {
     p.use_ssl = false;
   } else {
-    return p; // 不支持的 scheme
+    return p;
   }
 
   const std::size_t scheme_end = url.find("://");
@@ -69,15 +66,10 @@ auto parse_url(const std::string &url) -> ParsedUrl {
   return p;
 }
 
-/**
- * @brief 用 Range: bytes=0-0 请求探测 URL 是否可达。
- *
- * 选用 Range 而不是 HEAD，是因为部分 QQ 镜像服务器对 HEAD 返回 405；
- * Range: bytes=0-0 在所有常见图床上都能稳定工作，且只下载 1 字节，开销极低。
- *
- * 这里每次探测都创建临时的 HttpClient（直连，无代理），与 detect_gif_format
- * 中的做法一致：QQ 图片下载本身就不应走 Telegram 代理。
- */
+// 用 Range: bytes=0-0 探测 URL 是否可达：部分 QQ 镜像服务器对 HEAD 返回 405，
+// 但 Range: bytes=0-0 在所有常见图床上都能稳定工作，且只下载 1 字节。
+// 每次都创建临时直连 HttpClient（无代理），与 detect_gif_format 一致——
+// QQ 图片下载不应走 Telegram 代理。
 auto probe_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
     -> asio::awaitable<bool> {
   asio::io_context temp_ioc;
@@ -106,13 +98,8 @@ auto probe_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
       resp.status_code == kHttpStatusPartialContent;
 }
 
-/**
- * @brief 单 URL 的异步指数退避探测。
- *
- * 退避序列：base, base*2, base*4, ...，最大重试次数取自 config。
- * 任一次成功即返回 true；全部失败返回 false 并在 fail_reason
- * 里记录最后一次的错误。
- */
+// 单 URL 的指数退避探测：base, base*2, base*4 … 最多 max_attempts 次。
+// 任一次成功即返回 true；全部失败返回 false 并把最后一次错误写入 fail_reason。
 auto probe_with_backoff(std::string url, std::string &fail_reason)
     -> asio::awaitable<bool> {
   const int max_attempts = std::max(1, config::IMAGE_URL_PROBE_MAX_ATTEMPTS);
@@ -140,13 +127,12 @@ auto probe_with_backoff(std::string url, std::string &fail_reason)
       fail_reason = e.what();
     }
 
-    // 不是最后一次，就退避后重试。
     if (attempt + 1 < max_attempts) {
       auto delay = base_delay * (1U << static_cast<unsigned>(attempt));
       asio::steady_timer timer(executor, delay);
       boost::system::error_code ec;
       co_await timer.async_wait(asio::redirect_error(asio::use_awaitable, ec));
-      // 即使 timer 被取消（ec=operation_aborted），也继续下一次尝试。
+      // timer 被取消（ec=operation_aborted）时也继续下一次尝试。
     }
   }
   co_return false;

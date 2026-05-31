@@ -12,12 +12,10 @@ auto TelegramMessageFormatter::format_sender_info(
     const std::string &telegram_group_id,
     std::vector<obcx::common::MessageSegment> &message_to_send) -> void {
 
-  // 根据配置决定是否添加发送者信息
   bool show_sender = false;
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
     show_sender = bridge_config->show_tg_to_qq_sender;
   } else {
-    // Topic模式：获取对应topic的配置
     int64_t message_thread_id = -1;
     if (event.data.contains("message_thread_id")) {
       message_thread_id = event.data["message_thread_id"].get<int64_t>();
@@ -31,11 +29,10 @@ auto TelegramMessageFormatter::format_sender_info(
     std::string sender_display_name = get_sender_display_name(event);
     std::string sender_info = fmt::format("[{}]\t", sender_display_name);
 
-    // 添加发送者信息作为文本段
     obcx::common::MessageSegment sender_segment;
     sender_segment.type = "text";
 
-    // 如果没有找到对应的回复消息ID，在发送者信息中加上回复提示
+    // 没有找到对应回复ID时，在发送者后追加回复提示而不是 reply 段
     bool has_reply = has_reply_segment(message_to_send);
     bool has_genuine_reply = is_genuine_reply(event);
 
@@ -47,7 +44,6 @@ auto TelegramMessageFormatter::format_sender_info(
     PLUGIN_DEBUG("tg_to_qq", "Telegram到QQ转发显示发送者：{}",
                  sender_display_name);
   } else {
-    // 不显示发送者，但如果有回复需要添加提示
     if (event.data.contains("reply_to_message")) {
       bool has_reply = has_reply_segment(message_to_send);
       bool has_genuine_reply = is_genuine_reply(event);
@@ -70,7 +66,6 @@ auto TelegramMessageFormatter::format_reply_message(
 
   if (event.data.contains("reply_to_message") &&
       reply_to_message_id.has_value()) {
-    // 创建回复消息段
     obcx::common::MessageSegment reply_segment;
     reply_segment.type = "reply";
     reply_segment.data["id"] = reply_to_message_id.value();

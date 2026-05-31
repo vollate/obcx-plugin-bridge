@@ -7,8 +7,6 @@
 
 namespace storage {
 
-// === 时间转换辅助函数 ===
-
 auto DatabaseManager::time_point_to_timestamp(
     const std::chrono::system_clock::time_point &tp) -> int64_t {
   return std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch())
@@ -19,8 +17,6 @@ auto DatabaseManager::timestamp_to_time_point(int64_t timestamp)
     -> std::chrono::system_clock::time_point {
   return std::chrono::system_clock::time_point(std::chrono::seconds(timestamp));
 }
-
-// === Hash计算函数 ===
 
 auto DatabaseManager::calculate_hash(const std::string &input) -> std::string {
   EVP_MD_CTX *context = EVP_MD_CTX_new();

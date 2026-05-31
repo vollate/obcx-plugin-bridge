@@ -1,8 +1,3 @@
-// Telegram媒体处理器：构造函数与媒体类型分发逻辑。
-//
-// 这里只负责按 Telegram file_type 把工作分派到具体的处理函数。
-// 每类媒体的实际实现位于同一目录下的对应 .cpp 文件中。
-
 #include "telegram/media_processor.hpp"
 
 #include "media_processor.hpp"
@@ -28,7 +23,6 @@ auto TelegramMediaProcessor::process_media_file(
 
   try {
     if (file_id.empty()) {
-      // 发送文件类型提示
       obcx::common::MessageSegment text_segment;
       text_segment.type = "text";
       std::string type_name = file_type == "photo" || file_type == "image"
@@ -46,7 +40,6 @@ auto TelegramMediaProcessor::process_media_file(
       co_return result;
     }
 
-    // 使用TGBot的新接口获取文件URL
     obcx::core::MediaFileInfo media_info;
     media_info.file_id = file_id;
     media_info.file_type = file_type;
@@ -64,7 +57,6 @@ auto TelegramMediaProcessor::process_media_file(
 
     obcx::common::MessageSegment file_segment;
 
-    // 根据文件类型创建相应的消息段
     if (file_type == "photo" || file_type == "image") {
       file_segment = co_await process_photo(telegram_bot, file_url, filename,
                                             temp_files_to_cleanup);
@@ -78,7 +70,7 @@ auto TelegramMediaProcessor::process_media_file(
       file_segment = co_await process_document(telegram_bot, file_url, filename,
                                                temp_files_to_cleanup);
     } else if (file_type == "sticker") {
-      // 补充MediaFileInfo中缺少的信息
+      // 从 media_data 补齐 MediaFileInfo 中下载链接接口未提供的字段
       if (media_data.contains("sticker")) {
         auto sticker = media_data["sticker"];
         if (sticker.contains("file_size")) {
@@ -101,7 +93,6 @@ auto TelegramMediaProcessor::process_media_file(
       file_segment =
           co_await process_sticker(telegram_bot, media_info, media_data);
     } else if (file_type == "animation") {
-      // 补充MediaFileInfo中缺少的file_unique_id信息
       if (media_data.contains("animation")) {
         auto animation = media_data["animation"];
         if (animation.contains("file_unique_id")) {
@@ -120,7 +111,6 @@ auto TelegramMediaProcessor::process_media_file(
     }
 
     result.push_back(file_segment);
-    // convert caption to text
     if (media_data.contains("caption") &&
         !media_data["caption"].get<std::string>().empty()) {
       nlohmann::json caption_text;

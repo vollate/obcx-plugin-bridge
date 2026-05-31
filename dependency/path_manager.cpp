@@ -23,7 +23,6 @@ auto PathManager::to_host_path(const std::string &relative_path) const
 
   std::string normalized_relative = normalize_path(relative_path);
 
-  // 移除开头的斜杠（如果有）
   if (normalized_relative.front() == '/') {
     normalized_relative = normalized_relative.substr(1);
   }
@@ -45,7 +44,6 @@ auto PathManager::to_container_path(const std::string &relative_path) const
 
   std::string normalized_relative = normalize_path(relative_path);
 
-  // 移除开头的斜杠（如果有）
   if (normalized_relative.front() == '/') {
     normalized_relative = normalized_relative.substr(1);
   }
@@ -71,13 +69,10 @@ auto PathManager::host_to_container_absolute(
     const std::string &host_absolute_path) const -> std::string {
   std::string normalized_host_path = normalize_path(host_absolute_path);
 
-  // 检查路径是否以主机基础路径开头
   if (normalized_host_path.starts_with(host_base_)) {
-    // 提取相对路径部分
     std::string relative_part =
         normalized_host_path.substr(host_base_.length());
 
-    // 移除开头的斜杠（如果有）
     if (!relative_part.empty() && relative_part.front() == '/') {
       relative_part = relative_part.substr(1);
     }
@@ -88,7 +83,7 @@ auto PathManager::host_to_container_absolute(
   PLUGIN_WARN("bridge",
               "Host path '{}' is not within the mounted directory '{}'",
               normalized_host_path, host_base_);
-  return normalized_host_path; // 返回原路径
+  return normalized_host_path;
 }
 
 auto PathManager::container_to_host_absolute(
@@ -96,13 +91,10 @@ auto PathManager::container_to_host_absolute(
   std::string normalized_container_path =
       normalize_path(container_absolute_path);
 
-  // 检查路径是否以容器基础路径开头
   if (normalized_container_path.starts_with(container_base_)) {
-    // 提取相对路径部分
     std::string relative_part =
         normalized_container_path.substr(container_base_.length());
 
-    // 移除开头的斜杠（如果有）
     if (!relative_part.empty() && relative_part.front() == '/') {
       relative_part = relative_part.substr(1);
     }
@@ -113,7 +105,7 @@ auto PathManager::container_to_host_absolute(
   PLUGIN_WARN("bridge",
               "Container path '{}' is not within the mounted directory '{}'",
               normalized_container_path, container_base_);
-  return normalized_container_path; // 返回原路径
+  return normalized_container_path;
 }
 
 auto PathManager::ensure_directory(const std::string &relative_path) const
@@ -149,7 +141,7 @@ auto PathManager::normalize_path(const std::string &path) const -> std::string {
     return result;
   } catch (const std::exception &e) {
     PLUGIN_WARN("bridge", "Failed to normalize path '{}': {}", path, e.what());
-    return path; // 返回原路径
+    return path;
   }
 }
 
