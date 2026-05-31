@@ -467,12 +467,33 @@ auto TelegramHandler::forward_media_group_to_qq(
     }
   }
 
-  // De-dup: if the album's first message has already been forwarded (e.g. on
-  // a reload race), skip. Mapping is keyed on the FIRST event's TG id only.
-  if (db_manager_->get_target_message_id("telegram", primary.message_id, "qq")
-          .has_value()) {
-    PLUGIN_DEBUG("tg_to_qq", "media-group 主消息 {} 已转发，跳过",
-                 primary.message_id);
+  // De-dup: if any album item has already been forwarded (e.g. on a reload
+  // race), skip sending again. While skipping, repair any missing rows so all
+  // TG ids in the album resolve to the same QQ message id.
+  std::optional<std::string> existing_qq_message_id;
+  for (const auto &ev : events) {
+    existing_qq_message_id =
+        db_manager_->get_target_message_id("telegram", ev.message_id, "qq");
+    if (existing_qq_message_id.has_value()) {
+      break;
+    }
+  }
+  if (existing_qq_message_id.has_value()) {
+    for (const auto &ev : events) {
+      storage::MessageMapping mapping;
+      mapping.source_platform = "telegram";
+      mapping.source_message_id = ev.message_id;
+      mapping.target_platform = "qq";
+      mapping.target_message_id = existing_qq_message_id.value();
+      mapping.created_at = std::chrono::system_clock::now();
+      if (!db_manager_->add_message_mapping(mapping)) {
+        PLUGIN_WARN("tg_to_qq",
+                    "修复media-group消息映射失败: telegram:{} -> qq:{}",
+                    ev.message_id, existing_qq_message_id.value());
+      }
+    }
+    PLUGIN_DEBUG("tg_to_qq", "media-group 已转发到QQ消息 {}，跳过重复发送",
+                 existing_qq_message_id.value());
     co_return;
   }
 
@@ -484,8 +505,8 @@ auto TelegramHandler::forward_media_group_to_qq(
   std::vector<obcx::common::MessageSegment> message_to_send;
 
   try {
-    // Persist all events for later mapping/edit lookups even though only the
-    // primary one gets a cross-platform mapping row.
+    // Persist all events for later mapping/edit lookups. Each event gets a
+    // cross-platform mapping row after the combined QQ message is sent.
     for (const auto &ev : events) {
       db_manager_->save_user_from_event(ev, "telegram");
       db_manager_->save_message_from_event(ev, "telegram");
@@ -584,19 +605,18 @@ auto TelegramHandler::forward_media_group_to_qq(
             qq_message_id = std::to_string(
                 response_json["data"]["message_id"].get<int64_t>());
 
-            // Single mapping row keyed on the primary TG message_id only —
-            // that is the id Telegram surfaces when the user replies to or
-            // edits the album.
-            storage::MessageMapping mapping;
-            mapping.source_platform = "telegram";
-            mapping.source_message_id = primary.message_id;
-            mapping.target_platform = "qq";
-            mapping.target_message_id = qq_message_id.value();
-            mapping.created_at = std::chrono::system_clock::now();
-            if (!db_manager_->add_message_mapping(mapping)) {
-              PLUGIN_WARN("tg_to_qq",
-                          "保存media-group消息映射失败: telegram:{} -> qq:{}",
-                          primary.message_id, qq_message_id.value());
+            for (const auto &ev : events) {
+              storage::MessageMapping mapping;
+              mapping.source_platform = "telegram";
+              mapping.source_message_id = ev.message_id;
+              mapping.target_platform = "qq";
+              mapping.target_message_id = qq_message_id.value();
+              mapping.created_at = std::chrono::system_clock::now();
+              if (!db_manager_->add_message_mapping(mapping)) {
+                PLUGIN_WARN("tg_to_qq",
+                            "保存media-group消息映射失败: telegram:{} -> qq:{}",
+                            ev.message_id, qq_message_id.value());
+              }
             }
 
             PLUGIN_INFO(
