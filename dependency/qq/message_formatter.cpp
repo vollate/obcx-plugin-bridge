@@ -1,5 +1,7 @@
 #include "qq/message_formatter.hpp"
 
+#include "qq/image_url_validator.hpp"
+
 #include <common/json_utils.hpp>
 #include <common/logger.hpp>
 #include <core/qq_bot.hpp>
@@ -247,6 +249,7 @@ auto QQMessageFormatter::process_forward_message(
                                : std::optional<int64_t>(topic_id);
           size_t total_batches = (all_media.size() + 9) / 10;
           size_t sent_count = 0;
+          size_t total_replaced_count = 0;
 
           for (size_t batch = 0; batch < total_batches; ++batch) {
             size_t batch_start = batch * 10;
@@ -257,9 +260,21 @@ auto QQMessageFormatter::process_forward_message(
                 all_media.begin() + batch_start,
                 all_media.begin() + batch_start + batch_size);
 
+            // 同样地，对合并转发里的图片做一次预校验，避免某一张挂掉拖垮整批。
+            // 不可达的 URL 一律替换为占位图，所以批次大小始终保持不变。
+            std::vector<std::string> replaced;
+            batch_media =
+                co_await ImageUrlValidator::sanitize(batch_media, replaced);
+            total_replaced_count += replaced.size();
+
             try {
               std::string caption = fmt::format(
                   "📸 合并转发消息中的图片 ({}/{})", batch + 1, total_batches);
+              if (!replaced.empty()) {
+                caption +=
+                    fmt::format("\n⚠️ {} 张图片暂时无法获取，已用占位图替换",
+                                replaced.size());
+              }
 
               std::string media_response =
                   co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
@@ -286,8 +301,9 @@ auto QQMessageFormatter::process_forward_message(
 
           if (sent_count > 0) {
             PLUGIN_INFO("qq_to_tg",
-                        "合并转发消息图片发送完成，共成功发送 {}/{} 张",
-                        sent_count, all_media.size());
+                        "合并转发消息图片发送完成，共成功发送 {}/{} 张 "
+                        "(其中 {} 张失败已用占位图替换)",
+                        sent_count, all_media.size(), total_replaced_count);
           }
         }
       }
@@ -395,6 +411,9 @@ auto QQMessageFormatter::send_media_group(
               image_segments.size());
 
   bool any_batch_sent = false;
+  // 累积本次 sendMediaGroup 中所有失败的图片 URL（用于在最后一批的 caption 末
+  // 尾追加提示，避免每批都重复一遍）。失败的 URL 一律已用占位图替换。
+  std::vector<std::string> total_replaced;
   for (size_t sent_count = 0; sent_count < image_segments.size();
        sent_count += 10) {
     // 计算这一批次应该发送多少张图片（最多10张）
@@ -412,6 +431,16 @@ auto QQMessageFormatter::send_media_group(
         media_list.emplace_back("photo", url);
         PLUGIN_DEBUG("qq_to_tg", "添加图片到MediaGroup: {}", url);
       }
+    }
+
+    // 把 QQ 上报的 URL 先各自做一次可达性探测；不可达的 URL 在指数退避重试后
+    // 仍失败的会被替换成占位图（或丢弃）。这样 Telegram 拉取整批 media 时，
+    // 不会因为其中一个 URL 临时返回 5xx/超时而把整批 sendMediaGroup 拖垮。
+    std::vector<std::string> replaced;
+    if (!media_list.empty()) {
+      media_list = co_await ImageUrlValidator::sanitize(media_list, replaced);
+      total_replaced.insert(total_replaced.end(), replaced.begin(),
+                            replaced.end());
     }
 
     // 如果有有效的图片URL，使用sendMediaGroup发送
@@ -443,6 +472,18 @@ auto QQMessageFormatter::send_media_group(
             }
             caption += seg.data.at("text");
           }
+        }
+
+        // 把本次 sendMediaGroup 中因为探测失败而被占位替换的图片数量
+        // 追加到 caption 末尾。仅在最后一批追加，避免每批都重复一遍。
+        const bool is_last_batch =
+            sent_count + batch_size >= image_segments.size();
+        if (is_last_batch && !total_replaced.empty()) {
+          if (!caption.empty()) {
+            caption += "\n";
+          }
+          caption += fmt::format("⚠️ {} 张图片暂时无法获取，已用占位图替换",
+                                 total_replaced.size());
         }
 
         std::optional<int64_t> opt_topic_id =

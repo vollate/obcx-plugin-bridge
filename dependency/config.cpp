@@ -194,6 +194,13 @@ int GIF_MAX_FPS = 0;
 int GIF_MAX_WIDTH = 0;
 int GIF_MAX_COLORS = 256;
 
+// QQ→TG 图片URL预校验配置
+int IMAGE_URL_PROBE_MAX_ATTEMPTS = 3;
+int IMAGE_URL_PROBE_BASE_DELAY_MS = 500;
+int IMAGE_URL_PROBE_TIMEOUT_MS = 5000;
+std::string IMAGE_PLACEHOLDER_URL =
+    "https://placehold.co/512x512/cccccc/666666/png?text=Image+Unavailable";
+
 void load_config() {
   try {
     auto &loader = obcx::common::ConfigLoader::instance();
@@ -366,6 +373,11 @@ void load_config() {
     GIF_MAX_FPS = 0;
     GIF_MAX_WIDTH = 0;
     GIF_MAX_COLORS = 256;
+    IMAGE_URL_PROBE_MAX_ATTEMPTS = 3;
+    IMAGE_URL_PROBE_BASE_DELAY_MS = 500;
+    IMAGE_URL_PROBE_TIMEOUT_MS = 5000;
+    IMAGE_PLACEHOLDER_URL =
+        "https://placehold.co/512x512/cccccc/666666/png?text=Image+Unavailable";
   }
 }
 

@@ -9,6 +9,7 @@ add_library(
   qq/command_handler.cpp
   qq/event_handler.cpp
   qq/handler.cpp
+  qq/image_url_validator.cpp
   qq/media_processor/dispatch.cpp
   qq/media_processor/image.cpp
   qq/media_processor/file.cpp

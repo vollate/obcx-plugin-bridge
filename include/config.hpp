@@ -233,6 +233,15 @@ extern int GIF_MAX_FPS;          // 最大帧率（0=不限），默认0
 extern int GIF_MAX_WIDTH;        // 最大宽度（0=不限），默认0
 extern int GIF_MAX_COLORS;       // 最大调色板颜色数，默认256
 
+// QQ→TG 图片URL预校验配置
+// 在调用 sendMediaGroup 之前，先用 HTTP 探测 QQ 图片URL是否可达，
+// 单张失败时按指数退避重试若干次；如果仍失败则替换为占位图，
+// 这样不会因为某一张图阻塞整批 MediaGroup 的发送。
+extern int IMAGE_URL_PROBE_MAX_ATTEMPTS;  // 单张URL最多探测次数，默认3
+extern int IMAGE_URL_PROBE_BASE_DELAY_MS; // 退避基准延迟（毫秒），默认500
+extern int IMAGE_URL_PROBE_TIMEOUT_MS;    // 单次探测超时（毫秒），默认5000
+extern std::string IMAGE_PLACEHOLDER_URL; // 失败兜底占位图URL（空=丢弃）
+
 /**
  * @brief 从配置文件加载配置
  */
