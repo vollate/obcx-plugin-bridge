@@ -259,19 +259,51 @@ auto QQMessageFormatter::process_forward_message(
                                 replaced.size());
               }
 
-              std::string media_response =
-                  co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
-                      .send_media_group(telegram_group_id, batch_media, caption,
-                                        opt_topic_id, std::nullopt);
+              std::string media_response;
+              bool first_send_failed = false;
+              std::string first_send_error;
+              try {
+                media_response =
+                    co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
+                        .send_media_group(telegram_group_id, batch_media,
+                                          caption, opt_topic_id, std::nullopt);
+              } catch (const std::exception &e) {
+                first_send_failed = true;
+                first_send_error = e.what();
+              }
+
+              if (first_send_failed) {
+                PLUGIN_WARN("qq_to_tg",
+                            "合并转发 MediaGroup 第 {}/{} 批失败 ({})，"
+                            "重新校验各 URL 后重试",
+                            batch + 1, total_batches, first_send_error);
+
+                std::vector<std::string> resurgical;
+                batch_media = co_await ImageUrlValidator::sanitize(batch_media,
+                                                                   resurgical);
+                total_replaced_count += resurgical.size();
+                if (!resurgical.empty()) {
+                  caption += fmt::format(
+                      "\n（重试时新增 {} 张占位替换，无法获取原图）",
+                      resurgical.size());
+                }
+                media_response =
+                    co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
+                        .send_media_group(telegram_group_id, batch_media,
+                                          caption, opt_topic_id, std::nullopt);
+              }
 
               PLUGIN_INFO("qq_to_tg",
-                          "成功通过MediaGroup发送第 {}/{} 批 {} 张图片",
-                          batch + 1, total_batches, batch_media.size());
+                          "成功通过MediaGroup发送第 {}/{} 批 {} 张图片{}",
+                          batch + 1, total_batches, batch_media.size(),
+                          first_send_failed ? "（占位图重试）" : "");
               sent_count += batch_media.size();
             } catch (const std::exception &e) {
-              PLUGIN_ERROR("qq_to_tg",
-                           "通过MediaGroup发送第 {}/{} 批图片失败: {}",
-                           batch + 1, total_batches, e.what());
+              PLUGIN_ERROR(
+                  "qq_to_tg",
+                  "合并转发 MediaGroup 第 {}/{} 批占位图重试仍失败: {}，"
+                  "本批放弃",
+                  batch + 1, total_batches, e.what());
               obcx::common::MessageSegment error_segment;
               error_segment.type = "text";
               error_segment.data["text"] =
@@ -468,13 +500,55 @@ auto QQMessageFormatter::send_media_group(
           }
         }
 
-        std::string media_response =
-            co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
-                .send_media_group(telegram_group_id, media_list, caption,
-                                  opt_topic_id, opt_reply_id);
+        std::string media_response;
+        bool first_send_failed = false;
+        std::string first_send_error;
+        try {
+          media_response =
+              co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
+                  .send_media_group(telegram_group_id, media_list, caption,
+                                    opt_topic_id, opt_reply_id);
+        } catch (const std::exception &e) {
+          first_send_failed = true;
+          first_send_error = e.what();
+        }
 
-        PLUGIN_INFO("qq_to_tg", "成功通过MediaGroup发送 {} 张图片",
-                    media_list.size());
+        bool used_placeholder_retry = false;
+        if (first_send_failed) {
+          PLUGIN_WARN("qq_to_tg",
+                      "MediaGroup 首次发送失败 ({})，重新校验各 URL 后重试",
+                      first_send_error);
+
+          // 让 ImageUrlValidator 再做一次每 URL 的指数退避探测，只把这次新失
+          // 败的 URL 替换成占位图——精准定位真正断的那张，不动其它能正常拉到
+          // 的图。如果再次校验仍然全部 OK 但 Telegram 还是失败，那是 TG 出口
+          // 端的事，让外层重试队列处理。
+          std::vector<std::string> resurgical;
+          media_list =
+              co_await ImageUrlValidator::sanitize(media_list, resurgical);
+          const size_t resurgical_count = resurgical.size();
+          for (auto &u : resurgical) {
+            total_replaced.push_back(std::move(u));
+          }
+          used_placeholder_retry = resurgical_count > 0;
+
+          if (is_last_batch && used_placeholder_retry) {
+            if (!caption.empty() && caption.back() != '\n') {
+              caption += "\n";
+            }
+            caption += fmt::format("（重试时新增 {} 张占位替换，无法获取原图）",
+                                   resurgical_count);
+          }
+
+          media_response =
+              co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
+                  .send_media_group(telegram_group_id, media_list, caption,
+                                    opt_topic_id, opt_reply_id);
+        }
+
+        PLUGIN_INFO("qq_to_tg", "成功通过MediaGroup发送 {} 张图片{}",
+                    media_list.size(),
+                    used_placeholder_retry ? "（占位图重试）" : "");
 
         if (!media_response.empty()) {
           try {
@@ -507,10 +581,9 @@ auto QQMessageFormatter::send_media_group(
 
         any_batch_sent = true;
       } catch (const std::exception &e) {
-        PLUGIN_ERROR("qq_to_tg",
-                     "通过MediaGroup发送图片失败: {}，回退到单图发送",
+        // 占位图重试还失败：问题不在 URL 而在 Telegram 端，单图重试同样无效。
+        PLUGIN_ERROR("qq_to_tg", "MediaGroup 占位图重试仍失败: {}，本批放弃",
                      e.what());
-        co_return false;
       }
     }
   }
