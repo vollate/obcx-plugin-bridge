@@ -15,21 +15,27 @@ namespace bridge {
 // Forward declarations
 class RetryQueueManager;
 
+namespace telegram {
+class TGMediaGroupBuffer;
+} // namespace telegram
+
 /**
  * @brief Telegram消息处理器
  *
  * 处理从Telegram到QQ的消息转发，使用模块化设计
  */
-class TelegramHandler {
+class TelegramHandler : public std::enable_shared_from_this<TelegramHandler> {
 public:
   /**
    * @brief 构造函数
    * @param db_manager 数据库管理器的引用
    * @param retry_manager 重试队列管理器（可选）
+   * @param buffer_executor 用于驱动 media-group 缓冲区去抖定时器的 executor
    */
   explicit TelegramHandler(
       const std::shared_ptr<storage::DatabaseManager> &db_manager,
-      std::shared_ptr<RetryQueueManager> retry_manager = nullptr);
+      std::shared_ptr<RetryQueueManager> retry_manager,
+      boost::asio::any_io_executor buffer_executor);
 
   /**
    * @brief 将Telegram消息转发到QQ
@@ -80,17 +86,34 @@ public:
                              std::string_view qq_group_id)
       -> boost::asio::awaitable<void>;
 
+  /**
+   * @brief Synchronously flush any buffered Telegram media-groups.
+   *
+   * Should be called by the plugin during shutdown so albums whose debounce
+   * timer is still pending are not silently dropped.
+   */
+  void flush_pending_media_groups();
+
 private:
   auto download_sticker_with_cache(obcx::core::IBot &telegram_bot,
                                    const obcx::core::MediaFileInfo &media_info,
                                    const std::string &bridge_files_dir)
       -> boost::asio::awaitable<std::optional<std::string>>;
 
+  /// Forward a single Telegram album as one combined QQ message. Used by the
+  /// media-group buffer's flush callback.
+  auto forward_media_group_to_qq(obcx::core::IBot &telegram_bot,
+                                 obcx::core::IBot &qq_bot,
+                                 std::vector<obcx::common::MessageEvent> events)
+      -> boost::asio::awaitable<void>;
+
   std::shared_ptr<storage::DatabaseManager> db_manager_;
   std::shared_ptr<RetryQueueManager> retry_manager_;
   std::unique_ptr<telegram::TelegramMediaProcessor> media_processor_;
   std::unique_ptr<telegram::TelegramCommandHandler> command_handler_;
   std::unique_ptr<telegram::TelegramEventHandler> event_handler_;
+  std::shared_ptr<telegram::TGMediaGroupBuffer> media_group_buffer_;
+  boost::asio::any_io_executor buffer_executor_;
 };
 
 } // namespace bridge

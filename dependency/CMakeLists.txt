@@ -24,6 +24,7 @@ add_library(
   telegram/media_processor/dispatch.cpp
   telegram/media_processor/files.cpp
   telegram/media_processor/sticker.cpp
+  telegram/media_group_buffer.cpp
   telegram/message_formatter.cpp
   telegram/handler.cpp
   # database

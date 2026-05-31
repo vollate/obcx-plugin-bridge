@@ -57,23 +57,21 @@ auto TGToQQPlugin::initialize() -> bool {
 
     runtime_state_ = std::make_shared<RuntimeState>();
 
+    // Always create the dedicated io_context — the media-group buffer's
+    // debounce timer needs an executor whether or not the retry queue is on.
+    retry_io_context_ = std::make_unique<boost::asio::io_context>();
+    retry_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
+        boost::asio::io_context::executor_type>>(
+        retry_io_context_->get_executor());
+    retry_io_thread_ = std::make_unique<std::thread>([this]() -> void {
+      PLUGIN_INFO(get_name(), "Bridge io_context thread started");
+      retry_io_context_->run();
+      PLUGIN_INFO(get_name(), "Bridge io_context thread stopped");
+    });
+
     if (config_.enable_retry_queue) {
-      retry_io_context_ = std::make_unique<boost::asio::io_context>();
-
-      // work guard keeps io_context::run() from returning while the manager
-      // has no pending work yet
-      retry_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
-          boost::asio::io_context::executor_type>>(
-          retry_io_context_->get_executor());
-
       retry_manager_ =
           std::make_shared<bridge::RetryQueueManager>(*retry_io_context_);
-
-      retry_io_thread_ = std::make_unique<std::thread>([this]() -> void {
-        PLUGIN_INFO(get_name(), "Retry queue io_context thread started");
-        retry_io_context_->run();
-        PLUGIN_INFO(get_name(), "Retry queue io_context thread stopped");
-      });
 
       auto runtime_state = runtime_state_;
       retry_manager_->register_message_send_callback(
@@ -126,7 +124,8 @@ auto TGToQQPlugin::initialize() -> bool {
     }
 
     runtime_state_->telegram_handler =
-        std::make_shared<bridge::TelegramHandler>(db_manager_, retry_manager_);
+        std::make_shared<bridge::TelegramHandler>(
+            db_manager_, retry_manager_, retry_io_context_->get_executor());
 
     try {
       auto [lock, bots] = get_bots();
@@ -178,6 +177,25 @@ void TGToQQPlugin::shutdown() {
 
     if (runtime_state_) {
       runtime_state_->shutting_down.store(true, std::memory_order_release);
+
+      // Flush any media-group still waiting on its debounce timer BEFORE we
+      // drop the handler / stop the io_context, so albums aren't silently
+      // lost on plugin reload or shutdown.
+      std::shared_ptr<bridge::TelegramHandler> handler_to_flush;
+      {
+        std::scoped_lock lock(runtime_state_->mutex);
+        handler_to_flush = runtime_state_->telegram_handler;
+      }
+      if (handler_to_flush) {
+        try {
+          handler_to_flush->flush_pending_media_groups();
+        } catch (const std::exception &e) {
+          PLUGIN_WARN(get_name(),
+                      "Exception while flushing pending media groups: {}",
+                      e.what());
+        }
+      }
+
       std::scoped_lock lock(runtime_state_->mutex);
       runtime_state_->qq_bot = nullptr;
       runtime_state_->telegram_handler.reset();
