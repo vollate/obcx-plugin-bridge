@@ -9,8 +9,7 @@ set_target_properties(
   PROPERTIES OUTPUT_NAME "tg_to_qq"
              PREFIX "" # No lib prefix
              POSITION_INDEPENDENT_CODE ON
-             CXX_STANDARD 26
-             CXX_STANDARD_REQUIRED ON)
+             )
 
 # Include directories
 target_include_directories(
