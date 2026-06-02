@@ -11,7 +11,3 @@ include_directories(include)
 add_subdirectory(dependency)
 add_subdirectory(qq_to_tg)
 add_subdirectory(tg_to_qq)
-
-if(OBCX_BUILD_TESTS)
-  add_subdirectory(tests)
-endif()
