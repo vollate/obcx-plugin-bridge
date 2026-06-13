@@ -1,4 +1,5 @@
 #include "media_converter.hpp"
+#include "config.hpp"
 #include <common/logger.hpp>
 
 #include <cstdlib>
@@ -47,7 +48,8 @@ auto MediaConverter::convert_webm_to_gif(const std::string &webm_path,
            << ":bayer_scale=5:diff_mode=rectangle";
 
     std::ostringstream cmd;
-    cmd << "ffmpeg -i \"" << webm_path << "\" "
+    cmd << "\"" << config::FFMPEG_PATH << "\" "
+        << "-i \"" << webm_path << "\" "
         << "-t " << max_duration << " "
         << "-vf \"" << filter.str() << "\" "
         << "-loop 0 "

@@ -65,6 +65,8 @@ priority = 100  # Same priority as qq_to_tg
 database_file = "bridge_bot.db"
 enable_retry_queue = true
 # GIF conversion settings (all optional, shown with defaults)
+# ffmpeg_path = "ffmpeg"      # ffmpeg executable path
+# In minimal containers without a suitable PATH, use "/usr/local/bin/ffmpeg".
 # gif_max_file_size = 0        # Max output size in bytes (0 = unlimited)
 # gif_max_duration = 5         # Max animation duration in seconds
 # gif_max_fps = 0              # Max frame rate (0 = unlimited)

@@ -136,6 +136,7 @@ enable_retry_queue = true
 
 ```toml
 [plugins.tg_to_qq.config]
+ffmpeg_path = "ffmpeg"      # ffmpeg 可执行文件路径，默认通过 PATH 查找
 gif_max_file_size = 0        # 最大输出文件大小，单位字节，0 = 不限制（默认 0）
 gif_max_duration = 5         # 最大动画时长，单位秒（默认 5）
 gif_max_fps = 0              # 最大帧率，0 = 不限（默认 0）

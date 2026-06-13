@@ -173,6 +173,7 @@ int MAX_RETRY_INTERVAL_SEC;
 std::string BRIDGE_FILES_DIR;
 std::string BRIDGE_FILES_CONTAINER_DIR;
 
+std::string FFMPEG_PATH = "ffmpeg";
 size_t GIF_MAX_FILE_SIZE = 0; // 0 = unlimited, preserve old lossless default
 int GIF_MAX_DURATION = 5;
 int GIF_MAX_FPS = 0;
@@ -222,6 +223,7 @@ void load_config() {
     MEDIA_RETRY_BASE_INTERVAL_SEC = 5;
     RETRY_QUEUE_CHECK_INTERVAL_SEC = 10;
     MAX_RETRY_INTERVAL_SEC = 300;
+    FFMPEG_PATH = "ffmpeg";
 
     // database_file / bridge_files_dir may live under either plugin section;
     // try qq_to_tg first then fall back to tg_to_qq.
@@ -292,6 +294,12 @@ void load_config() {
             "plugins.tg_to_qq.config.gif_max_file_size")) {
       GIF_MAX_FILE_SIZE = static_cast<size_t>(*val);
     }
+    if (auto val = loader.get_value<std::string>(
+            "plugins.tg_to_qq.config.ffmpeg_path")) {
+      if (!val->empty()) {
+        FFMPEG_PATH = *val;
+      }
+    }
     if (auto val =
             loader.get_value<int>("plugins.tg_to_qq.config.gif_max_duration")) {
       GIF_MAX_DURATION = *val;
@@ -342,6 +350,7 @@ void load_config() {
     MAX_RETRY_INTERVAL_SEC = 300;
     BRIDGE_FILES_DIR = "/tmp/bridge_files";
     BRIDGE_FILES_CONTAINER_DIR = "/root/llonebot/bridge_files";
+    FFMPEG_PATH = "ffmpeg";
     GIF_MAX_FILE_SIZE = 0;
     GIF_MAX_DURATION = 5;
     GIF_MAX_FPS = 0;
