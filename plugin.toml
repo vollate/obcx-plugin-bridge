@@ -9,4 +9,4 @@ license = "MIT"
 required_plugins = []
 
 [build]
-vcpkg_deps = ["sqlite3", "tomlplusplus"]
+vcpkg_deps = ["tomlplusplus"]

@@ -1,13 +1,15 @@
 #include "qq/command_handler.hpp"
 
+#include "bridge_state_repository.hpp"
+
 #include <common/logger.hpp>
 #include <fmt/format.h>
 
 namespace bridge::qq {
 
 QQCommandHandler::QQCommandHandler(
-    std::shared_ptr<storage::DatabaseManager> db_manager)
-    : db_manager_(std::move(db_manager)) {}
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository)
+    : state_repository_(std::move(state_repository)) {}
 
 auto QQCommandHandler::handle_checkalive_command(
     obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
@@ -17,8 +19,13 @@ auto QQCommandHandler::handle_checkalive_command(
   try {
     const std::string qq_group_id = event.group_id.value();
 
-    auto qq_heartbeat = db_manager_->get_platform_heartbeat("qq");
-    auto telegram_heartbeat = db_manager_->get_platform_heartbeat("telegram");
+    auto qq_heartbeat = state_repository_
+                            ? state_repository_->get_platform_heartbeat("qq")
+                            : std::optional<storage::PlatformHeartbeatInfo>{};
+    auto telegram_heartbeat =
+        state_repository_
+            ? state_repository_->get_platform_heartbeat("telegram")
+            : std::optional<storage::PlatformHeartbeatInfo>{};
 
     std::string response_text;
 

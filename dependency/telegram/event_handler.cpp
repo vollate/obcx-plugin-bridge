@@ -1,4 +1,5 @@
 #include "telegram/event_handler.hpp"
+#include "bridge_state_repository.hpp"
 
 #include <common/logger.hpp>
 #include <nlohmann/json.hpp>
@@ -7,11 +8,11 @@
 namespace bridge::telegram {
 
 TelegramEventHandler::TelegramEventHandler(
-    std::shared_ptr<storage::DatabaseManager> db_manager,
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::function<boost::asio::awaitable<void>(
         obcx::core::IBot &, obcx::core::IBot &, obcx::common::MessageEvent)>
         forward_function)
-    : db_manager_(std::move(db_manager)),
+    : state_repository_(std::move(state_repository)),
       forward_function_(std::move(forward_function)) {}
 
 auto TelegramEventHandler::handle_message_deleted(
@@ -42,8 +43,10 @@ auto TelegramEventHandler::handle_message_edited(
     PLUGIN_INFO("tg_to_qq", "处理Telegram群 {} 中消息 {} 的编辑事件",
                 telegram_group_id, event.message_id);
 
-    auto target_message_id =
-        db_manager_->get_target_message_id("telegram", event.message_id, "qq");
+    auto target_message_id = state_repository_
+                                 ? state_repository_->get_target_message_id(
+                                       "telegram", event.message_id, "qq")
+                                 : std::optional<std::string>{};
 
     if (!target_message_id.has_value()) {
       PLUGIN_DEBUG("tg_to_qq", "未找到Telegram消息 {} 对应的QQ消息映射",
@@ -93,7 +96,10 @@ auto TelegramEventHandler::handle_message_edited(
                     "撤回成功但重发失败，原QQ消息已被撤回但新消息发送失败");
       } else {
         // 撤回失败且重发也失败时，删除映射避免数据不一致
-        db_manager_->delete_message_mapping("telegram", event.message_id, "qq");
+        if (state_repository_) {
+          state_repository_->delete_message_mapping("telegram",
+                                                    event.message_id, "qq");
+        }
         PLUGIN_WARN("tg_to_qq", "撤回和重发都失败，已删除消息映射");
       }
       co_return;

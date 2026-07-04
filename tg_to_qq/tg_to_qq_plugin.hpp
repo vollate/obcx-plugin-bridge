@@ -12,11 +12,13 @@
 namespace bridge {
 class TelegramHandler;
 }
-namespace storage {
-class DatabaseManager;
-}
 namespace bridge {
+class BridgeStateRepository;
+class ReceivedMessageRepository;
 class RetryQueueManager;
+} // namespace bridge
+namespace obcx::core {
+class DbManager;
 }
 
 namespace plugins {
@@ -55,7 +57,10 @@ private:
 
   Config config_;
 
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
+  std::shared_ptr<obcx::core::DbManager> bridge_db_manager_;
+  std::shared_ptr<bridge::BridgeStateRepository> bridge_state_repository_;
+  std::shared_ptr<bridge::ReceivedMessageRepository>
+      received_message_repository_;
   std::shared_ptr<bridge::RetryQueueManager> retry_manager_;
   std::shared_ptr<RuntimeState> runtime_state_;
 

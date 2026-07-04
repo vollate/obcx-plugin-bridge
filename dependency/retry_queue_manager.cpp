@@ -1,16 +1,158 @@
 #include "retry_queue_manager.hpp"
+#include "bridge_state_repository.hpp"
 
 #include <cmath>
 #include <common/logger.hpp>
+#include <nlohmann/json.hpp>
 #include <sstream>
+#include <utility>
 
 namespace bridge {
+namespace {
+
+auto serialize_message(const obcx::common::Message &message) -> std::string {
+  nlohmann::json json_message = nlohmann::json::array();
+  for (const auto &segment : message) {
+    json_message.push_back({{"type", segment.type}, {"data", segment.data}});
+  }
+  return json_message.dump();
+}
+
+auto deserialize_message(const std::string &payload) -> obcx::common::Message {
+  obcx::common::Message message;
+  if (payload.empty()) {
+    return message;
+  }
+
+  const auto json_message = nlohmann::json::parse(payload);
+  if (!json_message.is_array()) {
+    return message;
+  }
+
+  for (const auto &item : json_message) {
+    obcx::common::MessageSegment segment;
+    segment.type = item.value("type", std::string{});
+    if (item.contains("data") && item["data"].is_object()) {
+      segment.data = item["data"];
+    } else {
+      segment.data = nlohmann::json::object();
+    }
+    message.push_back(std::move(segment));
+  }
+  return message;
+}
+
+auto to_retry_info(const MessageRetryEntry &entry)
+    -> storage::MessageRetryInfo {
+  storage::MessageRetryInfo retry_info;
+  retry_info.source_platform = entry.source_platform;
+  retry_info.target_platform = entry.target_platform;
+  retry_info.source_message_id = entry.source_message_id;
+  retry_info.message_content = serialize_message(entry.message);
+  retry_info.group_id = entry.group_id;
+  retry_info.source_group_id = entry.source_group_id;
+  retry_info.target_topic_id = entry.target_topic_id;
+  retry_info.retry_count = entry.retry_count;
+  retry_info.max_retry_count = entry.max_retry_count;
+  retry_info.failure_reason = entry.failure_reason;
+  retry_info.retry_type = "message_send";
+  retry_info.next_retry_at = entry.next_retry_at;
+  retry_info.created_at = entry.created_at;
+  retry_info.last_attempt_at = std::chrono::system_clock::now();
+  return retry_info;
+}
+
+auto to_retry_entry(const storage::MessageRetryInfo &retry_info)
+    -> MessageRetryEntry {
+  MessageRetryEntry entry;
+  entry.source_platform = retry_info.source_platform;
+  entry.target_platform = retry_info.target_platform;
+  entry.source_message_id = retry_info.source_message_id;
+  entry.message = deserialize_message(retry_info.message_content);
+  entry.group_id = retry_info.group_id;
+  entry.source_group_id = retry_info.source_group_id;
+  entry.target_topic_id = retry_info.target_topic_id;
+  entry.retry_count = retry_info.retry_count;
+  entry.max_retry_count = retry_info.max_retry_count;
+  entry.failure_reason = retry_info.failure_reason;
+  entry.next_retry_at = retry_info.next_retry_at;
+  entry.created_at = retry_info.created_at;
+  return entry;
+}
+
+void remove_persisted_message_retry(
+    const std::shared_ptr<BridgeStateRepository> &repository,
+    const MessageRetryEntry &entry, const char *outcome) {
+  if (!repository) {
+    return;
+  }
+
+  try {
+    repository->remove_message_retry(
+        entry.source_platform, entry.source_message_id, entry.target_platform);
+  } catch (const std::exception &e) {
+    PLUGIN_ERROR("bridge",
+                 "Failed to remove persisted message retry after {}: {}",
+                 outcome, e.what());
+  }
+}
+
+void update_persisted_message_retry(
+    const std::shared_ptr<BridgeStateRepository> &repository,
+    const MessageRetryEntry &entry, const char *outcome) {
+  if (!repository) {
+    return;
+  }
+
+  try {
+    repository->update_message_retry(
+        entry.source_platform, entry.source_message_id, entry.target_platform,
+        entry.retry_count, entry.next_retry_at, entry.failure_reason);
+  } catch (const std::exception &e) {
+    PLUGIN_ERROR("bridge",
+                 "Failed to update persisted message retry after {}: {}",
+                 outcome, e.what());
+  }
+}
+
+void persist_successful_message_mapping(
+    const std::shared_ptr<BridgeStateRepository> &repository,
+    const MessageRetryEntry &entry, const std::string &target_message_id) {
+  if (!repository || target_message_id.empty()) {
+    return;
+  }
+
+  try {
+    storage::MessageMapping mapping;
+    mapping.source_platform = entry.source_platform;
+    mapping.source_message_id = entry.source_message_id;
+    mapping.target_platform = entry.target_platform;
+    mapping.target_message_id = target_message_id;
+    mapping.created_at = std::chrono::system_clock::now();
+    repository->add_message_mapping(mapping);
+  } catch (const std::exception &e) {
+    PLUGIN_ERROR("bridge",
+                 "Failed to persist mapping after successful retry: {}",
+                 e.what());
+  }
+}
+
+} // namespace
 
 RetryQueueManager::RetryQueueManager(boost::asio::io_context &io_context)
     : io_context_(io_context),
       retry_timer_(std::make_unique<boost::asio::steady_timer>(io_context)),
       running_(false) {
   PLUGIN_INFO("bridge", "RetryQueueManager initialized (in-memory mode)");
+}
+
+RetryQueueManager::RetryQueueManager(
+    boost::asio::io_context &io_context,
+    std::shared_ptr<BridgeStateRepository> state_repository)
+    : io_context_(io_context), state_repository_(std::move(state_repository)),
+      retry_timer_(std::make_unique<boost::asio::steady_timer>(io_context)),
+      running_(false) {
+  PLUGIN_INFO("bridge", "RetryQueueManager initialized (persistent mode)");
 }
 
 RetryQueueManager::~RetryQueueManager() { stop(); }
@@ -83,7 +225,7 @@ void RetryQueueManager::add_message_retry(
   entry.source_platform = source_platform;
   entry.target_platform = target_platform;
   entry.source_message_id = source_message_id;
-  entry.message = message; // store directly; queue is in-memory only
+  entry.message = message;
   entry.group_id = group_id;
   entry.source_group_id = source_group_id;
   entry.target_topic_id = target_topic_id;
@@ -94,9 +236,19 @@ void RetryQueueManager::add_message_retry(
   entry.next_retry_at =
       calculate_next_retry_time(0, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
 
+  const auto retry_info = to_retry_info(entry);
+
   {
     std::scoped_lock lock(message_retry_mutex_);
     message_retry_queue_.push_back(std::move(entry));
+  }
+
+  if (state_repository_) {
+    try {
+      state_repository_->add_message_retry(retry_info);
+    } catch (const std::exception &e) {
+      PLUGIN_ERROR("bridge", "Failed to persist message retry: {}", e.what());
+    }
   }
 
   PLUGIN_INFO("bridge", "Added message retry: {} -> {} (msg_id: {})",
@@ -221,6 +373,8 @@ auto RetryQueueManager::process_message_retries()
         // No handler yet - keep entry alive so it can be retried later
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
+        update_persisted_message_retry(state_repository_, entry,
+                                       "missing callback");
         std::scoped_lock lock(message_retry_mutex_);
         message_retry_queue_.push_back(std::move(entry));
         continue;
@@ -234,6 +388,9 @@ auto RetryQueueManager::process_message_retries()
 
       if (result.has_value()) {
         // Success: do not re-add to queue
+        persist_successful_message_mapping(state_repository_, entry,
+                                           result.value());
+        remove_persisted_message_retry(state_repository_, entry, "success");
         PLUGIN_INFO("bridge", "Message retry successful: {} -> {} (msg_id: {})",
                     entry.source_platform, entry.target_platform,
                     result.value());
@@ -245,10 +402,14 @@ auto RetryQueueManager::process_message_retries()
                       "Message retry failed after {} attempts: {} -> {}",
                       entry.max_retry_count, entry.source_platform,
                       entry.target_platform);
+          remove_persisted_message_retry(state_repository_, entry,
+                                         "max attempts");
           // Give up: do not re-add
-        } else if (running_) {
+        } else {
           entry.next_retry_at = calculate_next_retry_time(
               entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
+          update_persisted_message_retry(state_repository_, entry,
+                                         "send failure");
           PLUGIN_DEBUG("bridge",
                        "Updated message retry count to {}, next retry in {}s",
                        entry.retry_count,
@@ -256,19 +417,28 @@ auto RetryQueueManager::process_message_retries()
                            entry.next_retry_at - now)
                            .count());
 
-          std::scoped_lock lock(message_retry_mutex_);
-          message_retry_queue_.push_back(std::move(entry));
+          if (running_) {
+            std::scoped_lock lock(message_retry_mutex_);
+            message_retry_queue_.push_back(std::move(entry));
+          }
         }
       }
 
     } catch (const std::exception &e) {
       PLUGIN_ERROR("bridge", "Error processing message retry: {}", e.what());
       entry.retry_count++;
-      if (running_ && entry.retry_count < entry.max_retry_count) {
+      entry.failure_reason = e.what();
+      if (entry.retry_count >= entry.max_retry_count) {
+        remove_persisted_message_retry(state_repository_, entry,
+                                       "exception max attempts");
+      } else {
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
-        std::scoped_lock lock(message_retry_mutex_);
-        message_retry_queue_.push_back(std::move(entry));
+        update_persisted_message_retry(state_repository_, entry, "exception");
+        if (running_) {
+          std::scoped_lock lock(message_retry_mutex_);
+          message_retry_queue_.push_back(std::move(entry));
+        }
       }
     }
   }
@@ -383,6 +553,25 @@ auto RetryQueueManager::get_pending_message_retry_count() const -> size_t {
 auto RetryQueueManager::get_pending_media_retry_count() const -> size_t {
   std::scoped_lock lock(media_retry_mutex_);
   return media_retry_queue_.size();
+}
+
+void RetryQueueManager::restore_persisted_message_retries() {
+  if (!state_repository_) {
+    return;
+  }
+
+  auto retries = state_repository_->get_pending_message_retries(
+      std::chrono::system_clock::time_point::max(), 10000);
+
+  std::deque<MessageRetryEntry> restored;
+  for (const auto &retry : retries) {
+    restored.push_back(to_retry_entry(retry));
+  }
+
+  std::scoped_lock lock(message_retry_mutex_);
+  message_retry_queue_ = std::move(restored);
+  PLUGIN_INFO("bridge", "Restored {} persisted message retries",
+              message_retry_queue_.size());
 }
 
 auto RetryQueueManager::get_retry_statistics() const -> std::string {

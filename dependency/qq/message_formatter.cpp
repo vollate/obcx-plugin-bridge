@@ -1,5 +1,6 @@
 #include "qq/message_formatter.hpp"
 
+#include "bridge_state_repository.hpp"
 #include "qq/image_url_validator.hpp"
 
 #include <common/json_utils.hpp>
@@ -12,8 +13,8 @@
 namespace bridge::qq {
 
 QQMessageFormatter::QQMessageFormatter(
-    std::shared_ptr<storage::DatabaseManager> db_manager)
-    : db_manager_(std::move(db_manager)) {}
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository)
+    : state_repository_(std::move(state_repository)) {}
 
 auto QQMessageFormatter::format_sender_info(
     obcx::core::IBot &qq_bot, const obcx::common::MessageEvent &event,
@@ -71,12 +72,16 @@ auto QQMessageFormatter::format_reply_message(
 
     // 被回复的 QQ 消息可能有两种来源：原生 QQ 消息（之前转发到 TG 过），
     // 或本身是从 TG 转发来的。先查 qq->tg 映射，没命中再查 tg 原始消息。
-    target_telegram_message_id = db_manager_->get_target_message_id(
-        "qq", reply_message_id.value(), "telegram");
+    target_telegram_message_id =
+        state_repository_ ? state_repository_->get_target_message_id(
+                                "qq", reply_message_id.value(), "telegram")
+                          : std::optional<std::string>{};
 
     if (!target_telegram_message_id.has_value()) {
-      target_telegram_message_id = db_manager_->get_source_message_id(
-          "qq", reply_message_id.value(), "telegram");
+      target_telegram_message_id =
+          state_repository_ ? state_repository_->get_source_message_id(
+                                  "qq", reply_message_id.value(), "telegram")
+                            : std::optional<std::string>{};
     }
 
     PLUGIN_DEBUG("qq_to_tg", "QQ回复消息映射查找: QQ消息ID {} -> TG消息ID {}",
@@ -568,7 +573,9 @@ auto QQMessageFormatter::send_media_group(
                 mapping.target_platform = "telegram";
                 mapping.target_message_id = tg_msg_id;
                 mapping.created_at = std::chrono::system_clock::now();
-                db_manager_->add_message_mapping(mapping);
+                if (state_repository_) {
+                  state_repository_->add_message_mapping(mapping);
+                }
                 PLUGIN_DEBUG("qq_to_tg",
                              "记录MediaGroup消息映射: QQ {} -> TG {}",
                              event.message_id, tg_msg_id);
@@ -596,12 +603,16 @@ auto QQMessageFormatter::get_user_display_name(obcx::core::IBot &qq_bot,
     -> boost::asio::awaitable<std::string> {
 
   auto display_name =
-      db_manager_->query_user_display_name("qq", user_id, group_id);
+      state_repository_
+          ? state_repository_->query_user_display_name("qq", user_id, group_id)
+          : std::optional<std::string>{};
 
   if (!display_name.has_value()) {
     co_await fetch_user_info(qq_bot, user_id, group_id);
     display_name =
-        db_manager_->query_user_display_name("qq", user_id, group_id);
+        state_repository_
+            ? state_repository_->query_user_display_name("qq", user_id, group_id)
+            : std::optional<std::string>{};
   }
 
   co_return display_name.value_or(user_id);
@@ -611,11 +622,11 @@ auto QQMessageFormatter::fetch_user_info(obcx::core::IBot &qq_bot,
                                          const std::string &user_id,
                                          const std::string &group_id)
     -> boost::asio::awaitable<void> {
-  co_await fetch_and_save_user_info(db_manager_, qq_bot, user_id, group_id);
+  co_await fetch_and_save_user_info(state_repository_, qq_bot, user_id, group_id);
 }
 
 auto QQMessageFormatter::fetch_and_save_user_info(
-    std::shared_ptr<storage::DatabaseManager> db_manager,
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     obcx::core::IBot &qq_bot, const std::string &user_id,
     const std::string &group_id) -> boost::asio::awaitable<void> {
   try {
@@ -671,7 +682,9 @@ auto QQMessageFormatter::fetch_and_save_user_info(
         user_info.title = title;
       }
 
-      db_manager->save_or_update_user(user_info, true);
+      if (state_repository) {
+        state_repository->save_or_update_user(user_info, true);
+      }
       PLUGIN_DEBUG("qq_to_tg", "获取QQ用户信息成功：{} -> {}", user_id,
                    user_info.nickname);
     }

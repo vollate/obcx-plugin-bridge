@@ -1,6 +1,9 @@
 #include "tg_to_qq_plugin.hpp"
+#include "bridge_db_runtime.hpp"
+#include "bridge_state_repository.hpp"
+#include "common/config_loader.hpp"
 #include "config.hpp"
-#include "database/manager.hpp"
+#include "received_message_repository.hpp"
 #include "retry_queue_manager.hpp"
 #include "telegram/handler.hpp"
 
@@ -48,12 +51,13 @@ auto TGToQQPlugin::initialize() -> bool {
       return false;
     }
 
-    // DatabaseManager is a singleton shared with other bridge plugins
-    db_manager_ = storage::DatabaseManager::instance(config_.database_file);
-    if (!db_manager_ || !db_manager_->initialize()) {
-      PLUGIN_ERROR(get_name(), "Failed to initialize database");
-      return false;
-    }
+    bridge_db_manager_ = bridge::shared_core_db_manager(config_.database_file);
+    bridge_state_repository_ = std::make_shared<bridge::BridgeStateRepository>(
+        *bridge_db_manager_, "main", "bridge");
+    bridge_state_repository_->initialize_schema();
+    received_message_repository_ =
+        std::make_shared<bridge::ReceivedMessageRepository>(
+            *bridge_db_manager_, "main", "message_store");
 
     runtime_state_ = std::make_shared<RuntimeState>();
 
@@ -70,8 +74,9 @@ auto TGToQQPlugin::initialize() -> bool {
     });
 
     if (config_.enable_retry_queue) {
-      retry_manager_ =
-          std::make_shared<bridge::RetryQueueManager>(*retry_io_context_);
+      retry_manager_ = std::make_shared<bridge::RetryQueueManager>(
+          *retry_io_context_, bridge_state_repository_);
+      retry_manager_->restore_persisted_message_retries();
 
       auto runtime_state = runtime_state_;
       retry_manager_->register_message_send_callback(
@@ -125,7 +130,9 @@ auto TGToQQPlugin::initialize() -> bool {
 
     runtime_state_->telegram_handler =
         std::make_shared<bridge::TelegramHandler>(
-            db_manager_, retry_manager_, retry_io_context_->get_executor());
+            retry_manager_, retry_io_context_->get_executor(),
+            bridge_state_repository_, received_message_repository_);
+    const bool actor_pipeline_owns_messages = bridge::actor_pipeline_enabled();
 
     try {
       auto [lock, bots] = get_bots();
@@ -133,15 +140,21 @@ auto TGToQQPlugin::initialize() -> bool {
       for (auto &bot_ptr : bots) {
         if (auto *tg_bot = dynamic_cast<obcx::core::TGBot *>(bot_ptr.get())) {
           auto runtime_state = runtime_state_;
-          tg_bot->on_event<obcx::common::MessageEvent>(
-              [runtime_state](obcx::core::IBot &bot,
-                              const obcx::common::MessageEvent &event)
-                  -> boost::asio::awaitable<void> {
-                co_await handle_tg_message(runtime_state, bot, event);
-              });
-          PLUGIN_INFO(
-              get_name(),
-              "Registered Telegram message callback for TG to QQ plugin");
+          if (!actor_pipeline_owns_messages) {
+            tg_bot->on_event<obcx::common::MessageEvent>(
+                [runtime_state](obcx::core::IBot &bot,
+                                const obcx::common::MessageEvent &event)
+                    -> boost::asio::awaitable<void> {
+                  co_await handle_tg_message(runtime_state, bot, event);
+                });
+            PLUGIN_INFO(
+                get_name(),
+                "Registered Telegram message callback for TG to QQ plugin");
+          } else {
+            PLUGIN_INFO(get_name(),
+                        "Actor pipeline owns Telegram message forwarding; "
+                        "skipping legacy Telegram raw message callback");
+          }
           break;
         }
       }
@@ -219,8 +232,11 @@ void TGToQQPlugin::shutdown() {
     retry_io_thread_.reset();
     retry_io_context_.reset();
 
-    // Don't reset db_manager_ - it's a singleton shared with other plugins
-    db_manager_ = nullptr;
+    // Drop shared DB handles; their lifetime is owned by the bridge/core DB
+    // registries.
+    received_message_repository_.reset();
+    bridge_state_repository_.reset();
+    bridge_db_manager_.reset();
 
     PLUGIN_INFO(get_name(), "TG to QQ Plugin shutdown complete");
   } catch (const std::exception &e) {

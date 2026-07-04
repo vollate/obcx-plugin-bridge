@@ -1,7 +1,5 @@
 #pragma once
 
-#include "database/manager.hpp"
-
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <interfaces/bot.hpp>
@@ -11,6 +9,8 @@ namespace bridge {
 
 // Forward declarations
 class RetryQueueManager;
+class BridgeStateRepository;
+class ReceivedMessageRepository;
 
 namespace qq {
 class QQMediaProcessor;
@@ -28,12 +28,13 @@ class QQHandler {
 public:
   /**
    * @brief 构造函数
-   * @param db_manager 数据库管理器的引用
    * @param retry_manager 重试队列管理器（可选）
    */
   explicit QQHandler(
-      std::shared_ptr<storage::DatabaseManager> db_manager,
-      std::shared_ptr<RetryQueueManager> retry_manager = nullptr);
+      std::shared_ptr<RetryQueueManager> retry_manager = nullptr,
+      std::shared_ptr<BridgeStateRepository> state_repository = nullptr,
+      std::shared_ptr<ReceivedMessageRepository> received_message_repository =
+          nullptr);
 
   /**
    * @brief 析构函数
@@ -93,8 +94,9 @@ public:
       -> boost::asio::awaitable<void>;
 
 private:
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
   std::shared_ptr<RetryQueueManager> retry_manager_;
+  std::shared_ptr<BridgeStateRepository> state_repository_;
+  std::shared_ptr<ReceivedMessageRepository> received_message_repository_;
 
   // 子模块处理器
   std::unique_ptr<qq::QQMediaProcessor> media_processor_;

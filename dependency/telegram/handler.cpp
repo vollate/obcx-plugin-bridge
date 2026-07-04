@@ -1,5 +1,7 @@
 #include "telegram/handler.hpp"
+#include "bridge_state_repository.hpp"
 #include "media_processor.hpp"
+#include "received_message_repository.hpp"
 #include "retry_queue_manager.hpp"
 #include "telegram/media_group_buffer.hpp"
 #include "telegram/media_processor.hpp"
@@ -43,16 +45,19 @@ auto get_media_group_id(const obcx::common::MessageEvent &event)
 } // namespace
 
 TelegramHandler::TelegramHandler(
-    const std::shared_ptr<storage::DatabaseManager> &db_manager,
     std::shared_ptr<RetryQueueManager> retry_manager,
-    boost::asio::any_io_executor buffer_executor)
-    : db_manager_(db_manager), retry_manager_(std::move(retry_manager)),
-      media_processor_(
-          std::make_unique<telegram::TelegramMediaProcessor>(db_manager)),
-      command_handler_(
-          std::make_unique<telegram::TelegramCommandHandler>(db_manager)),
+    boost::asio::any_io_executor buffer_executor,
+    std::shared_ptr<BridgeStateRepository> state_repository,
+    std::shared_ptr<ReceivedMessageRepository> received_message_repository)
+    : retry_manager_(std::move(retry_manager)),
+      state_repository_(std::move(state_repository)),
+      received_message_repository_(std::move(received_message_repository)),
+      media_processor_(std::make_unique<telegram::TelegramMediaProcessor>(
+          state_repository_)),
+      command_handler_(std::make_unique<telegram::TelegramCommandHandler>(
+          state_repository_, received_message_repository_)),
       event_handler_(std::make_unique<telegram::TelegramEventHandler>(
-          db_manager,
+          state_repository_,
           [this](obcx::core::IBot &tg_bot, obcx::core::IBot &qq_bot,
                  obcx::common::MessageEvent event)
               -> boost::asio::awaitable<void> {
@@ -68,9 +73,9 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
     -> boost::asio::awaitable<void> {
 
   // 更新Telegram平台心跳时间
-  if (db_manager_) {
-    db_manager_->update_platform_heartbeat("telegram",
-                                           std::chrono::system_clock::now());
+  if (state_repository_) {
+    state_repository_->update_platform_heartbeat(
+        "telegram", std::chrono::system_clock::now());
   }
 
   if (event.message_type != "group" || !event.group_id.has_value()) {
@@ -217,7 +222,9 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
 
   // 编辑重发时跳过去重检查，因为我们要让映射被更新
   if (!is_edited_resend &&
-      db_manager_->get_target_message_id("telegram", event.message_id, "qq")
+      (state_repository_ ? state_repository_->get_target_message_id(
+                               "telegram", event.message_id, "qq")
+                         : std::optional<std::string>{})
           .has_value()) {
     PLUGIN_DEBUG("tg_to_qq", "Telegram消息 {} 已转发到QQ，跳过重复处理",
                  event.message_id);
@@ -231,9 +238,6 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
   std::vector<obcx::common::MessageSegment> message_to_send;
 
   try {
-    db_manager_->save_user_from_event(event, "telegram");
-    db_manager_->save_message_from_event(event, "telegram");
-
     // 处理回复消息：把被回复 TG 消息映射到对应的 QQ 消息 ID
     std::optional<std::string> reply_to_message_id;
     if (event.data.contains("reply_to_message")) {
@@ -244,12 +248,16 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
 
         // 情况1: 被回复的 TG 消息曾被转发到 QQ —— 引用那条 QQ 消息
         // 情况2: 被回复的 TG 消息来源于 QQ —— 引用 QQ 原始消息
-        reply_to_message_id = db_manager_->get_target_message_id(
-            "telegram", replied_message_id, "qq");
+        reply_to_message_id = state_repository_
+                                  ? state_repository_->get_target_message_id(
+                                        "telegram", replied_message_id, "qq")
+                                  : std::optional<std::string>{};
 
         if (!reply_to_message_id.has_value()) {
-          reply_to_message_id = db_manager_->get_source_message_id(
-              "telegram", replied_message_id, "qq");
+          reply_to_message_id = state_repository_
+                                    ? state_repository_->get_source_message_id(
+                                          "telegram", replied_message_id, "qq")
+                                    : std::optional<std::string>{};
         }
 
         // 找不到映射时清掉 reply_to_message，避免下游显示无效回复提示
@@ -311,9 +319,12 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
 
             if (is_edited_resend) {
               // 编辑重发：更新已有映射，不要新建
-              if (!db_manager_->update_message_mapping("telegram",
-                                                       event.message_id, "qq",
-                                                       qq_message_id.value())) {
+              const bool updated =
+                  state_repository_ ? state_repository_->update_message_mapping(
+                                          "telegram", event.message_id, "qq",
+                                          qq_message_id.value())
+                                    : false;
+              if (!updated) {
                 PLUGIN_WARN("tg_to_qq",
                             "更新消息映射失败: telegram:{} -> qq:{}",
                             event.message_id, qq_message_id.value());
@@ -330,7 +341,11 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
               mapping.target_message_id = qq_message_id.value();
               mapping.created_at = std::chrono::system_clock::now();
 
-              if (!db_manager_->add_message_mapping(mapping)) {
+              const bool added =
+                  state_repository_
+                      ? state_repository_->add_message_mapping(mapping)
+                      : false;
+              if (!added) {
                 PLUGIN_WARN("tg_to_qq",
                             "保存消息映射失败: telegram:{} -> qq:{}",
                             event.message_id, qq_message_id.value());
@@ -388,9 +403,9 @@ auto TelegramHandler::handle_message_edited(obcx::core::IBot &telegram_bot,
                                             obcx::core::IBot &qq_bot,
                                             obcx::common::MessageEvent event)
     -> boost::asio::awaitable<void> {
-  if (db_manager_) {
-    db_manager_->update_platform_heartbeat("telegram",
-                                           std::chrono::system_clock::now());
+  if (state_repository_) {
+    state_repository_->update_platform_heartbeat(
+        "telegram", std::chrono::system_clock::now());
   }
 
   co_await event_handler_->handle_message_edited(telegram_bot, qq_bot, event);
@@ -425,9 +440,9 @@ auto TelegramHandler::forward_media_group_to_qq(
   // this matches Telegram's own semantics.
   const obcx::common::MessageEvent &primary = events.front();
 
-  if (db_manager_) {
-    db_manager_->update_platform_heartbeat("telegram",
-                                           std::chrono::system_clock::now());
+  if (state_repository_) {
+    state_repository_->update_platform_heartbeat(
+        "telegram", std::chrono::system_clock::now());
   }
 
   if (primary.message_type != "group" || !primary.group_id.has_value()) {
@@ -472,8 +487,10 @@ auto TelegramHandler::forward_media_group_to_qq(
   // TG ids in the album resolve to the same QQ message id.
   std::optional<std::string> existing_qq_message_id;
   for (const auto &ev : events) {
-    existing_qq_message_id =
-        db_manager_->get_target_message_id("telegram", ev.message_id, "qq");
+    existing_qq_message_id = state_repository_
+                                 ? state_repository_->get_target_message_id(
+                                       "telegram", ev.message_id, "qq")
+                                 : std::optional<std::string>{};
     if (existing_qq_message_id.has_value()) {
       break;
     }
@@ -486,10 +503,26 @@ auto TelegramHandler::forward_media_group_to_qq(
       mapping.target_platform = "qq";
       mapping.target_message_id = existing_qq_message_id.value();
       mapping.created_at = std::chrono::system_clock::now();
-      if (!db_manager_->add_message_mapping(mapping)) {
+      const bool added = state_repository_
+                             ? state_repository_->add_message_mapping(mapping)
+                             : false;
+      if (!added) {
         PLUGIN_WARN("tg_to_qq",
                     "修复media-group消息映射失败: telegram:{} -> qq:{}",
                     ev.message_id, existing_qq_message_id.value());
+      }
+      if (state_repository_) {
+        const std::string media_group_id = get_media_group_id(ev);
+        if (!media_group_id.empty()) {
+          state_repository_->add_media_group_mapping(MediaGroupMapping{
+              .source_platform = "telegram",
+              .media_group_id = media_group_id,
+              .source_message_id = ev.message_id,
+              .target_platform = "qq",
+              .target_message_id = existing_qq_message_id.value(),
+              .target_group_id = qq_group_id,
+              .created_at = std::chrono::system_clock::now()});
+        }
       }
     }
     PLUGIN_DEBUG("tg_to_qq", "media-group 已转发到QQ消息 {}，跳过重复发送",
@@ -505,13 +538,6 @@ auto TelegramHandler::forward_media_group_to_qq(
   std::vector<obcx::common::MessageSegment> message_to_send;
 
   try {
-    // Persist all events for later mapping/edit lookups. Each event gets a
-    // cross-platform mapping row after the combined QQ message is sent.
-    for (const auto &ev : events) {
-      db_manager_->save_user_from_event(ev, "telegram");
-      db_manager_->save_message_from_event(ev, "telegram");
-    }
-
     // Reply handling: only applies to the primary event. Mutate a copy so we
     // don't touch the buffered originals.
     obcx::common::MessageEvent primary_for_reply = primary;
@@ -521,11 +547,15 @@ auto TelegramHandler::forward_media_group_to_qq(
       if (reply_to_message.contains("message_id")) {
         std::string replied_message_id =
             std::to_string(reply_to_message["message_id"].get<int64_t>());
-        reply_to_message_id = db_manager_->get_target_message_id(
-            "telegram", replied_message_id, "qq");
+        reply_to_message_id = state_repository_
+                                  ? state_repository_->get_target_message_id(
+                                        "telegram", replied_message_id, "qq")
+                                  : std::optional<std::string>{};
         if (!reply_to_message_id.has_value()) {
-          reply_to_message_id = db_manager_->get_source_message_id(
-              "telegram", replied_message_id, "qq");
+          reply_to_message_id = state_repository_
+                                    ? state_repository_->get_source_message_id(
+                                          "telegram", replied_message_id, "qq")
+                                    : std::optional<std::string>{};
         }
         if (!reply_to_message_id.has_value()) {
           primary_for_reply.data.erase("reply_to_message");
@@ -612,10 +642,27 @@ auto TelegramHandler::forward_media_group_to_qq(
               mapping.target_platform = "qq";
               mapping.target_message_id = qq_message_id.value();
               mapping.created_at = std::chrono::system_clock::now();
-              if (!db_manager_->add_message_mapping(mapping)) {
+              const bool added =
+                  state_repository_
+                      ? state_repository_->add_message_mapping(mapping)
+                      : false;
+              if (!added) {
                 PLUGIN_WARN("tg_to_qq",
                             "保存media-group消息映射失败: telegram:{} -> qq:{}",
                             ev.message_id, qq_message_id.value());
+              }
+              if (state_repository_) {
+                const std::string media_group_id = get_media_group_id(ev);
+                if (!media_group_id.empty()) {
+                  state_repository_->add_media_group_mapping(MediaGroupMapping{
+                      .source_platform = "telegram",
+                      .media_group_id = media_group_id,
+                      .source_message_id = ev.message_id,
+                      .target_platform = "qq",
+                      .target_message_id = qq_message_id.value(),
+                      .target_group_id = qq_group_id,
+                      .created_at = std::chrono::system_clock::now()});
+                }
               }
             }
 

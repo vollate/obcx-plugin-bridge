@@ -1,5 +1,6 @@
 #include "telegram/media_processor.hpp"
 
+#include "bridge_state_repository.hpp"
 #include "config.hpp"
 
 #include <common/logger.hpp>
@@ -90,7 +91,10 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
       PLUGIN_DEBUG("tg_to_qq", "表情包缓存查找，使用file_unique_id: {}",
                    cache_key);
 
-      auto cache_info = db_manager_->get_sticker_cache("telegram", cache_key);
+      auto cache_info =
+          state_repository_
+              ? state_repository_->get_sticker_cache("telegram", cache_key)
+              : std::optional<storage::StickerCacheInfo>{};
       if (cache_info.has_value()) {
         // 缓存命中也要校验文件实际存在，否则视为失效需重新下载
         bool file_exists = false;
@@ -112,7 +116,9 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
         if (file_exists && !cache_info->container_path.empty()) {
           storage::StickerCacheInfo update_info = *cache_info;
           update_info.last_used_at = std::chrono::system_clock::now();
-          db_manager_->save_sticker_cache(update_info);
+          if (state_repository_) {
+            state_repository_->save_sticker_cache(update_info);
+          }
 
           PLUGIN_DEBUG("tg_to_qq", "表情包缓存命中: {} -> {}", cache_key,
                        cache_info->container_path);
@@ -264,7 +270,8 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
         new_cache_info.converted_file_path = final_file_path;
       }
 
-      if (!db_manager_->save_sticker_cache(new_cache_info)) {
+      if (state_repository_ &&
+          !state_repository_->save_sticker_cache(new_cache_info)) {
         PLUGIN_WARN("tg_to_qq", "保存表情包缓存失败，但文件已下载: {}",
                     final_file_path);
       }

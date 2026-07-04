@@ -41,19 +41,14 @@
 
 - **重要提醒**：这四种情况涵盖了所有可能的回复场景，修改相关逻辑时必须确保四种情况都能正确处理，实现真正的跨平台回复体验
 
-## DatabaseManager 单例模式
+## Bridge 状态存储
 
-`DatabaseManager`（`dependency/database/database_manager.hpp`）使用单例模式，多个插件共享同一实例：
+Bridge 不直接持有 sqlite 连接，也不使用本地数据库单例。运行时状态统一通过
+`BridgeStateRepository` 读写，底层连接由 OBCX core `DbManager`/DB provider 管理：
 
-```cpp
-// 获取单例（首次调用需要提供 db_path）
-db_manager_ = DatabaseManager::instance(config_.database_file);
-
-// 重置单例（在所有插件都 unload 后调用）
-DatabaseManager::reset_instance();
-```
-
-**注意**：插件的 `shutdown()` 中不要 `reset()` db_manager_，只需置空指针。单例的生命周期由框架管理。
+- 跨平台消息 ID 映射、retry queue、media-group 映射、用户显示名缓存、贴纸缓存、平台心跳都属于 bridge 自己的状态。
+- 收到的原始平台消息正文由独立 message-store actor 持久化；bridge 只通过 `ReceivedMessageRepository` 查询。
+- 新增 bridge 状态表时使用 `bridge_` 前缀，并在 `BridgeStateRepository::initialize_schema()` 中通过 core migration lock 初始化。
 
 ## 注释风格（Comment style）
 
@@ -72,4 +67,3 @@ DatabaseManager::reset_instance();
   - 内部 `static` / 匿名 namespace 辅助函数上的整块 doxygen — 必要时换成一行 `//` WHY 注释，否则直接删掉
   - 注释掉的旧代码块
 - **修改时**：当一个注释同时包含「重述代码」和「真正的 WHY」时，只保留 WHY 那部分；不要整段删掉
-

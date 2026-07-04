@@ -1,7 +1,6 @@
 #pragma once
 
 #include "config.hpp"
-#include "database/manager.hpp"
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
@@ -10,6 +9,10 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace bridge {
+class BridgeStateRepository;
+}
 
 namespace bridge::qq {
 
@@ -34,10 +37,9 @@ class QQMediaProcessor {
 public:
   /**
    * @brief 构造函数
-   * @param db_manager 数据库管理器
    */
   explicit QQMediaProcessor(
-      std::shared_ptr<storage::DatabaseManager> db_manager);
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository);
 
   /**
    * @brief 处理QQ消息段并转换为Telegram格式
@@ -165,7 +167,7 @@ public:
       -> boost::asio::awaitable<obcx::common::MessageSegment>;
 
 private:
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
+  std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
 
   /**
    * @brief 检测图片是否为GIF格式

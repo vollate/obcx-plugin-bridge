@@ -1,11 +1,14 @@
 #pragma once
 
-#include "database/manager.hpp"
-
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
+
+namespace bridge {
+class BridgeStateRepository;
+class ReceivedMessageRepository;
+} // namespace bridge
 
 namespace bridge::qq {
 
@@ -18,9 +21,11 @@ class QQEventHandler {
 public:
   /**
    * @brief 构造函数
-   * @param db_manager 数据库管理器
    */
-  explicit QQEventHandler(std::shared_ptr<storage::DatabaseManager> db_manager);
+  explicit QQEventHandler(
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository = nullptr,
+      std::shared_ptr<bridge::ReceivedMessageRepository>
+          received_message_repository = nullptr);
 
   /**
    * @brief 处理QQ撤回事件
@@ -46,7 +51,9 @@ public:
       -> boost::asio::awaitable<void>;
 
 private:
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
+  std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
+  std::shared_ptr<bridge::ReceivedMessageRepository>
+      received_message_repository_;
 
   /**
    * @brief 根据 type 和 id 获取戳一戳动作名称（基于 Mirai PokeMessage 定义）

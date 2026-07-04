@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common/message_type.hpp"
-#include "database/manager.hpp"
 #include "telegram/command_handler.hpp"
 #include "telegram/event_handler.hpp"
 #include "telegram/media_processor.hpp"
@@ -13,6 +12,8 @@
 namespace bridge {
 
 // Forward declarations
+class BridgeStateRepository;
+class ReceivedMessageRepository;
 class RetryQueueManager;
 
 namespace telegram {
@@ -28,14 +29,15 @@ class TelegramHandler : public std::enable_shared_from_this<TelegramHandler> {
 public:
   /**
    * @brief 构造函数
-   * @param db_manager 数据库管理器的引用
    * @param retry_manager 重试队列管理器（可选）
    * @param buffer_executor 用于驱动 media-group 缓冲区去抖定时器的 executor
    */
   explicit TelegramHandler(
-      const std::shared_ptr<storage::DatabaseManager> &db_manager,
       std::shared_ptr<RetryQueueManager> retry_manager,
-      boost::asio::any_io_executor buffer_executor);
+      boost::asio::any_io_executor buffer_executor,
+      std::shared_ptr<BridgeStateRepository> state_repository = nullptr,
+      std::shared_ptr<ReceivedMessageRepository> received_message_repository =
+          nullptr);
 
   /**
    * @brief 将Telegram消息转发到QQ
@@ -107,8 +109,9 @@ private:
                                  std::vector<obcx::common::MessageEvent> events)
       -> boost::asio::awaitable<void>;
 
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
   std::shared_ptr<RetryQueueManager> retry_manager_;
+  std::shared_ptr<BridgeStateRepository> state_repository_;
+  std::shared_ptr<ReceivedMessageRepository> received_message_repository_;
   std::unique_ptr<telegram::TelegramMediaProcessor> media_processor_;
   std::unique_ptr<telegram::TelegramCommandHandler> command_handler_;
   std::unique_ptr<telegram::TelegramEventHandler> event_handler_;

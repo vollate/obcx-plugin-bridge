@@ -1,6 +1,8 @@
 #include "qq/media_processor.hpp"
 #include "qq/message_formatter.hpp"
 
+#include "bridge_state_repository.hpp"
+
 #include <common/logger.hpp>
 #include <fmt/format.h>
 
@@ -18,15 +20,19 @@ auto QQMediaProcessor::process_at_segment(
   std::string qq_user_id = segment.data.value("qq", "unknown");
   converted_segment.data.clear();
 
-  auto at_display_name = db_manager_->query_user_display_name(
-      "qq", qq_user_id, event.group_id.value_or(""));
+  auto at_display_name =
+      state_repository_ ? state_repository_->query_user_display_name(
+                              "qq", qq_user_id, event.group_id.value_or(""))
+                        : std::optional<std::string>{};
 
   if (!at_display_name.has_value()) {
     co_await QQMessageFormatter::fetch_and_save_user_info(
-        db_manager_, qq_bot, qq_user_id, event.group_id.value());
+        state_repository_, qq_bot, qq_user_id, event.group_id.value());
 
-    at_display_name = db_manager_->query_user_display_name(
-        "qq", qq_user_id, event.group_id.value_or(""));
+    at_display_name =
+        state_repository_ ? state_repository_->query_user_display_name(
+                                "qq", qq_user_id, event.group_id.value_or(""))
+                          : std::optional<std::string>{};
   }
 
   bool show_sender = false;

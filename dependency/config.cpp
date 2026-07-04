@@ -2,6 +2,8 @@
 #include "common/config_loader.hpp"
 #include "common/logger.hpp"
 
+#include <algorithm>
+
 namespace bridge {
 
 std::unordered_map<std::string, GroupBridgeConfig> GROUP_MAP;
@@ -139,6 +141,51 @@ void load_group_mappings() {
 void initialize_config() {
   config::load_config();
   load_group_mappings();
+}
+
+bool actor_pipeline_enabled() {
+  const auto &loader = obcx::common::ConfigLoader::instance();
+  const auto actors = loader.get_actor_configs();
+  const auto pipelines = loader.get_pipeline_configs();
+
+  bool message_store_enabled = false;
+  bool bridge_enabled = false;
+  for (const auto &actor : actors) {
+    if (actor.name == "message_store" && actor.enabled) {
+      message_store_enabled = true;
+    }
+    if (actor.name == "bridge" && actor.enabled) {
+      bridge_enabled = true;
+    }
+  }
+  if (!message_store_enabled || !bridge_enabled) {
+    return false;
+  }
+
+  for (const auto &pipeline : pipelines) {
+    if (pipeline.source != "RawMessageEvent") {
+      continue;
+    }
+
+    bool persists = false;
+    bool forwards = false;
+    for (const auto &stage : pipeline.stages) {
+      if (stage.actor == "message_store" && stage.input == "RawMessageEvent" &&
+          std::find(stage.outputs.begin(), stage.outputs.end(),
+                    "MessageStored") != stage.outputs.end()) {
+        persists = true;
+      }
+      if (stage.actor == "bridge" && stage.input == "MessageStored") {
+        forwards = true;
+      }
+    }
+
+    if (persists && forwards) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 namespace config {

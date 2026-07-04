@@ -1,5 +1,7 @@
 #include "qq/event_handler.hpp"
+#include "bridge_state_repository.hpp"
 #include "config.hpp"
+#include "received_message_repository.hpp"
 
 #include <common/logger.hpp>
 #include <core/tg_bot.hpp>
@@ -37,8 +39,11 @@ auto is_picture_message(const storage::MessageInfo &message) -> bool {
 } // namespace
 
 QQEventHandler::QQEventHandler(
-    std::shared_ptr<storage::DatabaseManager> db_manager)
-    : db_manager_(std::move(db_manager)) {}
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+    std::shared_ptr<bridge::ReceivedMessageRepository>
+        received_message_repository)
+    : state_repository_(std::move(state_repository)),
+      received_message_repository_(std::move(received_message_repository)) {}
 
 auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
                                          obcx::core::IBot &qq_bot,
@@ -105,8 +110,10 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
       co_return;
     }
 
-    auto target_message_id = db_manager_->get_target_message_id(
-        "qq", recalled_message_id, "telegram");
+    auto target_message_id = state_repository_
+                                 ? state_repository_->get_target_message_id(
+                                       "qq", recalled_message_id, "telegram")
+                                 : std::optional<std::string>{};
 
     if (!target_message_id.has_value()) {
       PLUGIN_DEBUG("qq_to_tg", "未找到QQ消息 {} 对应的Telegram消息映射",
@@ -114,7 +121,10 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
       co_return;
     }
 
-    auto original_message = db_manager_->get_message("qq", recalled_message_id);
+    auto original_message = received_message_repository_
+                                ? received_message_repository_->get_message(
+                                      "qq", recalled_message_id)
+                                : std::optional<storage::MessageInfo>{};
     const bool should_delete_tg_message =
         original_message.has_value() && is_picture_message(*original_message);
 
@@ -426,7 +436,9 @@ auto QQEventHandler::fetch_user_display_name(obcx::core::IBot &qq_bot,
     -> boost::asio::awaitable<std::string> {
 
   auto display_name =
-      db_manager_->query_user_display_name("qq", user_id, group_id);
+      state_repository_
+          ? state_repository_->query_user_display_name("qq", user_id, group_id)
+          : std::optional<std::string>{};
 
   if (!display_name.has_value()) {
     PLUGIN_DEBUG("bridge_qq",
@@ -434,7 +446,9 @@ auto QQEventHandler::fetch_user_display_name(obcx::core::IBot &qq_bot,
                  user_id);
     co_await fetch_user_info(qq_bot, user_id, group_id);
     display_name =
-        db_manager_->query_user_display_name("qq", user_id, group_id);
+        state_repository_
+            ? state_repository_->query_user_display_name("qq", user_id, group_id)
+            : std::optional<std::string>{};
   }
 
   co_return display_name.value_or(user_id);
@@ -495,7 +509,8 @@ auto QQEventHandler::fetch_user_info(obcx::core::IBot &qq_bot,
         user_info.title = title;
       }
 
-      if (db_manager_->save_or_update_user(user_info, true)) {
+      if (state_repository_ &&
+          state_repository_->save_or_update_user(user_info, true)) {
         PLUGIN_DEBUG("qq_to_tg", "获取QQ用户信息成功：{} -> {}", user_id,
                      user_info.nickname);
       } else {

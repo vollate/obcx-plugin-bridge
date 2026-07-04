@@ -1,7 +1,6 @@
 #pragma once
 
 #include "config.hpp"
-#include "database/manager.hpp"
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
@@ -9,6 +8,10 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+namespace bridge {
+class BridgeStateRepository;
+}
 
 namespace bridge::qq {
 
@@ -24,7 +27,8 @@ public:
    * @param db_manager 数据库管理器
    */
   explicit QQMessageFormatter(
-      std::shared_ptr<storage::DatabaseManager> db_manager);
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository =
+          nullptr);
 
   /**
    * @brief 格式化消息发送者信息
@@ -106,12 +110,12 @@ public:
       const obcx::common::MessageEvent &event) -> boost::asio::awaitable<bool>;
 
   static auto fetch_and_save_user_info(
-      std::shared_ptr<storage::DatabaseManager> db_manager,
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository,
       obcx::core::IBot &qq_bot, const std::string &user_id,
       const std::string &group_id) -> boost::asio::awaitable<void>;
 
 private:
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
+  std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
 
   /**
    * @brief 获取用户显示名称，如果数据库没有则异步获取

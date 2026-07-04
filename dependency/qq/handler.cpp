@@ -1,10 +1,12 @@
 #include "qq/handler.hpp"
+#include "bridge_state_repository.hpp"
 #include "config.hpp"
 #include "media_processor.hpp"
 #include "qq/command_handler.hpp"
 #include "qq/event_handler.hpp"
 #include "qq/media_processor.hpp"
 #include "qq/message_formatter.hpp"
+#include "received_message_repository.hpp"
 #include "retry_queue_manager.hpp"
 
 #include <common/logger.hpp>
@@ -15,15 +17,19 @@
 
 namespace bridge {
 
-QQHandler::QQHandler(std::shared_ptr<storage::DatabaseManager> db_manager,
-                     std::shared_ptr<RetryQueueManager> retry_manager)
-    : db_manager_(std::move(db_manager)),
-      retry_manager_(std::move(retry_manager)),
-      media_processor_(std::make_unique<qq::QQMediaProcessor>(db_manager_)),
-      command_handler_(std::make_unique<qq::QQCommandHandler>(db_manager_)),
-      event_handler_(std::make_unique<qq::QQEventHandler>(db_manager_)),
-      message_formatter_(
-          std::make_unique<qq::QQMessageFormatter>(db_manager_)) {}
+QQHandler::QQHandler(
+    std::shared_ptr<RetryQueueManager> retry_manager,
+    std::shared_ptr<BridgeStateRepository> state_repository,
+    std::shared_ptr<ReceivedMessageRepository> received_message_repository)
+    : retry_manager_(std::move(retry_manager)),
+      state_repository_(std::move(state_repository)),
+      received_message_repository_(std::move(received_message_repository)),
+      media_processor_(std::make_unique<qq::QQMediaProcessor>(state_repository_)),
+      command_handler_(std::make_unique<qq::QQCommandHandler>(state_repository_)),
+      event_handler_(std::make_unique<qq::QQEventHandler>(
+          state_repository_, received_message_repository_)),
+      message_formatter_(std::make_unique<qq::QQMessageFormatter>(
+          state_repository_)) {}
 
 // 析构函数需要在这里定义，以确保所有子模块类的完整定义都可见
 QQHandler::~QQHandler() = default;
@@ -94,8 +100,12 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     co_return;
   }
 
-  if (db_manager_->get_target_message_id("qq", event.message_id, "telegram")
-          .has_value()) {
+  const auto existing_target_message_id =
+      state_repository_
+          ? state_repository_->get_target_message_id("qq", event.message_id,
+                                                     "telegram")
+          : std::optional<std::string>{};
+  if (existing_target_message_id.has_value()) {
     PLUGIN_DEBUG("qq_to_tg", "QQ消息 {} 已转发到Telegram，跳过重复处理",
                  event.message_id);
     co_return;
@@ -105,9 +115,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
               telegram_group_id);
 
   try {
-    db_manager_->save_user_from_event(event, "qq");
-    db_manager_->save_message_from_event(event, "qq");
-
     obcx::common::Message message_to_send;
 
     std::string sender_display_name =
@@ -213,7 +220,9 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
           mapping.target_platform = "telegram";
           mapping.target_message_id = telegram_message_id.value();
           mapping.created_at = std::chrono::system_clock::now();
-          db_manager_->add_message_mapping(mapping);
+          if (state_repository_) {
+            state_repository_->add_message_mapping(mapping);
+          }
 
           PLUGIN_INFO("qq_to_tg",
                       "QQ消息 {} 成功转发到Telegram，Telegram消息ID: {}",

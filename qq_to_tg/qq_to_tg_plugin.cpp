@@ -1,7 +1,10 @@
 #include "qq_to_tg_plugin.hpp"
+#include "bridge_db_runtime.hpp"
+#include "bridge_state_repository.hpp"
+#include "common/config_loader.hpp"
 #include "config.hpp"
-#include "database/manager.hpp"
 #include "qq/handler.hpp"
+#include "received_message_repository.hpp"
 #include "retry_queue_manager.hpp"
 
 #include <boost/asio/co_spawn.hpp>
@@ -18,7 +21,7 @@ struct QQToTGPlugin::RuntimeState {
   std::mutex mutex;
   obcx::core::TGBot *tg_bot{nullptr};
   std::shared_ptr<bridge::QQHandler> qq_handler;
-  std::shared_ptr<storage::DatabaseManager> db_manager;
+  std::shared_ptr<bridge::BridgeStateRepository> state_repository;
 };
 
 QQToTGPlugin::QQToTGPlugin() {
@@ -49,17 +52,19 @@ auto QQToTGPlugin::initialize() -> bool {
       return false;
     }
 
-    db_manager_ = storage::DatabaseManager::instance(config_.database_file);
-    if (!db_manager_ || !db_manager_->initialize()) {
-      PLUGIN_ERROR(get_name(), "Failed to initialize database");
-      return false;
-    }
+    bridge_db_manager_ = bridge::shared_core_db_manager(config_.database_file);
+    bridge_state_repository_ = std::make_shared<bridge::BridgeStateRepository>(
+        *bridge_db_manager_, "main", "bridge");
+    bridge_state_repository_->initialize_schema();
+    received_message_repository_ =
+        std::make_shared<bridge::ReceivedMessageRepository>(
+            *bridge_db_manager_, "main", "message_store");
 
     runtime_state_ = std::make_shared<RuntimeState>();
-    runtime_state_->db_manager = db_manager_;
+    runtime_state_->state_repository = bridge_state_repository_;
 
-    // Retry queue is in-memory (non-persistent); each plugin instance gets its
-    // own io_context to avoid collisions on hot-reload.
+    // Retry queue owns its own io_context to avoid collisions on hot-reload.
+    // Message retry state is persisted through the bridge state repository.
     if (config_.enable_retry_queue) {
       retry_io_context_ = std::make_unique<boost::asio::io_context>();
 
@@ -67,8 +72,9 @@ auto QQToTGPlugin::initialize() -> bool {
           boost::asio::io_context::executor_type>>(
           retry_io_context_->get_executor());
 
-      retry_manager_ =
-          std::make_shared<bridge::RetryQueueManager>(*retry_io_context_);
+      retry_manager_ = std::make_shared<bridge::RetryQueueManager>(
+          *retry_io_context_, bridge_state_repository_);
+      retry_manager_->restore_persisted_message_retries();
 
       retry_io_thread_ = std::make_unique<std::thread>([this]() -> void {
         PLUGIN_INFO(get_name(), "Retry queue io_context thread started");
@@ -134,8 +140,9 @@ auto QQToTGPlugin::initialize() -> bool {
       PLUGIN_INFO(get_name(), "Retry queue manager started");
     }
 
-    runtime_state_->qq_handler =
-        std::make_shared<bridge::QQHandler>(db_manager_, retry_manager_);
+    runtime_state_->qq_handler = std::make_shared<bridge::QQHandler>(
+        retry_manager_, bridge_state_repository_, received_message_repository_);
+    const bool actor_pipeline_owns_messages = bridge::actor_pipeline_enabled();
 
     try {
       auto [lock, bots] = get_bots();
@@ -143,14 +150,20 @@ auto QQToTGPlugin::initialize() -> bool {
       for (auto &bot_ptr : bots) {
         if (auto *qq_bot = dynamic_cast<obcx::core::QQBot *>(bot_ptr.get())) {
           auto runtime_state = runtime_state_;
-          qq_bot->on_event<obcx::common::MessageEvent>(
-              [runtime_state](obcx::core::IBot &bot,
-                              const obcx::common::MessageEvent &event)
-                  -> boost::asio::awaitable<void> {
-                co_await handle_qq_message(runtime_state, bot, event);
-              });
-          PLUGIN_INFO(get_name(),
-                      "Registered QQ message callback for QQ to TG plugin");
+          if (!actor_pipeline_owns_messages) {
+            qq_bot->on_event<obcx::common::MessageEvent>(
+                [runtime_state](obcx::core::IBot &bot,
+                                const obcx::common::MessageEvent &event)
+                    -> boost::asio::awaitable<void> {
+                  co_await handle_qq_message(runtime_state, bot, event);
+                });
+            PLUGIN_INFO(get_name(),
+                        "Registered QQ message callback for QQ to TG plugin");
+          } else {
+            PLUGIN_INFO(get_name(),
+                        "Actor pipeline owns QQ message forwarding; skipping "
+                        "legacy QQ raw message callback");
+          }
 
           qq_bot->on_event<obcx::common::HeartbeatEvent>(
               [runtime_state](obcx::core::IBot &bot,
@@ -208,7 +221,7 @@ void QQToTGPlugin::shutdown() {
       std::scoped_lock lock(runtime_state_->mutex);
       runtime_state_->tg_bot = nullptr;
       runtime_state_->qq_handler.reset();
-      runtime_state_->db_manager.reset();
+      runtime_state_->state_repository.reset();
     }
 
     // Stop retry manager first so any in-flight retry coroutines are cancelled
@@ -229,9 +242,11 @@ void QQToTGPlugin::shutdown() {
     retry_io_thread_.reset();
     retry_io_context_.reset();
 
-    // db_manager_ is a singleton shared with other plugins — drop our handle
-    // but don't destroy the underlying instance.
-    db_manager_ = nullptr;
+    // Drop shared DB handles; their lifetime is owned by the bridge/core DB
+    // registries.
+    received_message_repository_.reset();
+    bridge_state_repository_.reset();
+    bridge_db_manager_.reset();
 
     PLUGIN_INFO(get_name(), "QQ to TG Plugin shutdown complete");
   } catch (const std::exception &e) {
@@ -311,15 +326,15 @@ auto QQToTGPlugin::handle_qq_heartbeat(
   }
 
   if (auto *qq_bot = dynamic_cast<obcx::core::QQBot *>(&bot)) {
-    std::shared_ptr<storage::DatabaseManager> db_manager;
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository;
     {
       std::scoped_lock state_lock(state->mutex);
-      db_manager = state->db_manager;
+      state_repository = state->state_repository;
     }
 
-    if (db_manager) {
-      db_manager->update_platform_heartbeat("qq",
-                                            std::chrono::system_clock::now());
+    if (state_repository) {
+      state_repository->update_platform_heartbeat(
+          "qq", std::chrono::system_clock::now());
       PLUGIN_DEBUG("qq_to_tg", "QQ platform heartbeat updated, interval: {}ms",
                    event.interval);
     }

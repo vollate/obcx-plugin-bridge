@@ -1,7 +1,5 @@
 #pragma once
 
-#include "database/manager.hpp"
-
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <core/tg_bot.hpp>
@@ -9,6 +7,10 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <vector>
+
+namespace bridge {
+class BridgeStateRepository;
+}
 
 namespace bridge::telegram {
 
@@ -21,10 +23,9 @@ class TelegramMediaProcessor {
 public:
   /**
    * @brief 构造函数
-   * @param db_manager 数据库管理器
    */
   explicit TelegramMediaProcessor(
-      std::shared_ptr<storage::DatabaseManager> db_manager);
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository);
 
   /**
    * @brief 处理Telegram媒体文件并转换为QQ消息段
@@ -69,7 +70,7 @@ public:
       -> boost::asio::awaitable<std::optional<std::string>>;
 
 private:
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
+  std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
 
   /**
    * @brief 处理图片文件

@@ -1,5 +1,6 @@
 #include "telegram/media_processor.hpp"
 
+#include "bridge_state_repository.hpp"
 #include "media_processor.hpp"
 
 #include <common/logger.hpp>
@@ -10,8 +11,8 @@
 namespace bridge::telegram {
 
 TelegramMediaProcessor::TelegramMediaProcessor(
-    std::shared_ptr<storage::DatabaseManager> db_manager)
-    : db_manager_(std::move(db_manager)) {}
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository)
+    : state_repository_(std::move(state_repository)) {}
 
 auto TelegramMediaProcessor::process_media_file(
     obcx::core::IBot &telegram_bot, const std::string &file_type,

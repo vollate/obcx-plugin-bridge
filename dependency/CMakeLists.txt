@@ -1,6 +1,12 @@
 add_library(
   bridge_core SHARED
   config.cpp
+	  bridge_db_runtime.cpp
+	  bridge_forwarding_runtime.cpp
+	  bridge_hash.cpp
+	  bridge_message_event_adapter.cpp
+  bridge_state_repository.cpp
+  received_message_repository.cpp
   media_converter.cpp
   media_processor.cpp
   retry_queue_manager.cpp
@@ -25,20 +31,7 @@ add_library(
   telegram/media_processor/files.cpp
   telegram/media_processor/sticker.cpp
   telegram/media_group_buffer.cpp
-  telegram/message_formatter.cpp
-  telegram/handler.cpp
-  # database
-  database/manager.cpp
-  database/manager_utils.cpp
-  database/manager_create.cpp
-  database/manager_insert.cpp
-  database/manager_query.cpp
-  database/manager_update.cpp
-  database/manager_delete.cpp)
+	  telegram/message_formatter.cpp
+	  telegram/handler.cpp)
 
 target_link_libraries(bridge_core PUBLIC obcx_core )
-if ("$ENV{IN_NIX_SHELL}" STREQUAL "")
-    target_link_libraries(bridge_core PUBLIC unofficial::sqlite3::sqlite3 )
-else()
-    target_link_libraries(bridge_core PUBLIC SQLite::SQLite3)
-endif()

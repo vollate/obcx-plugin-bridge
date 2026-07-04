@@ -1,12 +1,15 @@
 #pragma once
 
-#include "database/manager.hpp"
-
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
 #include <string_view>
+
+namespace bridge {
+class BridgeStateRepository;
+class ReceivedMessageRepository;
+} // namespace bridge
 
 namespace bridge::telegram {
 
@@ -19,10 +22,11 @@ class TelegramCommandHandler {
 public:
   /**
    * @brief 构造函数
-   * @param db_manager 数据库管理器
    */
   explicit TelegramCommandHandler(
-      std::shared_ptr<storage::DatabaseManager> db_manager);
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository = nullptr,
+      std::shared_ptr<bridge::ReceivedMessageRepository>
+          received_message_repository = nullptr);
 
   /**
    * @brief 处理 /recall 命令
@@ -67,7 +71,9 @@ public:
       -> boost::asio::awaitable<void>;
 
 private:
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
+  std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
+  std::shared_ptr<bridge::ReceivedMessageRepository>
+      received_message_repository_;
 
   /**
    * @brief 发送回复消息

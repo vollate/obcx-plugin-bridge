@@ -88,6 +88,11 @@ void load_group_mappings();
  */
 void initialize_config();
 
+/**
+ * @brief Whether the OBCX actor pipeline owns raw message forwarding.
+ */
+bool actor_pipeline_enabled();
+
 // 辅助函数
 namespace {
 /**

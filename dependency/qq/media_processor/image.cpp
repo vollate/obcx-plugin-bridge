@@ -1,5 +1,7 @@
 #include "qq/media_processor.hpp"
 
+#include "bridge_hash.hpp"
+#include "bridge_state_repository.hpp"
 #include "config.hpp"
 #include "media_processor.hpp"
 
@@ -44,9 +46,11 @@ auto QQMediaProcessor::process_image_segment(
       !url.empty()) {
     try {
       std::string qq_sticker_hash =
-          storage::DatabaseManager::calculate_hash(url);
+          bridge::calculate_hash(url);
       auto cached_mapping =
-          db_manager_->get_qq_sticker_mapping(qq_sticker_hash);
+          state_repository_
+              ? state_repository_->get_qq_sticker_mapping(qq_sticker_hash)
+              : std::optional<storage::QQStickerMapping>{};
 
       if (cached_mapping && cached_mapping->is_gif.has_value()) {
         is_gif = cached_mapping->is_gif.value();
@@ -116,12 +120,17 @@ auto QQMediaProcessor::handle_sticker_cache(
     const GroupBridgeConfig *bridge_config) -> boost::asio::awaitable<bool> {
 
   try {
-    std::string qq_sticker_hash = storage::DatabaseManager::calculate_hash(
+    std::string qq_sticker_hash = bridge::calculate_hash(
         segment.data.value("file", "") + "_" + segment.data.value("url", ""));
 
-    auto cached_mapping = db_manager_->get_qq_sticker_mapping(qq_sticker_hash);
+    auto cached_mapping =
+        state_repository_
+            ? state_repository_->get_qq_sticker_mapping(qq_sticker_hash)
+            : std::optional<storage::QQStickerMapping>{};
     if (cached_mapping.has_value()) {
-      db_manager_->update_qq_sticker_last_used(qq_sticker_hash);
+      if (state_repository_) {
+        state_repository_->update_qq_sticker_last_used(qq_sticker_hash);
+      }
 
       bool show_sender_for_sticker = false;
       if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
@@ -244,7 +253,7 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
                      to_hex_string(file_header));
 
         std::string qq_sticker_hash =
-            storage::DatabaseManager::calculate_hash(url);
+            bridge::calculate_hash(url);
         storage::QQStickerMapping new_mapping;
         new_mapping.qq_sticker_hash = qq_sticker_hash;
         new_mapping.telegram_file_id = "";
@@ -254,8 +263,10 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
         new_mapping.created_at = std::chrono::system_clock::now();
         new_mapping.last_used_at = std::chrono::system_clock::now();
         new_mapping.last_checked_at = std::chrono::system_clock::now();
-        db_manager_->save_qq_sticker_mapping(new_mapping);
-        PLUGIN_DEBUG("qq_to_tg", "[图片类型检测] 缓存记录已保存");
+        if (state_repository_) {
+          state_repository_->save_qq_sticker_mapping(new_mapping);
+          PLUGIN_DEBUG("qq_to_tg", "[图片类型检测] 缓存记录已保存");
+        }
 
         co_return is_gif;
       } else {

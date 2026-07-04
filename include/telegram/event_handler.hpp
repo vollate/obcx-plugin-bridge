@@ -1,12 +1,14 @@
 #pragma once
 
-#include "database/manager.hpp"
-
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <functional>
 #include <interfaces/bot.hpp>
 #include <memory>
+
+namespace bridge {
+class BridgeStateRepository;
+}
 
 namespace bridge::telegram {
 
@@ -19,11 +21,10 @@ class TelegramEventHandler {
 public:
   /**
    * @brief 构造函数
-   * @param db_manager 数据库管理器
    * @param forward_function 转发消息的函数
    */
   explicit TelegramEventHandler(
-      std::shared_ptr<storage::DatabaseManager> db_manager,
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository,
       std::function<boost::asio::awaitable<void>(
           obcx::core::IBot &, obcx::core::IBot &, obcx::common::MessageEvent)>
           forward_function);
@@ -53,7 +54,7 @@ public:
       -> boost::asio::awaitable<void>;
 
 private:
-  std::shared_ptr<storage::DatabaseManager> db_manager_;
+  std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
   std::function<boost::asio::awaitable<void>(
       obcx::core::IBot &, obcx::core::IBot &, obcx::common::MessageEvent)>
       forward_function_;

@@ -5,8 +5,8 @@
 namespace bridge::qq {
 
 QQMediaProcessor::QQMediaProcessor(
-    std::shared_ptr<storage::DatabaseManager> db_manager)
-    : db_manager_(std::move(db_manager)) {}
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository)
+    : state_repository_(std::move(state_repository)) {}
 
 auto QQMediaProcessor::process_qq_media_segment(
     obcx::core::IBot &qq_bot, obcx::core::IBot &telegram_bot,
