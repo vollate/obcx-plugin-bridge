@@ -206,9 +206,9 @@ auto ImageUrlValidator::validate(
     results[i].failure_reason = (*reasons)[i];
     results[i].effective_url = placeholder;
     results[i].status = ImageUrlStatus::Replaced;
-    PLUGIN_WARN("qq_to_tg",
-                "[图片URL校验] 探测失败，使用占位图替换: {} (reason: {})",
-                results[i].original_url, results[i].failure_reason);
+    OBCX_COMPONENT_WARN(
+        "qq_to_tg", "[图片URL校验] 探测失败，使用占位图替换: {} (reason: {})",
+        results[i].original_url, results[i].failure_reason);
   }
   co_return results;
 }

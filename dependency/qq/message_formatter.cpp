@@ -41,10 +41,10 @@ auto QQMessageFormatter::format_sender_info(
     sender_segment.type = "text";
     sender_segment.data["text"] = sender_info;
     message_to_send.push_back(sender_segment);
-    PLUGIN_DEBUG("qq_to_tg", "QQ到Telegram转发显示发送者：{}",
-                 sender_display_name);
+    OBCX_COMPONENT_DEBUG("qq_to_tg", "QQ到Telegram转发显示发送者：{}",
+                         sender_display_name);
   } else {
-    PLUGIN_DEBUG("qq_to_tg", "QQ到Telegram转发不显示发送者");
+    OBCX_COMPONENT_DEBUG("qq_to_tg", "QQ到Telegram转发不显示发送者");
   }
 
   co_return sender_display_name;
@@ -60,8 +60,8 @@ auto QQMessageFormatter::format_reply_message(
       reply_message_id = obcx::common::JsonUtils::get_optional_id_as_string(
           segment.data, "id");
       if (reply_message_id.has_value()) {
-        PLUGIN_DEBUG("qq_to_tg", "检测到QQ引用消息，引用ID: {}",
-                     reply_message_id.value());
+        OBCX_COMPONENT_DEBUG("qq_to_tg", "检测到QQ引用消息，引用ID: {}",
+                             reply_message_id.value());
         break;
       }
     }
@@ -84,23 +84,24 @@ auto QQMessageFormatter::format_reply_message(
                             : std::optional<std::string>{};
     }
 
-    PLUGIN_DEBUG("qq_to_tg", "QQ回复消息映射查找: QQ消息ID {} -> TG消息ID {}",
-                 reply_message_id.value(),
-                 target_telegram_message_id.has_value()
-                     ? target_telegram_message_id.value()
-                     : "未找到");
+    OBCX_COMPONENT_DEBUG("qq_to_tg",
+                         "QQ回复消息映射查找: QQ消息ID {} -> TG消息ID {}",
+                         reply_message_id.value(),
+                         target_telegram_message_id.has_value()
+                             ? target_telegram_message_id.value()
+                             : "未找到");
 
     if (target_telegram_message_id.has_value()) {
       obcx::common::MessageSegment reply_segment;
       reply_segment.type = "reply";
       reply_segment.data["id"] = target_telegram_message_id.value();
       message_to_send.push_back(reply_segment);
-      PLUGIN_DEBUG("qq_to_tg", "添加Telegram引用消息段，引用ID: {}",
-                   target_telegram_message_id.value());
+      OBCX_COMPONENT_DEBUG("qq_to_tg", "添加Telegram引用消息段，引用ID: {}",
+                           target_telegram_message_id.value());
       co_return true;
     } else {
-      PLUGIN_DEBUG("qq_to_tg",
-                   "未找到QQ引用消息对应的Telegram消息ID，可能是原生QQ消息");
+      OBCX_COMPONENT_DEBUG(
+          "qq_to_tg", "未找到QQ引用消息对应的Telegram消息ID，可能是原生QQ消息");
     }
   }
 
@@ -119,7 +120,7 @@ auto QQMessageFormatter::process_forward_message(
       co_return;
     }
 
-    PLUGIN_DEBUG("qq_to_tg", "处理合并转发消息，ID: {}", forward_id);
+    OBCX_COMPONENT_DEBUG("qq_to_tg", "处理合并转发消息，ID: {}", forward_id);
 
     std::string forward_response =
         co_await dynamic_cast<obcx::core::QQBot &>(qq_bot).get_forward_msg(
@@ -187,7 +188,7 @@ auto QQMessageFormatter::process_forward_message(
                       }
                     }
                     forward_images.push_back(img_segment);
-                    PLUGIN_DEBUG(
+                    OBCX_COMPONENT_DEBUG(
                         "qq_to_tg", "收集合并转发中的图片: url={}",
                         img_segment.data.value(
                             "url", img_segment.data.value("file", "无URL")));
@@ -217,9 +218,9 @@ auto QQMessageFormatter::process_forward_message(
 
       // 合并转发收集到的图片同样走 sendMediaGroup（每批最多10张）。
       if (!forward_images.empty()) {
-        PLUGIN_INFO("qq_to_tg",
-                    "合并转发消息中发现 {} 张图片，准备使用MediaGroup发送",
-                    forward_images.size());
+        OBCX_COMPONENT_INFO(
+            "qq_to_tg", "合并转发消息中发现 {} 张图片，准备使用MediaGroup发送",
+            forward_images.size());
 
         std::vector<std::pair<std::string, std::string>> all_media;
         for (const auto &img_seg : forward_images) {
@@ -227,7 +228,7 @@ auto QQMessageFormatter::process_forward_message(
               img_seg.data.value("url", img_seg.data.value("file", ""));
           if (!url.empty()) {
             all_media.emplace_back("photo", url);
-            PLUGIN_DEBUG("qq_to_tg", "添加图片到MediaGroup: {}", url);
+            OBCX_COMPONENT_DEBUG("qq_to_tg", "添加图片到MediaGroup: {}", url);
           }
         }
 
@@ -278,10 +279,10 @@ auto QQMessageFormatter::process_forward_message(
               }
 
               if (first_send_failed) {
-                PLUGIN_WARN("qq_to_tg",
-                            "合并转发 MediaGroup 第 {}/{} 批失败 ({})，"
-                            "重新校验各 URL 后重试",
-                            batch + 1, total_batches, first_send_error);
+                OBCX_COMPONENT_WARN("qq_to_tg",
+                                    "合并转发 MediaGroup 第 {}/{} 批失败 ({})，"
+                                    "重新校验各 URL 后重试",
+                                    batch + 1, total_batches, first_send_error);
 
                 std::vector<std::string> resurgical;
                 batch_media = co_await ImageUrlValidator::sanitize(batch_media,
@@ -298,13 +299,13 @@ auto QQMessageFormatter::process_forward_message(
                                           caption, opt_topic_id, std::nullopt);
               }
 
-              PLUGIN_INFO("qq_to_tg",
-                          "成功通过MediaGroup发送第 {}/{} 批 {} 张图片{}",
-                          batch + 1, total_batches, batch_media.size(),
-                          first_send_failed ? "（占位图重试）" : "");
+              OBCX_COMPONENT_INFO(
+                  "qq_to_tg", "成功通过MediaGroup发送第 {}/{} 批 {} 张图片{}",
+                  batch + 1, total_batches, batch_media.size(),
+                  first_send_failed ? "（占位图重试）" : "");
               sent_count += batch_media.size();
             } catch (const std::exception &e) {
-              PLUGIN_ERROR(
+              OBCX_COMPONENT_ERROR(
                   "qq_to_tg",
                   "合并转发 MediaGroup 第 {}/{} 批占位图重试仍失败: {}，"
                   "本批放弃",
@@ -319,27 +320,29 @@ auto QQMessageFormatter::process_forward_message(
           }
 
           if (sent_count > 0) {
-            PLUGIN_INFO("qq_to_tg",
-                        "合并转发消息图片发送完成，共成功发送 {}/{} 张 "
-                        "(其中 {} 张失败已用占位图替换)",
-                        sent_count, all_media.size(), total_replaced_count);
+            OBCX_COMPONENT_INFO("qq_to_tg",
+                                "合并转发消息图片发送完成，共成功发送 {}/{} 张 "
+                                "(其中 {} 张失败已用占位图替换)",
+                                sent_count, all_media.size(),
+                                total_replaced_count);
           }
         }
       }
 
-      PLUGIN_INFO(
+      OBCX_COMPONENT_INFO(
           "qq_to_tg", "成功处理合并转发消息，包含 {} 条消息，{} 张图片",
           forward_data.value("messages", nlohmann::json::array()).size(),
           forward_images.size());
     } else {
-      PLUGIN_WARN("qq_to_tg", "获取合并转发内容失败: {}", forward_response);
+      OBCX_COMPONENT_WARN("qq_to_tg", "获取合并转发内容失败: {}",
+                          forward_response);
       obcx::common::MessageSegment error_segment;
       error_segment.type = "text";
       error_segment.data["text"] = "[合并转发消息获取失败]";
       message_to_send.push_back(error_segment);
     }
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("qq_to_tg", "处理合并转发消息时出错: {}", e.what());
+    OBCX_COMPONENT_ERROR("qq_to_tg", "处理合并转发消息时出错: {}", e.what());
     obcx::common::MessageSegment error_segment;
     error_segment.type = "text";
     error_segment.data["text"] = "[合并转发消息处理失败]";
@@ -392,11 +395,11 @@ auto QQMessageFormatter::process_node_message(
       }
 
       message_to_send.push_back(node_segment);
-      PLUGIN_DEBUG("qq_to_tg", "处理node消息段: 用户 {} ({})", node_nickname,
-                   node_user_id);
+      OBCX_COMPONENT_DEBUG("qq_to_tg", "处理node消息段: 用户 {} ({})",
+                           node_nickname, node_user_id);
     }
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("qq_to_tg", "处理node消息段时出错: {}", e.what());
+    OBCX_COMPONENT_ERROR("qq_to_tg", "处理node消息段时出错: {}", e.what());
     obcx::common::MessageSegment error_segment;
     error_segment.type = "text";
     error_segment.data["text"] = "[转发节点处理失败]";
@@ -420,8 +423,8 @@ auto QQMessageFormatter::send_media_group(
     co_return false;
   }
 
-  PLUGIN_INFO("qq_to_tg", "检测到多张图片({})，使用MediaGroup发送",
-              image_segments.size());
+  OBCX_COMPONENT_INFO("qq_to_tg", "检测到多张图片({})，使用MediaGroup发送",
+                      image_segments.size());
 
   bool any_batch_sent = false;
   // 累积所有批次中被占位图替换掉的 URL，仅在最后一批的 caption 末尾追加一次
@@ -431,16 +434,16 @@ auto QQMessageFormatter::send_media_group(
        sent_count += 10) {
     size_t batch_size =
         std::min(static_cast<size_t>(10), image_segments.size() - sent_count);
-    PLUGIN_DEBUG("qq_to_tg",
-                 "准备发送MediaGroup图片，起始索引: {}, 本批次数量: {}",
-                 sent_count, batch_size);
+    OBCX_COMPONENT_DEBUG("qq_to_tg",
+                         "准备发送MediaGroup图片，起始索引: {}, 本批次数量: {}",
+                         sent_count, batch_size);
     std::vector<std::pair<std::string, std::string>> media_list;
     for (size_t i = 0; i < batch_size; ++i) {
       std::string url = image_segments[sent_count + i].data.value(
           "url", image_segments[sent_count + i].data.value("file", ""));
       if (!url.empty()) {
         media_list.emplace_back("photo", url);
-        PLUGIN_DEBUG("qq_to_tg", "添加图片到MediaGroup: {}", url);
+        OBCX_COMPONENT_DEBUG("qq_to_tg", "添加图片到MediaGroup: {}", url);
       }
     }
 
@@ -520,9 +523,9 @@ auto QQMessageFormatter::send_media_group(
 
         bool used_placeholder_retry = false;
         if (first_send_failed) {
-          PLUGIN_WARN("qq_to_tg",
-                      "MediaGroup 首次发送失败 ({})，重新校验各 URL 后重试",
-                      first_send_error);
+          OBCX_COMPONENT_WARN(
+              "qq_to_tg", "MediaGroup 首次发送失败 ({})，重新校验各 URL 后重试",
+              first_send_error);
 
           // 让 ImageUrlValidator 再做一次每 URL 的指数退避探测，只把这次新失
           // 败的 URL 替换成占位图——精准定位真正断的那张，不动其它能正常拉到
@@ -551,9 +554,9 @@ auto QQMessageFormatter::send_media_group(
                                     opt_topic_id, opt_reply_id);
         }
 
-        PLUGIN_INFO("qq_to_tg", "成功通过MediaGroup发送 {} 张图片{}",
-                    media_list.size(),
-                    used_placeholder_retry ? "（占位图重试）" : "");
+        OBCX_COMPONENT_INFO("qq_to_tg", "成功通过MediaGroup发送 {} 张图片{}",
+                            media_list.size(),
+                            used_placeholder_retry ? "（占位图重试）" : "");
 
         if (!media_response.empty()) {
           try {
@@ -576,21 +579,22 @@ auto QQMessageFormatter::send_media_group(
                 if (state_repository_) {
                   state_repository_->add_message_mapping(mapping);
                 }
-                PLUGIN_DEBUG("qq_to_tg",
-                             "记录MediaGroup消息映射: QQ {} -> TG {}",
-                             event.message_id, tg_msg_id);
+                OBCX_COMPONENT_DEBUG("qq_to_tg",
+                                     "记录MediaGroup消息映射: QQ {} -> TG {}",
+                                     event.message_id, tg_msg_id);
               }
             }
           } catch (const std::exception &e) {
-            PLUGIN_WARN("qq_to_tg", "解析MediaGroup响应失败: {}", e.what());
+            OBCX_COMPONENT_WARN("qq_to_tg", "解析MediaGroup响应失败: {}",
+                                e.what());
           }
         }
 
         any_batch_sent = true;
       } catch (const std::exception &e) {
         // 占位图重试还失败：问题不在 URL 而在 Telegram 端，单图重试同样无效。
-        PLUGIN_ERROR("qq_to_tg", "MediaGroup 占位图重试仍失败: {}，本批放弃",
-                     e.what());
+        OBCX_COMPONENT_ERROR(
+            "qq_to_tg", "MediaGroup 占位图重试仍失败: {}，本批放弃", e.what());
       }
     }
   }
@@ -609,10 +613,10 @@ auto QQMessageFormatter::get_user_display_name(obcx::core::IBot &qq_bot,
 
   if (!display_name.has_value()) {
     co_await fetch_user_info(qq_bot, user_id, group_id);
-    display_name =
-        state_repository_
-            ? state_repository_->query_user_display_name("qq", user_id, group_id)
-            : std::optional<std::string>{};
+    display_name = state_repository_
+                       ? state_repository_->query_user_display_name(
+                             "qq", user_id, group_id)
+                       : std::optional<std::string>{};
   }
 
   co_return display_name.value_or(user_id);
@@ -622,7 +626,8 @@ auto QQMessageFormatter::fetch_user_info(obcx::core::IBot &qq_bot,
                                          const std::string &user_id,
                                          const std::string &group_id)
     -> boost::asio::awaitable<void> {
-  co_await fetch_and_save_user_info(state_repository_, qq_bot, user_id, group_id);
+  co_await fetch_and_save_user_info(state_repository_, qq_bot, user_id,
+                                    group_id);
 }
 
 auto QQMessageFormatter::fetch_and_save_user_info(
@@ -634,13 +639,13 @@ auto QQMessageFormatter::fetch_and_save_user_info(
         co_await qq_bot.get_group_member_info(group_id, user_id, false);
     nlohmann::json response_json = nlohmann::json::parse(response);
 
-    PLUGIN_DEBUG("qq_to_tg", "QQ群成员信息API响应: {}", response);
+    OBCX_COMPONENT_DEBUG("qq_to_tg", "QQ群成员信息API响应: {}", response);
 
     if (response_json.contains("status") && response_json["status"] == "ok" &&
         response_json.contains("data") && response_json["data"].is_object()) {
 
       auto data = response_json["data"];
-      PLUGIN_DEBUG("qq_to_tg", "QQ群成员信息详细数据: {}", data.dump());
+      OBCX_COMPONENT_DEBUG("qq_to_tg", "QQ群成员信息详细数据: {}", data.dump());
 
       storage::UserInfo user_info;
       user_info.platform = "qq";
@@ -665,16 +670,16 @@ auto QQMessageFormatter::fetch_and_save_user_info(
       // 显示名优先级：群名片 > 群头衔 > 一般昵称
       if (!card.empty()) {
         user_info.nickname = card;
-        PLUGIN_DEBUG("qq_to_tg", "使用QQ群名片作为显示名称: {} -> {}", user_id,
-                     card);
+        OBCX_COMPONENT_DEBUG("qq_to_tg", "使用QQ群名片作为显示名称: {} -> {}",
+                             user_id, card);
       } else if (!title.empty()) {
         user_info.nickname = title;
-        PLUGIN_DEBUG("qq_to_tg", "使用QQ群头衔作为显示名称: {} -> {}", user_id,
-                     title);
+        OBCX_COMPONENT_DEBUG("qq_to_tg", "使用QQ群头衔作为显示名称: {} -> {}",
+                             user_id, title);
       } else if (!general_nickname.empty()) {
         user_info.nickname = general_nickname;
-        PLUGIN_DEBUG("qq_to_tg", "使用QQ一般昵称作为显示名称: {} -> {}",
-                     user_id, general_nickname);
+        OBCX_COMPONENT_DEBUG("qq_to_tg", "使用QQ一般昵称作为显示名称: {} -> {}",
+                             user_id, general_nickname);
       }
 
       // title 单独保留一份，供需要群头衔的逻辑使用。
@@ -685,11 +690,11 @@ auto QQMessageFormatter::fetch_and_save_user_info(
       if (state_repository) {
         state_repository->save_or_update_user(user_info, true);
       }
-      PLUGIN_DEBUG("qq_to_tg", "获取QQ用户信息成功：{} -> {}", user_id,
-                   user_info.nickname);
+      OBCX_COMPONENT_DEBUG("qq_to_tg", "获取QQ用户信息成功：{} -> {}", user_id,
+                           user_info.nickname);
     }
   } catch (const std::exception &e) {
-    PLUGIN_DEBUG("qq_to_tg", "获取QQ用户信息失败：{}", e.what());
+    OBCX_COMPONENT_DEBUG("qq_to_tg", "获取QQ用户信息失败：{}", e.what());
   }
 }
 

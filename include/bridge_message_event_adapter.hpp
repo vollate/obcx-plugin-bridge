@@ -1,7 +1,7 @@
 #pragma once
 
 #include <common/message_type.hpp>
-#include <core/actor.hpp>
+#include <core/actor_v2.hpp>
 
 #include <optional>
 

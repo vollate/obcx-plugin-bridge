@@ -1,0 +1,9 @@
+build/
+build-*/
+cmake-build*/
+*.db
+*.dylib
+*.so
+*.dll
+__pycache__/
+.DS_Store

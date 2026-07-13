@@ -120,10 +120,11 @@ auto TelegramMediaProcessor::process_media_file(
       result.push_back(obcx::common::MessageSegment{
           .type = "text", .data = std::move(caption_text)});
     }
-    PLUGIN_INFO("tg_to_qq", "成功处理Telegram {}文件: {}", file_type, filename);
+    OBCX_COMPONENT_INFO("tg_to_qq", "成功处理Telegram {}文件: {}", file_type,
+                        filename);
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("tg_to_qq", "处理媒体文件失败: {}", e.what());
+    OBCX_COMPONENT_ERROR("tg_to_qq", "处理媒体文件失败: {}", e.what());
   }
 
   co_return result;

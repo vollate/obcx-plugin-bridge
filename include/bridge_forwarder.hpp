@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/actor.hpp>
+#include <core/actor_v2.hpp>
 
 #include <boost/asio/awaitable.hpp>
 

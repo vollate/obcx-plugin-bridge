@@ -1,19 +1,15 @@
 #include "bridge_actor.hpp"
 #include "bridge_forwarder.hpp"
-#include "common/config_loader.hpp"
+#include "core/actor_db.hpp"
 #include "core/db_manager.hpp"
 
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <exception>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -22,28 +18,22 @@ namespace asio = boost::asio;
 namespace {
 
 template <typename T>
-auto run_awaitable(asio::io_context &ioc, asio::awaitable<T> awaitable) -> T {
-  std::optional<T> result;
-  std::exception_ptr exception;
-
-  asio::co_spawn(
-      ioc,
-      [&]() -> asio::awaitable<void> {
-        try {
-          result = co_await std::move(awaitable);
-        } catch (...) {
-          exception = std::current_exception();
-        }
-      },
-      asio::detached);
-
-  ioc.run();
-  ioc.restart();
-
-  if (exception) {
-    std::rethrow_exception(exception);
+auto run_actor_task(asio::io_context &ioc, obcx::core::ActorTask<T> task) -> T {
+  bool ready = false;
+  task.attach_runtime(obcx::core::ActorTaskRuntimeContext{
+      .cancellation = std::make_shared<obcx::core::ActorCancellationState>(),
+      .make_runnable = [&ready](std::uint64_t) { ready = true; },
+  });
+  task.resume();
+  while (!task.done()) {
+    ioc.restart();
+    if (ioc.run() == 0 || !ready) {
+      throw std::runtime_error("bridge actor I/O did not become runnable");
+    }
+    ready = false;
+    task.resume();
   }
-  return std::move(*result);
+  return task.take_result();
 }
 
 auto temp_db_path(const std::string &name) -> std::filesystem::path {
@@ -111,7 +101,7 @@ TEST(BridgeActorTest, PersistsMappingAndEmitsMessageForwarded) {
   obcx::core::ActorContext context("bridge", services, "main", "bridge");
 
   asio::io_context ioc;
-  const auto result = run_awaitable(
+  const auto result = run_actor_task(
       ioc, actor.handle_message(message_stored("qq-7", "tg-9"), context));
 
   ASSERT_TRUE(result.ok());
@@ -150,7 +140,8 @@ TEST(BridgeActorTest, EmitsMessageForwardFailedWhenMappingFieldsAreMissing) {
   stored.payload.erase("target_message_id");
 
   asio::io_context ioc;
-  const auto result = run_awaitable(ioc, actor.handle_message(stored, context));
+  const auto result =
+      run_actor_task(ioc, actor.handle_message(stored, context));
 
   ASSERT_FALSE(result.ok());
   ASSERT_TRUE(result.failure.has_value());
@@ -176,6 +167,9 @@ TEST(BridgeActorTest, ForwardsMessageStoredThroughRuntimeForwarder) {
                                   .target_bot = "tg-main",
                                   .target_message_id = "tg-actor-9"});
   services->register_service<bridge::IBridgeForwarder>(forwarder);
+  asio::io_context ioc;
+  services->register_service<boost::asio::any_io_executor>(
+      std::make_shared<boost::asio::any_io_executor>(ioc.get_executor()));
 
   bridge::BridgeActor actor;
   obcx::core::ActorContext context("bridge", services, "main", "bridge");
@@ -183,8 +177,8 @@ TEST(BridgeActorTest, ForwardsMessageStoredThroughRuntimeForwarder) {
   stored.payload.erase("target_platform");
   stored.payload.erase("target_message_id");
 
-  asio::io_context ioc;
-  const auto result = run_awaitable(ioc, actor.handle_message(stored, context));
+  const auto result =
+      run_actor_task(ioc, actor.handle_message(stored, context));
 
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(forwarder->seen_messages.size(), 1);

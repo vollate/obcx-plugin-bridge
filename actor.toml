@@ -1,0 +1,21 @@
+schema_version = 1
+
+[actor]
+id = "obcx.bridge"
+name = "bridge"
+version = "0.1.0"
+abi = 2
+obcx = ">=0.1.0 <1.0.0"
+
+[artifact]
+target = "bridge_actor"
+filename = "bridge"
+
+[dependencies]
+actors = [{ id = "obcx.message-store", version = "^0.1.0" }]
+vcpkg = ["tomlplusplus"]
+
+[publication]
+repository = "https://github.com/vollate/obcx-actor-bridge"
+license = "MIT"
+description = "Forwards messages between QQ and Telegram actor pipelines"

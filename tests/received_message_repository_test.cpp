@@ -1,4 +1,4 @@
-#include "common/config_loader.hpp"
+#include "core/actor_db.hpp"
 #include "core/db_manager.hpp"
 #include "received_message_repository.hpp"
 

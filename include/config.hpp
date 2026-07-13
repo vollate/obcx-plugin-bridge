@@ -75,23 +75,37 @@ struct GroupBridgeConfig {
         enable_tg_to_qq{enable_tg_qq} {}
 };
 
-// 动态加载的群组桥接映射配置
+struct BridgeRuntimeConfig {
+  std::unordered_map<std::string, GroupBridgeConfig> group_mappings;
+  std::string database_file = "bridge_actor.db";
+  bool enable_miniapp_parsing = true;
+  bool show_raw_json_on_parse_fail = true;
+  int max_json_display_length = 2000;
+  bool enable_retry_queue = true;
+  int message_retry_max_attempts = 5;
+  int media_retry_max_attempts = 3;
+  int message_retry_base_interval_sec = 2;
+  int media_retry_base_interval_sec = 5;
+  int retry_queue_check_interval_sec = 10;
+  int max_retry_interval_sec = 300;
+  std::string bridge_files_dir = "/tmp/bridge_files";
+  std::string bridge_files_container_dir = "/root/llonebot/bridge_files";
+  size_t gif_max_file_size = 0;
+  int gif_max_duration = 5;
+  int gif_max_fps = 0;
+  int gif_max_width = 0;
+  int gif_max_colors = 256;
+  int image_url_probe_max_attempts = 3;
+  int image_url_probe_base_delay_ms = 500;
+  int image_url_probe_timeout_ms = 5000;
+  std::string image_placeholder_url =
+      "https://placehold.co/512x512/cccccc/666666/png?text=Image+Unavailable";
+};
+
+void apply_runtime_config(const BridgeRuntimeConfig &runtime_config);
+
+// Actor-owned group bridge mappings.
 extern std::unordered_map<std::string, GroupBridgeConfig> GROUP_MAP;
-
-/**
- * @brief 从配置文件加载群组映射
- */
-void load_group_mappings();
-
-/**
- * @brief 初始化配置系统
- */
-void initialize_config();
-
-/**
- * @brief Whether the OBCX actor pipeline owns raw message forwarding.
- */
-bool actor_pipeline_enabled();
 
 // 辅助函数
 namespace {
@@ -167,29 +181,7 @@ const TopicBridgeConfig *get_topic_config(const std::string &tg_group_id,
   return nullptr;
 }
 
-// 向后兼容的简单函数
-inline std::string get_qq_group_id(const std::string &tg_group_id) {
-  return get_qq_group_id_for_topic(tg_group_id, -1);
-}
-
-inline std::string get_tg_group_id(const std::string &qq_group_id) {
-  return get_tg_group_and_topic_id(qq_group_id).first;
-}
 } // namespace
-
-// 兼容性别名：保持原有的简单映射接口（仅适用于群组模式）
-inline const std::unordered_map<std::string, std::string>
-get_legacy_group_map() {
-  static std::unordered_map<std::string, std::string> legacy_map;
-  if (legacy_map.empty()) {
-    for (const auto &[tg_id, config] : GROUP_MAP) {
-      if (config.mode == BridgeMode::GROUP_TO_GROUP) {
-        legacy_map[tg_id] = config.qq_group_id;
-      }
-    }
-  }
-  return legacy_map;
-}
 
 // 动态配置变量
 namespace config {
@@ -247,10 +239,6 @@ extern int IMAGE_URL_PROBE_BASE_DELAY_MS; // 退避基准延迟（毫秒），�
 extern int IMAGE_URL_PROBE_TIMEOUT_MS;    // 单次探测超时（毫秒），默认5000
 extern std::string IMAGE_PLACEHOLDER_URL; // 失败兜底占位图URL（空=丢弃）
 
-/**
- * @brief 从配置文件加载配置
- */
-void load_config();
 } // namespace config
 
 } // namespace bridge

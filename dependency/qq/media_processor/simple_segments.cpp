@@ -13,7 +13,8 @@ auto QQMediaProcessor::process_record_segment(
   std::string file_name = segment.data.value("file", "");
   std::string url = segment.data.value("url", "");
 
-  PLUGIN_DEBUG("qq_to_tg", "转发QQ语音文件: file={}, url={}", file_name, url);
+  OBCX_COMPONENT_DEBUG("qq_to_tg", "转发QQ语音文件: file={}, url={}", file_name,
+                       url);
 
   if (!url.empty()) {
     converted.data["file"] = url;
@@ -30,7 +31,8 @@ auto QQMediaProcessor::process_video_segment(
   std::string file_name = segment.data.value("file", "");
   std::string url = segment.data.value("url", "");
 
-  PLUGIN_DEBUG("qq_to_tg", "转发QQ视频文件: file={}, url={}", file_name, url);
+  OBCX_COMPONENT_DEBUG("qq_to_tg", "转发QQ视频文件: file={}, url={}", file_name,
+                       url);
 
   if (!url.empty()) {
     converted.data["file"] = url;
@@ -48,7 +50,7 @@ auto QQMediaProcessor::process_face_segment(
   std::string face_id = segment.data.value("id", "0");
   converted.data.clear();
   converted.data["text"] = fmt::format("[QQ表情:{}]", face_id);
-  PLUGIN_DEBUG("qq_to_tg", "转换QQ表情为文本提示: face_id={}", face_id);
+  OBCX_COMPONENT_DEBUG("qq_to_tg", "转换QQ表情为文本提示: face_id={}", face_id);
   co_return converted;
 }
 
@@ -71,9 +73,9 @@ auto QQMediaProcessor::process_mface_segment(
       converted.data["caption"] = summary;
     }
 
-    PLUGIN_DEBUG("qq_to_tg",
-                 "转换QQ超级表情为动画: url={}, summary={}, emoji_id={}", url,
-                 summary, emoji_id);
+    OBCX_COMPONENT_DEBUG(
+        "qq_to_tg", "转换QQ超级表情为动画: url={}, summary={}, emoji_id={}",
+        url, summary, emoji_id);
   } else {
     converted.type = "text";
     converted.data.clear();
@@ -82,8 +84,8 @@ auto QQMediaProcessor::process_mface_segment(
     } else {
       converted.data["text"] = "[QQ超级表情]";
     }
-    PLUGIN_WARN("qq_to_tg", "QQ超级表情缺少URL，转换为文本: summary={}",
-                summary);
+    OBCX_COMPONENT_WARN("qq_to_tg", "QQ超级表情缺少URL，转换为文本: summary={}",
+                        summary);
   }
 
   co_return converted;
@@ -97,7 +99,7 @@ auto QQMediaProcessor::process_shake_segment(
   converted.type = "text";
   converted.data.clear();
   converted.data["text"] = "[戳一戳]";
-  PLUGIN_DEBUG("qq_to_tg", "转换QQ戳一戳为文本提示");
+  OBCX_COMPONENT_DEBUG("qq_to_tg", "转换QQ戳一戳为文本提示");
   co_return converted;
 }
 
@@ -110,7 +112,7 @@ auto QQMediaProcessor::process_music_segment(
   std::string title = segment.data.value("title", "未知音乐");
   converted.data.clear();
   converted.data["text"] = fmt::format("[音乐分享: {}]", title);
-  PLUGIN_DEBUG("qq_to_tg", "转换QQ音乐分享为文本: title={}", title);
+  OBCX_COMPONENT_DEBUG("qq_to_tg", "转换QQ音乐分享为文本: title={}", title);
   co_return converted;
 }
 
@@ -124,8 +126,8 @@ auto QQMediaProcessor::process_share_segment(
   std::string title = segment.data.value("title", "链接分享");
   converted.data.clear();
   converted.data["text"] = fmt::format("[{}]\t{}", title, url);
-  PLUGIN_DEBUG("qq_to_tg", "转换QQ链接分享为文本: title={}, url={}", title,
-               url);
+  OBCX_COMPONENT_DEBUG("qq_to_tg", "转换QQ链接分享为文本: title={}, url={}",
+                       title, url);
   co_return converted;
 }
 

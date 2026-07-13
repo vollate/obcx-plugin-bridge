@@ -46,7 +46,7 @@ auto MediaProcessor::get_qq_file_info(const std::string &file_url,
 
     return {file_url, filename};
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("bridge", "获取QQ文件信息时出错: {}", e.what());
+    OBCX_COMPONENT_ERROR("bridge", "获取QQ文件信息时出错: {}", e.what());
     return {file_url, "file"};
   }
 }
@@ -55,11 +55,11 @@ auto MediaProcessor::cleanup_media_file(const std::string &file_path) -> void {
   try {
     if (std::filesystem::exists(file_path)) {
       std::filesystem::remove(file_path);
-      PLUGIN_DEBUG("bridge", "清理临时媒体文件: {}", file_path);
+      OBCX_COMPONENT_DEBUG("bridge", "清理临时媒体文件: {}", file_path);
     }
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("bridge", "清理临时媒体文件失败: {}, 错误: {}", file_path,
-                 e.what());
+    OBCX_COMPONENT_ERROR("bridge", "清理临时媒体文件失败: {}, 错误: {}",
+                         file_path, e.what());
   }
 }
 
@@ -71,7 +71,7 @@ auto MediaProcessor::get_path_manager() -> const PathManager & {
     if (bridge::config::BRIDGE_FILES_DIR.empty()) {
       throw std::runtime_error(
           "PathManager: BRIDGE_FILES_DIR is not configured. Please ensure "
-          "initialize_config() is called before using MediaProcessor.");
+          "BridgeRuntimeConfig is registered before using MediaProcessor.");
     }
     path_manager_instance = std::make_unique<PathManager>(
         bridge::config::BRIDGE_FILES_DIR,
@@ -95,7 +95,8 @@ auto MediaProcessor::is_gif_content_type(const std::string &content_type)
                  lower_content_type == "image/x-gif" ||
                  lower_content_type.find("gif") != std::string::npos);
 
-  PLUGIN_DEBUG("bridge", "Content-Type {} 判断为GIF: {}", content_type, is_gif);
+  OBCX_COMPONENT_DEBUG("bridge", "Content-Type {} 判断为GIF: {}", content_type,
+                       is_gif);
   return is_gif;
 }
 

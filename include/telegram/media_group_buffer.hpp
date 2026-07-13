@@ -55,7 +55,7 @@ public:
   /**
    * @brief Flush all currently buffered groups synchronously.
    *
-   * Called during plugin shutdown to ensure no group is silently dropped if
+   * Called during actor shutdown to ensure no group is silently dropped if
    * its debounce timer was still pending. Each group's stored callback is
    * invoked exactly once on the calling thread.
    */

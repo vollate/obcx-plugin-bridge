@@ -48,14 +48,14 @@ auto TelegramMediaProcessor::process_sticker(
         file_segment.data["caption"] = sticker_info;
       }
 
-      PLUGIN_INFO("tg_to_qq", "成功缓存Telegram sticker到容器路径: {}",
-                  container_file_path);
+      OBCX_COMPONENT_INFO("tg_to_qq", "成功缓存Telegram sticker到容器路径: {}",
+                          container_file_path);
     } else {
       throw std::runtime_error("缓存下载失败");
     }
   } catch (const std::exception &e) {
-    PLUGIN_WARN("tg_to_qq", "缓存系统处理表情包失败: {}, 回退为文本提示",
-                e.what());
+    OBCX_COMPONENT_WARN("tg_to_qq",
+                        "缓存系统处理表情包失败: {}, 回退为文本提示", e.what());
 
     file_segment.type = "text";
     std::string emoji_info = "";
@@ -76,20 +76,20 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
 
   try {
     if (media_info.file_type != "sticker") {
-      PLUGIN_ERROR("tg_to_qq", "不支持的文件类型，仅支持sticker: {}",
-                   media_info.file_type);
+      OBCX_COMPONENT_ERROR("tg_to_qq", "不支持的文件类型，仅支持sticker: {}",
+                           media_info.file_type);
       co_return std::nullopt;
     }
 
     // 严格使用 file_unique_id 作为唯一缓存键，不要使用任何 hash
     if (media_info.file_unique_id.empty()) {
-      PLUGIN_WARN("tg_to_qq",
-                  "file_unique_id为空，跳过数据库缓存操作，直接下载: {}",
-                  media_info.file_id);
+      OBCX_COMPONENT_WARN(
+          "tg_to_qq", "file_unique_id为空，跳过数据库缓存操作，直接下载: {}",
+          media_info.file_id);
     } else {
       std::string cache_key = media_info.file_unique_id;
-      PLUGIN_DEBUG("tg_to_qq", "表情包缓存查找，使用file_unique_id: {}",
-                   cache_key);
+      OBCX_COMPONENT_DEBUG("tg_to_qq", "表情包缓存查找，使用file_unique_id: {}",
+                           cache_key);
 
       auto cache_info =
           state_repository_
@@ -120,24 +120,26 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
             state_repository_->save_sticker_cache(update_info);
           }
 
-          PLUGIN_DEBUG("tg_to_qq", "表情包缓存命中: {} -> {}", cache_key,
-                       cache_info->container_path);
+          OBCX_COMPONENT_DEBUG("tg_to_qq", "表情包缓存命中: {} -> {}",
+                               cache_key, cache_info->container_path);
           co_return cache_info->container_path;
         } else {
-          PLUGIN_WARN("tg_to_qq", "表情包缓存项存在但文件丢失，将重新下载: {}",
-                      cache_key);
+          OBCX_COMPONENT_WARN("tg_to_qq",
+                              "表情包缓存项存在但文件丢失，将重新下载: {}",
+                              cache_key);
         }
       }
     }
 
-    PLUGIN_INFO("tg_to_qq", "表情包缓存未命中，开始下载: {}",
-                media_info.file_id);
+    OBCX_COMPONENT_INFO("tg_to_qq", "表情包缓存未命中，开始下载: {}",
+                        media_info.file_id);
 
     auto download_urls =
         co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
             .get_media_download_urls({media_info});
     if (download_urls.empty() || !download_urls[0].has_value()) {
-      PLUGIN_ERROR("tg_to_qq", "获取表情包下载URL失败: {}", media_info.file_id);
+      OBCX_COMPONENT_ERROR("tg_to_qq", "获取表情包下载URL失败: {}",
+                           media_info.file_id);
       co_return std::nullopt;
     }
 
@@ -178,7 +180,7 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
 
     auto *tg_bot = dynamic_cast<obcx::core::TGBot *>(&telegram_bot);
     if (!tg_bot) {
-      PLUGIN_ERROR("tg_to_qq", "telegram_bot不是TGBot类型");
+      OBCX_COMPONENT_ERROR("tg_to_qq", "telegram_bot不是TGBot类型");
       co_return std::nullopt;
     }
 
@@ -186,14 +188,15 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
         dynamic_cast<obcx::network::TelegramConnectionManager *>(
             tg_bot->get_connection_manager());
     if (!conn_manager) {
-      PLUGIN_ERROR("tg_to_qq", "连接管理器不是TelegramConnectionManager类型");
+      OBCX_COMPONENT_ERROR("tg_to_qq",
+                           "连接管理器不是TelegramConnectionManager类型");
       co_return std::nullopt;
     }
 
     auto file_content =
         co_await conn_manager->download_file_content(download_url);
     if (file_content.empty()) {
-      PLUGIN_ERROR("tg_to_qq", "下载文件内容为空: {}", download_url);
+      OBCX_COMPONENT_ERROR("tg_to_qq", "下载文件内容为空: {}", download_url);
       co_return std::nullopt;
     }
 
@@ -204,8 +207,9 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
     file.write(file_content.data(), file_content.size());
     file.close();
 
-    PLUGIN_INFO("tg_to_qq", "表情包原始文件已下载: {} -> {} ({}字节)",
-                media_info.file_id, original_file_path, file_content.size());
+    OBCX_COMPONENT_INFO("tg_to_qq", "表情包原始文件已下载: {} -> {} ({}字节)",
+                        media_info.file_id, original_file_path,
+                        file_content.size());
 
     std::string final_file_path = original_file_path;
     std::string final_container_path;
@@ -214,8 +218,8 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
     // QQ 不能直接显示 webm 贴纸，必须先转 gif；
     // 转换受 GIF_MAX_DURATION/SIZE/WIDTH/FPS/COLORS 等参数约束
     if (mime_type == "video/webm" || file_extension == ".webm") {
-      PLUGIN_INFO("tg_to_qq", "检测到webm格式贴纸，开始转换为gif: {}",
-                  original_file_path);
+      OBCX_COMPONENT_INFO("tg_to_qq", "检测到webm格式贴纸，开始转换为gif: {}",
+                          original_file_path);
 
       std::string converted_dir = host_bridge_files_dir + "/stickers/converted";
       std::filesystem::create_directories(converted_dir);
@@ -232,16 +236,17 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
               bridge::config::GIF_MAX_FPS, bridge::config::GIF_MAX_COLORS);
 
       if (conversion_success && std::filesystem::exists(converted_file_path)) {
-        PLUGIN_INFO("tg_to_qq", "webm贴纸到gif转换成功: {} -> {}",
-                    original_file_path, converted_file_path);
+        OBCX_COMPONENT_INFO("tg_to_qq", "webm贴纸到gif转换成功: {} -> {}",
+                            original_file_path, converted_file_path);
         final_file_path = converted_file_path;
         final_container_path =
             "/root/llonebot/bridge_files/stickers/converted/" +
             converted_filename;
         conversion_status = "success";
       } else {
-        PLUGIN_WARN("tg_to_qq", "webm贴纸到gif转换失败，使用原始webm文件: {}",
-                    original_file_path);
+        OBCX_COMPONENT_WARN("tg_to_qq",
+                            "webm贴纸到gif转换失败，使用原始webm文件: {}",
+                            original_file_path);
         final_container_path =
             "/root/llonebot/bridge_files/stickers/original/" +
             original_filename;
@@ -272,20 +277,20 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
 
       if (state_repository_ &&
           !state_repository_->save_sticker_cache(new_cache_info)) {
-        PLUGIN_WARN("tg_to_qq", "保存表情包缓存失败，但文件已下载: {}",
-                    final_file_path);
+        OBCX_COMPONENT_WARN("tg_to_qq", "保存表情包缓存失败，但文件已下载: {}",
+                            final_file_path);
       }
     } else {
-      PLUGIN_DEBUG("tg_to_qq", "没有file_unique_id，跳过数据库保存");
+      OBCX_COMPONENT_DEBUG("tg_to_qq", "没有file_unique_id，跳过数据库保存");
     }
 
-    PLUGIN_INFO("tg_to_qq", "表情包缓存完成: {} -> {}", media_info.file_id,
-                final_container_path);
+    OBCX_COMPONENT_INFO("tg_to_qq", "表情包缓存完成: {} -> {}",
+                        media_info.file_id, final_container_path);
     co_return final_container_path;
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("tg_to_qq", "下载表情包失败 (file_id: {}): {}",
-                 media_info.file_id, e.what());
+    OBCX_COMPONENT_ERROR("tg_to_qq", "下载表情包失败 (file_id: {}): {}",
+                         media_info.file_id, e.what());
     co_return std::nullopt;
   }
 }

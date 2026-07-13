@@ -1,0 +1,31 @@
+[actors.message_store]
+library = "message_store"
+enabled = true
+partition = "conversation_id"
+db = "main"
+db_namespace = "message_store"
+
+[actors.bridge]
+library = "bridge"
+enabled = true
+partition = "conversation_id"
+db = "main"
+db_namespace = "bridge"
+
+[pipelines.received_message]
+source = "RawMessageEvent"
+
+[[pipelines.received_message.stages]]
+name = "persist"
+actor = "message_store"
+input = "RawMessageEvent"
+output = "MessageStored"
+mode = "await"
+
+[[pipelines.received_message.stages]]
+name = "forward"
+actor = "bridge"
+input = "MessageStored"
+output = ["MessageForwarded", "MessageForwardFailed"]
+after = ["persist"]
+mode = "await"

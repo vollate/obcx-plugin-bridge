@@ -1,7 +1,7 @@
 #include "bridge_state_repository.hpp"
 #include "bridge_storage_models.hpp"
-#include "common/config_loader.hpp"
 #include "config.hpp"
+#include "core/actor_db.hpp"
 #include "core/db_manager.hpp"
 #include "qq/message_formatter.hpp"
 
@@ -39,47 +39,6 @@ auto sqlite_config(const std::filesystem::path &path)
 }
 
 } // namespace
-
-TEST(BridgeHandlerRepositoryTest, DetectsActorPipelineOwnershipFromConfig) {
-  const auto config_path =
-      temp_db_path("actor_pipeline").replace_extension(".toml");
-  {
-    std::ofstream config(config_path);
-    config << R"(
-[actors.message_store]
-library = "message_store"
-enabled = true
-
-[actors.bridge]
-library = "bridge"
-enabled = true
-
-[pipelines.received_message]
-source = "RawMessageEvent"
-
-[[pipelines.received_message.stages]]
-name = "persist_received"
-actor = "message_store"
-input = "RawMessageEvent"
-output = "MessageStored"
-mode = "await"
-
-[[pipelines.received_message.stages]]
-name = "forward"
-actor = "bridge"
-input = "MessageStored"
-output = ["MessageForwarded", "MessageForwardFailed"]
-after = ["persist_received"]
-mode = "await"
-)";
-  }
-
-  ASSERT_TRUE(
-      obcx::common::ConfigLoader::instance().load_config(config_path.string()));
-  EXPECT_TRUE(bridge::actor_pipeline_enabled());
-
-  std::filesystem::remove(config_path);
-}
 
 TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
   const auto bridge_db_path = temp_db_path("bridge_mapping");
@@ -132,8 +91,6 @@ TEST(BridgeHandlerRepositoryTest,
   const auto qq_handler = source_root / "dependency" / "qq" / "handler.cpp";
   const auto tg_handler =
       source_root / "dependency" / "telegram" / "handler.cpp";
-  const auto qq_plugin = source_root / "qq_to_tg" / "qq_to_tg_plugin.cpp";
-  const auto tg_plugin = source_root / "tg_to_qq" / "tg_to_qq_plugin.cpp";
 
   auto read_file = [](const std::filesystem::path &path) {
     std::ifstream stream(path);
@@ -144,13 +101,11 @@ TEST(BridgeHandlerRepositoryTest,
 
   const auto qq_source = read_file(qq_handler);
   const auto tg_source = read_file(tg_handler);
-  const auto qq_plugin_source = read_file(qq_plugin);
-  const auto tg_plugin_source = read_file(tg_plugin);
-
   EXPECT_EQ(qq_source.find("save_message_from_event"), std::string::npos);
   EXPECT_EQ(qq_source.find("save_user_from_event"), std::string::npos);
   EXPECT_EQ(tg_source.find("save_message_from_event"), std::string::npos);
   EXPECT_EQ(tg_source.find("save_user_from_event"), std::string::npos);
-  EXPECT_NE(qq_plugin_source.find("actor_pipeline_enabled"), std::string::npos);
-  EXPECT_NE(tg_plugin_source.find("actor_pipeline_enabled"), std::string::npos);
+  const auto root_cmake = read_file(source_root / "CMakeLists.txt");
+  EXPECT_EQ(root_cmake.find("add_subdirectory(qq_to_tg)"), std::string::npos);
+  EXPECT_EQ(root_cmake.find("add_subdirectory(tg_to_qq)"), std::string::npos);
 }
