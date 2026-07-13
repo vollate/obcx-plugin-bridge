@@ -41,7 +41,7 @@ auto TelegramMessageFormatter::format_sender_info(
                   : (has_genuine_reply ? sender_info + "[回复一条消息] "
                                        : sender_info);
     message_to_send.push_back(sender_segment);
-    PLUGIN_DEBUG("tg_to_qq", "Telegram到QQ转发显示发送者：{}",
+    OBCX_DEBUG("Telegram到QQ转发显示发送者：{}",
                  sender_display_name);
   } else {
     if (event.data.contains("reply_to_message")) {
@@ -55,7 +55,7 @@ auto TelegramMessageFormatter::format_sender_info(
         message_to_send.push_back(reply_tip_segment);
       }
     }
-    PLUGIN_DEBUG("tg_to_qq", "Telegram到QQ转发不显示发送者");
+    OBCX_DEBUG("Telegram到QQ转发不显示发送者");
   }
 }
 
@@ -71,12 +71,10 @@ auto TelegramMessageFormatter::format_reply_message(
     reply_segment.data["id"] = reply_to_message_id.value();
     message_to_send.insert(message_to_send.begin(), reply_segment);
 
-    PLUGIN_DEBUG("tg_to_qq", "Telegram消息回复QQ消息: {} -> QQ消息ID: {}",
+    OBCX_DEBUG("Telegram消息回复QQ消息: {} -> QQ消息ID: {}",
                  event.message_id, reply_to_message_id.value());
   } else if (event.data.contains("reply_to_message")) {
-    PLUGIN_DEBUG(
-        "tg_to_qq",
-        "未找到Telegram引用消息对应的QQ消息ID，可能是原生Telegram消息");
+    OBCX_DEBUG("未找到Telegram引用消息对应的QQ消息ID，可能是原生Telegram消息");
   }
 }
 

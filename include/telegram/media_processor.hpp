@@ -2,8 +2,8 @@
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
-#include <core/tg_bot.hpp>
 #include <interfaces/bot.hpp>
+#include <interfaces/telegram_bot.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <vector>

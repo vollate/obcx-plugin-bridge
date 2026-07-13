@@ -9,9 +9,7 @@ PathManager::PathManager(const std::string &host_base,
                          const std::string &container_base)
     : host_base_(normalize_path(host_base)),
       container_base_(normalize_path(container_base)) {
-  PLUGIN_DEBUG(
-      "bridge",
-      "PathManager initialized with host_base: '{}', container_base: '{}'",
+  OBCX_DEBUG("PathManager initialized with host_base: '{}', container_base: '{}'",
       host_base_, container_base_);
 }
 
@@ -80,8 +78,7 @@ auto PathManager::host_to_container_absolute(
     return to_container_path(relative_part);
   }
 
-  PLUGIN_WARN("bridge",
-              "Host path '{}' is not within the mounted directory '{}'",
+  OBCX_WARN("Host path '{}' is not within the mounted directory '{}'",
               normalized_host_path, host_base_);
   return normalized_host_path;
 }
@@ -102,8 +99,7 @@ auto PathManager::container_to_host_absolute(
     return to_host_path(relative_part);
   }
 
-  PLUGIN_WARN("bridge",
-              "Container path '{}' is not within the mounted directory '{}'",
+  OBCX_WARN("Container path '{}' is not within the mounted directory '{}'",
               normalized_container_path, container_base_);
   return normalized_container_path;
 }
@@ -113,11 +109,10 @@ auto PathManager::ensure_directory(const std::string &relative_path) const
   try {
     std::string host_path = to_host_path(relative_path);
     std::filesystem::create_directories(host_path);
-    PLUGIN_DEBUG("bridge", "Ensured directory exists: {}", host_path);
+    OBCX_DEBUG("Ensured directory exists: {}", host_path);
     return true;
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("bridge",
-                 "Failed to create directory for relative path '{}': {}",
+    OBCX_ERROR("Failed to create directory for relative path '{}': {}",
                  relative_path, e.what());
     return false;
   }
@@ -140,7 +135,7 @@ auto PathManager::normalize_path(const std::string &path) const -> std::string {
 
     return result;
   } catch (const std::exception &e) {
-    PLUGIN_WARN("bridge", "Failed to normalize path '{}': {}", path, e.what());
+    OBCX_WARN("Failed to normalize path '{}': {}", path, e.what());
     return path;
   }
 }

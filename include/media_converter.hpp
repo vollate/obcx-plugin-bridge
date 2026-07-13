@@ -7,7 +7,7 @@
 namespace bridge {
 
 /**
- * @brief Media format converter for bridge plugin
+ * @brief Media format converter for the bridge actor
  *
  * Converts media files between formats, particularly Telegram-specific
  * formats to QQ-compatible formats. Supports multi-tier fallback with

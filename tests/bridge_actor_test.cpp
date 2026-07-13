@@ -2,48 +2,65 @@
 #include "bridge_forwarder.hpp"
 #include "common/config_loader.hpp"
 #include "core/db_manager.hpp"
+#include "core/native_actor_scheduler.hpp"
 
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <exception>
+#include <atomic>
 #include <filesystem>
+#include <future>
 #include <memory>
-#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace asio = boost::asio;
 
 namespace {
 
-template <typename T>
-auto run_awaitable(asio::io_context &ioc, asio::awaitable<T> awaitable) -> T {
-  std::optional<T> result;
-  std::exception_ptr exception;
+auto run_actor(std::shared_ptr<obcx::core::ActorServices> services,
+               obcx::core::MessageEnvelope message)
+    -> obcx::core::ActorResult {
+  using namespace std::chrono_literals;
 
-  asio::co_spawn(
-      ioc,
-      [&]() -> asio::awaitable<void> {
-        try {
-          result = co_await std::move(awaitable);
-        } catch (...) {
-          exception = std::current_exception();
-        }
-      },
-      asio::detached);
+  asio::io_context ioc;
+  services->register_service<asio::any_io_executor>(
+      std::make_shared<asio::any_io_executor>(ioc.get_executor()));
+  auto work = asio::make_work_guard(ioc);
+  std::jthread io_thread([&ioc] { ioc.run(); });
 
-  ioc.run();
-  ioc.restart();
-
-  if (exception) {
-    std::rethrow_exception(exception);
+  obcx::core::NativeActorScheduler scheduler(
+      obcx::core::NativeActorSchedulerOptions{.worker_count = 2}, services);
+  scheduler.register_actor(std::make_shared<bridge::BridgeActor>());
+  std::promise<obcx::core::ActorResult> completion;
+  auto future = completion.get_future();
+  if (!scheduler.enqueue(
+          obcx::core::ActorInvocation{.actor_id = "bridge",
+                                      .partition_key = "test",
+                                      .db_instance = "main",
+                                      .db_namespace = "bridge",
+                                      .message = std::move(message)},
+          [&completion](obcx::core::ActorResult result) {
+            completion.set_value(std::move(result));
+          })) {
+    throw std::runtime_error("native bridge scheduler rejected invocation");
   }
-  return std::move(*result);
+  if (future.wait_for(5s) != std::future_status::ready) {
+    scheduler.shutdown(obcx::core::ActorExecutorShutdownMode::Cancel);
+    throw std::runtime_error("native bridge invocation timed out");
+  }
+  auto result = future.get();
+  scheduler.shutdown();
+  work.reset();
+  ioc.stop();
+  return result;
 }
 
 auto temp_db_path(const std::string &name) -> std::filesystem::path {
@@ -99,6 +116,55 @@ private:
   bridge::BridgeForwardResult result_;
 };
 
+class SuspendingForwarder final : public bridge::IBridgeForwarder {
+public:
+  auto forward_message(const obcx::core::MessageEnvelope &message)
+      -> asio::awaitable<bridge::BridgeForwardResult> override {
+    auto executor = co_await asio::this_coro::executor;
+    asio::steady_timer timer(executor, std::chrono::milliseconds(20));
+    co_await timer.async_wait(asio::use_awaitable);
+    seen_message = message;
+    co_return bridge::BridgeForwardResult{
+        .source_platform = "qq",
+        .source_message_id = "qq-media-1",
+        .target_platform = "telegram",
+        .target_bot = "tg-main",
+        .target_message_id = "tg-media-1",
+    };
+  }
+
+  std::optional<obcx::core::MessageEnvelope> seen_message;
+};
+
+class ThrowingForwarder final : public bridge::IBridgeForwarder {
+public:
+  auto forward_message(const obcx::core::MessageEnvelope &)
+      -> asio::awaitable<bridge::BridgeForwardResult> override {
+    throw std::runtime_error("simulated forwarding failure");
+    co_return bridge::BridgeForwardResult{};
+  }
+};
+
+class HangingForwarder final : public bridge::IBridgeForwarder {
+public:
+  auto started() -> std::future<void> { return started_.get_future(); }
+
+  auto forward_message(const obcx::core::MessageEnvelope &)
+      -> asio::awaitable<bridge::BridgeForwardResult> override {
+    started_.set_value();
+    auto executor = co_await asio::this_coro::executor;
+    asio::steady_timer timer(executor, std::chrono::seconds(30));
+    co_await timer.async_wait(asio::use_awaitable);
+    resumed_after_wait.store(true, std::memory_order_release);
+    co_return bridge::BridgeForwardResult{};
+  }
+
+  std::atomic_bool resumed_after_wait = false;
+
+private:
+  std::promise<void> started_;
+};
+
 TEST(BridgeActorTest, PersistsMappingAndEmitsMessageForwarded) {
   const auto db_path = temp_db_path("forwarded");
   auto db_manager = std::make_shared<obcx::core::DbManager>();
@@ -107,12 +173,8 @@ TEST(BridgeActorTest, PersistsMappingAndEmitsMessageForwarded) {
   auto services = std::make_shared<obcx::core::ActorServices>();
   services->register_service<obcx::core::DbManager>(db_manager);
 
-  bridge::BridgeActor actor;
-  obcx::core::ActorContext context("bridge", services, "main", "bridge");
-
-  asio::io_context ioc;
-  const auto result = run_awaitable(
-      ioc, actor.handle_message(message_stored("qq-7", "tg-9"), context));
+  const auto result =
+      run_actor(services, message_stored("qq-7", "tg-9"));
 
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(result.emitted.size(), 1);
@@ -143,14 +205,10 @@ TEST(BridgeActorTest, EmitsMessageForwardFailedWhenMappingFieldsAreMissing) {
   auto services = std::make_shared<obcx::core::ActorServices>();
   services->register_service<obcx::core::DbManager>(db_manager);
 
-  bridge::BridgeActor actor;
-  obcx::core::ActorContext context("bridge", services, "main", "bridge");
-
   auto stored = message_stored("qq-9", "tg-9");
   stored.payload.erase("target_message_id");
 
-  asio::io_context ioc;
-  const auto result = run_awaitable(ioc, actor.handle_message(stored, context));
+  const auto result = run_actor(services, std::move(stored));
 
   ASSERT_FALSE(result.ok());
   ASSERT_TRUE(result.failure.has_value());
@@ -177,14 +235,11 @@ TEST(BridgeActorTest, ForwardsMessageStoredThroughRuntimeForwarder) {
                                   .target_message_id = "tg-actor-9"});
   services->register_service<bridge::IBridgeForwarder>(forwarder);
 
-  bridge::BridgeActor actor;
-  obcx::core::ActorContext context("bridge", services, "main", "bridge");
   auto stored = message_stored("qq-actor-1", "unused-target");
   stored.payload.erase("target_platform");
   stored.payload.erase("target_message_id");
 
-  asio::io_context ioc;
-  const auto result = run_awaitable(ioc, actor.handle_message(stored, context));
+  const auto result = run_actor(services, std::move(stored));
 
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(forwarder->seen_messages.size(), 1);
@@ -207,5 +262,110 @@ TEST(BridgeActorTest, ForwardsMessageStoredThroughRuntimeForwarder) {
       });
   EXPECT_EQ(target_message_id, "tg-actor-9");
 
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, PreservesMediaPayloadAcrossActorAsioSuspension) {
+  const auto db_path = temp_db_path("media_suspension");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  services->register_service<obcx::core::DbManager>(db_manager);
+  auto forwarder = std::make_shared<SuspendingForwarder>();
+  services->register_service<bridge::IBridgeForwarder>(forwarder);
+
+  auto stored = message_stored("qq-media-1", "unused-target");
+  stored.payload.erase("target_platform");
+  stored.payload.erase("target_message_id");
+  stored.raw = {
+      {"message",
+       {{{"type", "image"},
+         {"data", {{"file", "photo.jpg"}, {"url", "https://example.test/photo.jpg"}}}}}},
+  };
+
+  const auto result = run_actor(services, stored);
+
+  ASSERT_TRUE(result.ok());
+  ASSERT_TRUE(forwarder->seen_message.has_value());
+  EXPECT_EQ(forwarder->seen_message->raw, stored.raw);
+  ASSERT_EQ(result.emitted.size(), 1);
+  EXPECT_EQ(result.emitted.front().payload["target_message_id"],
+            "tg-media-1");
+
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, ConvertsForwardingExceptionIntoRetryableFailure) {
+  const auto db_path = temp_db_path("forward_failure");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  services->register_service<obcx::core::DbManager>(db_manager);
+  services->register_service<bridge::IBridgeForwarder>(
+      std::make_shared<ThrowingForwarder>());
+
+  const auto result =
+      run_actor(services, message_stored("qq-failure-1", "unused-target"));
+
+  ASSERT_FALSE(result.ok());
+  ASSERT_TRUE(result.failure.has_value());
+  EXPECT_EQ(result.failure->code, "bridge_error");
+  EXPECT_TRUE(result.failure->retryable);
+  ASSERT_EQ(result.emitted.size(), 1);
+  EXPECT_EQ(result.emitted.front().type, "MessageForwardFailed");
+  EXPECT_EQ(result.emitted.front().payload["retryable"], true);
+
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, ShutdownCancelsSuspendedForwardingWithoutLateResume) {
+  using namespace std::chrono_literals;
+
+  const auto db_path = temp_db_path("shutdown");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+
+  asio::io_context ioc;
+  auto work = asio::make_work_guard(ioc);
+  std::jthread io_thread([&ioc] { ioc.run(); });
+
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  services->register_service<obcx::core::DbManager>(db_manager);
+  services->register_service<asio::any_io_executor>(
+      std::make_shared<asio::any_io_executor>(ioc.get_executor()));
+  auto forwarder = std::make_shared<HangingForwarder>();
+  auto started = forwarder->started();
+  services->register_service<bridge::IBridgeForwarder>(forwarder);
+
+  obcx::core::NativeActorScheduler scheduler(
+      obcx::core::NativeActorSchedulerOptions{.worker_count = 1}, services);
+  scheduler.register_actor(std::make_shared<bridge::BridgeActor>());
+
+  std::promise<obcx::core::ActorResult> completion;
+  auto completed = completion.get_future();
+  ASSERT_TRUE(scheduler.enqueue(
+      obcx::core::ActorInvocation{
+          .actor_id = "bridge",
+          .partition_key = "shutdown",
+          .db_instance = "main",
+          .db_namespace = "bridge",
+          .message = message_stored("qq-shutdown-1", "unused-target")},
+      [&completion](obcx::core::ActorResult result) {
+        completion.set_value(std::move(result));
+      }));
+  ASSERT_EQ(started.wait_for(2s), std::future_status::ready);
+
+  scheduler.shutdown(obcx::core::ActorExecutorShutdownMode::Cancel);
+  ASSERT_EQ(completed.wait_for(2s), std::future_status::ready);
+  const auto result = completed.get();
+  ASSERT_TRUE(result.failure.has_value());
+  EXPECT_EQ(result.failure->code, "scheduler_cancelled");
+
+  std::this_thread::sleep_for(20ms);
+  EXPECT_FALSE(forwarder->resumed_after_wait.load(std::memory_order_acquire));
+  work.reset();
+  ioc.stop();
   std::filesystem::remove(db_path);
 }

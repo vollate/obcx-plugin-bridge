@@ -19,7 +19,7 @@ class ReceivedMessageRepository;
 
 namespace bridge {
 
-class BridgeActor final : public obcx::core::IActor {
+class BridgeActor final : public obcx::core::IActorV2 {
 public:
   BridgeActor() = default;
 
@@ -28,7 +28,7 @@ public:
 
   auto handle_message(const obcx::core::MessageEnvelope &message,
                       obcx::core::ActorContext &context)
-      -> boost::asio::awaitable<obcx::core::ActorResult> override;
+      -> obcx::core::ActorTask<obcx::core::ActorResult> override;
 
 private:
   auto resolve_repository(obcx::core::ActorContext &context)

@@ -15,7 +15,7 @@ void load_group_mappings() {
     auto config_section =
         obcx::common::ConfigLoader::instance().get_section("group_mappings");
     if (!config_section.has_value()) {
-      PLUGIN_WARN("bridge", "No group_mappings section found in config");
+      OBCX_WARN("No group_mappings section found in config");
       return;
     }
     const auto &config = config_section.value();
@@ -45,7 +45,7 @@ void load_group_mappings() {
                                      show_qq_to_tg_sender, show_tg_to_qq_sender,
                                      enable_qq_to_tg, enable_tg_to_qq);
             GROUP_MAP[telegram_group_id] = config;
-            PLUGIN_INFO("bridge", "Loaded group mapping: {} -> {}",
+            OBCX_INFO("Loaded group mapping: {} -> {}",
                         telegram_group_id, qq_group_id);
           }
         }
@@ -109,7 +109,7 @@ void load_group_mappings() {
                         telegram_topic_id, qq_group_id, topic_show_qq_to_tg,
                         topic_show_tg_to_qq, topic_enable_qq_to_tg,
                         topic_enable_tg_to_qq);
-                    PLUGIN_INFO("bridge", "Loaded topic mapping: {}:{} -> {}",
+                    OBCX_INFO("Loaded topic mapping: {}:{} -> {}",
                                 telegram_group_id, telegram_topic_id,
                                 qq_group_id);
                   }
@@ -122,8 +122,7 @@ void load_group_mappings() {
                   telegram_group_id, topics, show_qq_to_tg_sender,
                   show_tg_to_qq_sender, enable_qq_to_tg, enable_tg_to_qq);
               GROUP_MAP[telegram_group_id] = config;
-              PLUGIN_INFO("bridge",
-                          "Loaded topic group mapping for TG {} with {} topics",
+              OBCX_INFO("Loaded topic group mapping for TG {} with {} topics",
                           telegram_group_id, topics.size());
             }
           }
@@ -131,10 +130,10 @@ void load_group_mappings() {
       }
     }
 
-    PLUGIN_INFO("bridge", "Group mappings loaded: {} total mappings",
+    OBCX_INFO("Group mappings loaded: {} total mappings",
                 GROUP_MAP.size());
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("bridge", "Failed to load group mappings: {}", e.what());
+    OBCX_ERROR("Failed to load group mappings: {}", e.what());
   }
 }
 
@@ -235,8 +234,8 @@ std::string IMAGE_PLACEHOLDER_URL =
 void load_config() {
   try {
     auto &loader = obcx::common::ConfigLoader::instance();
-    PLUGIN_DEBUG("bridge", "Config file path: {}", loader.get_config_path());
-    PLUGIN_DEBUG("bridge", "Config loaded: {}", loader.is_loaded());
+    OBCX_DEBUG("Config file path: {}", loader.get_config_path());
+    OBCX_DEBUG("Config loaded: {}", loader.is_loaded());
 
     if (auto telegram_bot =
             loader.get_section("bots.telegram_bot.connection")) {
@@ -270,103 +269,60 @@ void load_config() {
     RETRY_QUEUE_CHECK_INTERVAL_SEC = 10;
     MAX_RETRY_INTERVAL_SEC = 300;
 
-    // database_file / bridge_files_dir may live under either plugin section;
-    // try qq_to_tg first then fall back to tg_to_qq.
-    bool config_loaded = false;
+    constexpr std::string_view config_prefix = "actors.bridge.config.";
+    const auto config_key = [config_prefix](const std::string_view field) {
+      return std::string{config_prefix} + std::string{field};
+    };
 
-    // 注意：需要使用 at_path 访问嵌套配置
-    if (auto qq_to_tg_config = loader.get_value<std::string>(
-            "plugins.qq_to_tg.config.database_file")) {
-      PLUGIN_DEBUG("bridge", "Found plugins.qq_to_tg.config section");
-      DATABASE_FILE = *qq_to_tg_config;
+    if (auto database =
+            loader.get_value<std::string>(config_key("database_file"))) {
+      DATABASE_FILE = *database;
     }
-    if (auto retry = loader.get_value<bool>(
-            "plugins.qq_to_tg.config.enable_retry_queue")) {
+    if (auto retry =
+            loader.get_value<bool>(config_key("enable_retry_queue"))) {
       ENABLE_RETRY_QUEUE = *retry;
     }
-
-    // bridge_files_dir is required (must come from one of the two sections)
-    if (auto dir = loader.get_value<std::string>(
-            "plugins.qq_to_tg.config.bridge_files_dir")) {
+    if (auto dir =
+            loader.get_value<std::string>(config_key("bridge_files_dir"))) {
       BRIDGE_FILES_DIR = *dir;
-      config_loaded = true;
-      PLUGIN_INFO("bridge", "Loaded bridge_files_dir from qq_to_tg: {}",
-                  BRIDGE_FILES_DIR);
+      OBCX_INFO("Loaded bridge_files_dir: {}", BRIDGE_FILES_DIR);
     } else {
-      PLUGIN_DEBUG("bridge", "bridge_files_dir not found in qq_to_tg.config");
+      throw std::runtime_error(
+          "actors.bridge.config.bridge_files_dir must be configured");
     }
-
     if (auto dir = loader.get_value<std::string>(
-            "plugins.qq_to_tg.config.bridge_files_container_dir")) {
+            config_key("bridge_files_container_dir"))) {
       BRIDGE_FILES_CONTAINER_DIR = *dir;
     }
 
-    if (auto db = loader.get_value<std::string>(
-            "plugins.tg_to_qq.config.database_file")) {
-      if (DATABASE_FILE.empty()) {
-        DATABASE_FILE = *db;
-      }
-    }
-    if (auto retry = loader.get_value<bool>(
-            "plugins.tg_to_qq.config.enable_retry_queue")) {
-      ENABLE_RETRY_QUEUE = *retry;
-    }
-
-    if (!config_loaded) {
-      if (auto dir = loader.get_value<std::string>(
-              "plugins.tg_to_qq.config.bridge_files_dir")) {
-        BRIDGE_FILES_DIR = *dir;
-        config_loaded = true;
-        PLUGIN_INFO("bridge", "Loaded bridge_files_dir from tg_to_qq: {}",
-                    BRIDGE_FILES_DIR);
-      } else {
-        PLUGIN_DEBUG("bridge", "bridge_files_dir not found in tg_to_qq.config");
-      }
-
-      if (auto dir = loader.get_value<std::string>(
-              "plugins.tg_to_qq.config.bridge_files_container_dir")) {
-        BRIDGE_FILES_CONTAINER_DIR = *dir;
-      }
-    }
-
-    if (!config_loaded) {
-      throw std::runtime_error(
-          "bridge_files_dir must be configured in either "
-          "plugins.qq_to_tg.config or plugins.tg_to_qq.config");
-    }
-
-    if (auto val = loader.get_value<int64_t>(
-            "plugins.tg_to_qq.config.gif_max_file_size")) {
+    if (auto val =
+            loader.get_value<int64_t>(config_key("gif_max_file_size"))) {
       GIF_MAX_FILE_SIZE = static_cast<size_t>(*val);
     }
-    if (auto val =
-            loader.get_value<int>("plugins.tg_to_qq.config.gif_max_duration")) {
-      GIF_MAX_DURATION = *val;
+    if (auto val = loader.get_value<int64_t>(config_key("gif_max_duration"))) {
+      GIF_MAX_DURATION = static_cast<int>(*val);
     }
-    if (auto val =
-            loader.get_value<int>("plugins.tg_to_qq.config.gif_max_fps")) {
-      GIF_MAX_FPS = *val;
+    if (auto val = loader.get_value<int64_t>(config_key("gif_max_fps"))) {
+      GIF_MAX_FPS = static_cast<int>(*val);
     }
-    if (auto val =
-            loader.get_value<int>("plugins.tg_to_qq.config.gif_max_width")) {
-      GIF_MAX_WIDTH = *val;
+    if (auto val = loader.get_value<int64_t>(config_key("gif_max_width"))) {
+      GIF_MAX_WIDTH = static_cast<int>(*val);
     }
-    if (auto val =
-            loader.get_value<int>("plugins.tg_to_qq.config.gif_max_colors")) {
-      GIF_MAX_COLORS = *val;
+    if (auto val = loader.get_value<int64_t>(config_key("gif_max_colors"))) {
+      GIF_MAX_COLORS = static_cast<int>(*val);
     }
 
-    PLUGIN_INFO("bridge", "Configuration loaded successfully");
-    PLUGIN_INFO("bridge", "Telegram Bot Token: {}...",
+    OBCX_INFO("Configuration loaded successfully");
+    OBCX_INFO("Telegram Bot Token: {}...",
                 TELEGRAM_BOT_TOKEN.substr(0, 20));
-    PLUGIN_INFO("bridge", "QQ Host: {}:{}", QQ_HOST, QQ_PORT);
-    PLUGIN_INFO("bridge", "Database: {}", DATABASE_FILE);
-    PLUGIN_INFO("bridge", "Bridge files dir (host): {}", BRIDGE_FILES_DIR);
-    PLUGIN_INFO("bridge", "Bridge files dir (container): {}",
+    OBCX_INFO("QQ Host: {}:{}", QQ_HOST, QQ_PORT);
+    OBCX_INFO("Database: {}", DATABASE_FILE);
+    OBCX_INFO("Bridge files dir (host): {}", BRIDGE_FILES_DIR);
+    OBCX_INFO("Bridge files dir (container): {}",
                 BRIDGE_FILES_CONTAINER_DIR);
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("bridge", "Failed to load configuration: {}", e.what());
+    OBCX_ERROR("Failed to load configuration: {}", e.what());
     TELEGRAM_BOT_TOKEN = "";
     QQ_HOST = "127.0.0.1";
     QQ_PORT = 3001;

@@ -7,7 +7,6 @@
 #include <common/json_utils.hpp>
 #include <core/bot_registry.hpp>
 
-#include <boost/asio/this_coro.hpp>
 #include <chrono>
 #include <stdexcept>
 #include <utility>
@@ -161,7 +160,7 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
 
 auto BridgeActor::handle_message(const obcx::core::MessageEnvelope &message,
                                  obcx::core::ActorContext &context)
-    -> asio::awaitable<obcx::core::ActorResult> {
+    -> obcx::core::ActorTask<obcx::core::ActorResult> {
   try {
     if (message.type != "MessageStored") {
       auto result = obcx::core::ActorResult::failed(
@@ -171,10 +170,20 @@ auto BridgeActor::handle_message(const obcx::core::MessageEnvelope &message,
       co_return result;
     }
 
-    auto executor = co_await asio::this_coro::executor;
+    auto executor = context.get_service<asio::any_io_executor>();
     auto repository = resolve_repository(context);
-    if (auto forwarder = resolve_forwarder(context, executor)) {
-      auto forward_result = co_await forwarder->forward_message(message);
+    if (auto forwarder = resolve_forwarder(
+            context, executor ? *executor : asio::any_io_executor{})) {
+      if (!executor) {
+        throw std::runtime_error(
+            "bridge forwarding requires an Asio executor service");
+      }
+      auto forward_result = co_await context.await_asio(
+          *executor,
+          [forwarder, forwarded = message]() mutable
+              -> asio::awaitable<BridgeForwardResult> {
+            co_return co_await forwarder->forward_message(forwarded);
+          });
       auto mapping = mapping_from_forward_result(forward_result);
       if (mapping.source_platform.empty() ||
           mapping.source_message_id.empty() ||
@@ -236,7 +245,7 @@ auto BridgeActor::handle_message(const obcx::core::MessageEnvelope &message,
 }
 
 #ifndef OBCX_BRIDGE_ACTOR_NO_EXPORT
-OBCX_ACTOR_EXPORT(bridge::BridgeActor)
+OBCX_ACTOR_EXPORT_V2(bridge::BridgeActor)
 #endif
 
 } // namespace bridge

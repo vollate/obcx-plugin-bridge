@@ -3,7 +3,7 @@
 #include "received_message_repository.hpp"
 
 #include <common/logger.hpp>
-#include <core/qq_bot.hpp>
+#include <interfaces/qq_bot.hpp>
 
 #include <nlohmann/json.hpp>
 #include <utility>
@@ -34,14 +34,13 @@ auto TelegramCommandHandler::handle_recall_command(
 
     auto reply_to_message = event.data["reply_to_message"];
     if (!reply_to_message.contains("message_id")) {
-      PLUGIN_WARN("tg_to_qq", "/recall 命令：无法获取被回复消息的ID");
+      OBCX_WARN("/recall 命令：无法获取被回复消息的ID");
       co_return;
     }
 
     std::string replied_message_id =
         std::to_string(reply_to_message["message_id"].get<int64_t>());
-    PLUGIN_INFO("tg_to_qq",
-                "/recall 命令：尝试撤回回复的Telegram消息 {} 对应的QQ消息",
+    OBCX_INFO("/recall 命令：尝试撤回回复的Telegram消息 {} 对应的QQ消息",
                 replied_message_id);
 
     // 查找被回复消息对应的QQ消息ID：先看是否曾转发到QQ，再看是否来源于QQ
@@ -66,7 +65,7 @@ auto TelegramCommandHandler::handle_recall_command(
       co_return;
     }
 
-    PLUGIN_INFO("tg_to_qq", "/recall 命令：找到对应的QQ消息ID: {}",
+    OBCX_INFO("/recall 命令：找到对应的QQ消息ID: {}",
                 target_qq_message_id.value());
 
     std::string result_message;
@@ -78,14 +77,14 @@ auto TelegramCommandHandler::handle_recall_command(
 
       if (recall_json.contains("status") && recall_json["status"] == "ok") {
         result_message = "✅ 撤回成功";
-        PLUGIN_INFO("tg_to_qq", "/recall 命令：成功在QQ撤回消息 {}",
+        OBCX_INFO("/recall 命令：成功在QQ撤回消息 {}",
                     target_qq_message_id.value());
 
         if (state_repository_) {
           state_repository_->delete_message_mapping("telegram",
                                                     replied_message_id, "qq");
         }
-        PLUGIN_DEBUG("tg_to_qq", "已删除消息映射: telegram:{} -> qq:{}",
+        OBCX_DEBUG("已删除消息映射: telegram:{} -> qq:{}",
                      replied_message_id, target_qq_message_id.value());
 
       } else {
@@ -103,12 +102,12 @@ auto TelegramCommandHandler::handle_recall_command(
             result_message += "：" + error_msg;
           }
         }
-        PLUGIN_WARN("tg_to_qq", "/recall 命令：QQ撤回消息失败: {}",
+        OBCX_WARN("/recall 命令：QQ撤回消息失败: {}",
                     recall_response);
       }
 
     } catch (const std::exception &e) {
-      PLUGIN_ERROR("tg_to_qq", "/recall 命令：QQ撤回操作异常: {}", e.what());
+      OBCX_ERROR("/recall 命令：QQ撤回操作异常: {}", e.what());
       result_message = "❌ 撤回操作发生异常，请稍后重试";
     }
 
@@ -116,12 +115,12 @@ auto TelegramCommandHandler::handle_recall_command(
       co_await send_reply_message(telegram_bot, telegram_group_id,
                                   event.message_id, result_message);
     } catch (const std::exception &send_e) {
-      PLUGIN_ERROR("tg_to_qq", "/recall 命令：发送结果消息失败: {}",
+      OBCX_ERROR("/recall 命令：发送结果消息失败: {}",
                    send_e.what());
     }
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("tg_to_qq", "处理 /recall 命令时出错: {}", e.what());
+    OBCX_ERROR("处理 /recall 命令时出错: {}", e.what());
   }
 }
 
@@ -145,7 +144,7 @@ auto TelegramCommandHandler::send_reply_message(
 
     co_await telegram_bot.send_group_message(telegram_group_id, message);
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("tg_to_qq", "发送回复消息失败: {}", e.what());
+    OBCX_ERROR("发送回复消息失败: {}", e.what());
   }
 }
 
@@ -220,10 +219,10 @@ auto TelegramCommandHandler::handle_checkalive_command(
     co_await send_reply_message(telegram_bot, telegram_group_id,
                                 event.message_id, response_text);
 
-    PLUGIN_INFO("tg_to_qq", "/checkalive 命令处理完成");
+    OBCX_INFO("/checkalive 命令处理完成");
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("tg_to_qq", "处理 /checkalive 命令时出错: {}", e.what());
+    OBCX_ERROR("处理 /checkalive 命令时出错: {}", e.what());
     // 这里记录错误但不发送消息，因为co_await不能在catch块中使用
   }
 }
@@ -245,14 +244,13 @@ auto TelegramCommandHandler::handle_poke_command(
 
     auto reply_to_message = event.data["reply_to_message"];
     if (!reply_to_message.contains("message_id")) {
-      PLUGIN_WARN("tg_to_qq", "/poke 命令：无法获取被回复消息的ID");
+      OBCX_WARN("/poke 命令：无法获取被回复消息的ID");
       co_return;
     }
 
     std::string replied_message_id =
         std::to_string(reply_to_message["message_id"].get<int64_t>());
-    PLUGIN_INFO("tg_to_qq",
-                "/poke 命令：尝试戳回复的Telegram消息 {} 对应的QQ用户",
+    OBCX_INFO("/poke 命令：尝试戳回复的Telegram消息 {} 对应的QQ用户",
                 replied_message_id);
 
     // 查找被回复消息对应的QQ用户ID：
@@ -267,7 +265,7 @@ auto TelegramCommandHandler::handle_poke_command(
 
     if (source_message.has_value()) {
       target_qq_user_id = source_message->user_id;
-      PLUGIN_INFO("tg_to_qq", "/poke 命令：从消息记录找到QQ用户ID: {}",
+      OBCX_INFO("/poke 命令：从消息记录找到QQ用户ID: {}",
                   target_qq_user_id);
     } else {
       auto target_qq_message_id =
@@ -282,8 +280,7 @@ auto TelegramCommandHandler::handle_poke_command(
                               : std::optional<storage::MessageInfo>{};
         if (qq_message.has_value()) {
           target_qq_user_id = qq_message->user_id;
-          PLUGIN_INFO("tg_to_qq",
-                      "/poke 命令：从转发的QQ消息记录找到QQ用户ID: {}",
+          OBCX_INFO("/poke 命令：从转发的QQ消息记录找到QQ用户ID: {}",
                       target_qq_user_id);
         }
       }
@@ -301,8 +298,7 @@ auto TelegramCommandHandler::handle_poke_command(
                                 : std::optional<storage::MessageInfo>{};
           if (qq_message.has_value()) {
             target_qq_user_id = qq_message->user_id;
-            PLUGIN_INFO("tg_to_qq",
-                        "/poke 命令：从源QQ消息记录找到QQ用户ID: {}",
+            OBCX_INFO("/poke 命令：从源QQ消息记录找到QQ用户ID: {}",
                         target_qq_user_id);
           }
         }
@@ -316,12 +312,12 @@ auto TelegramCommandHandler::handle_poke_command(
       co_return;
     }
 
-    PLUGIN_INFO("tg_to_qq", "/poke 命令：准备戳QQ群 {} 的用户 {}",
+    OBCX_INFO("/poke 命令：准备戳QQ群 {} 的用户 {}",
                 std::string(qq_group_id), target_qq_user_id);
 
-    auto *qq_bot_ptr = dynamic_cast<obcx::core::QQBot *>(&qq_bot);
+    auto *qq_bot_ptr = dynamic_cast<obcx::core::IQQBot *>(&qq_bot);
     if (!qq_bot_ptr) {
-      PLUGIN_ERROR("tg_to_qq", "/poke 命令：无法获取QQBot实例");
+      OBCX_ERROR("/poke 命令：当前 bot 不支持 QQ 扩展能力");
       co_await send_reply_message(telegram_bot, telegram_group_id,
                                   event.message_id,
                                   "❌ 内部错误：无法获取QQ机器人实例");
@@ -336,7 +332,7 @@ auto TelegramCommandHandler::handle_poke_command(
       nlohmann::json poke_json = nlohmann::json::parse(poke_response);
 
       if (poke_json.contains("status") && poke_json["status"] == "ok") {
-        PLUGIN_INFO("tg_to_qq", "/poke 命令：成功在QQ群 {} 戳了用户 {}",
+        OBCX_INFO("/poke 命令：成功在QQ群 {} 戳了用户 {}",
                     std::string(qq_group_id), target_qq_user_id);
         co_return;
       } else {
@@ -345,11 +341,11 @@ auto TelegramCommandHandler::handle_poke_command(
           std::string error_msg = poke_json["message"];
           result_message += "：" + error_msg;
         }
-        PLUGIN_WARN("tg_to_qq", "/poke 命令：戳一戳失败: {}", poke_response);
+        OBCX_WARN("/poke 命令：戳一戳失败: {}", poke_response);
       }
 
     } catch (const std::exception &e) {
-      PLUGIN_ERROR("tg_to_qq", "/poke 命令：戳一戳操作异常: {}", e.what());
+      OBCX_ERROR("/poke 命令：戳一戳操作异常: {}", e.what());
       result_message = "❌ 戳一戳操作发生异常，请稍后重试";
     }
 
@@ -357,12 +353,12 @@ auto TelegramCommandHandler::handle_poke_command(
       co_await send_reply_message(telegram_bot, telegram_group_id,
                                   event.message_id, result_message);
     } catch (const std::exception &send_e) {
-      PLUGIN_ERROR("tg_to_qq", "/poke 命令：发送结果消息失败: {}",
+      OBCX_ERROR("/poke 命令：发送结果消息失败: {}",
                    send_e.what());
     }
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("tg_to_qq", "处理 /poke 命令时出错: {}", e.what());
+    OBCX_ERROR("处理 /poke 命令时出错: {}", e.what());
   }
 }
 

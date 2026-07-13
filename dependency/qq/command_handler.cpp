@@ -82,10 +82,10 @@ auto QQCommandHandler::handle_checkalive_command(
     co_await send_reply_message(qq_bot, qq_group_id, event.message_id,
                                 response_text);
 
-    PLUGIN_INFO("qq_to_tg", "/checkalive 命令处理完成");
+    OBCX_INFO("/checkalive 命令处理完成");
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("qq_to_tg", "处理 /checkalive 命令时出错: {}", e.what());
+    OBCX_ERROR("处理 /checkalive 命令时出错: {}", e.what());
   }
 }
 
@@ -109,7 +109,7 @@ auto QQCommandHandler::send_reply_message(
     co_await qq_bot.send_group_message(qq_group_id, reply_message);
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("qq_to_tg", "发送回复消息失败: {}", e.what());
+    OBCX_ERROR("发送回复消息失败: {}", e.what());
   }
 }
 

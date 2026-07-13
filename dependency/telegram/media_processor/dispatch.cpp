@@ -4,7 +4,7 @@
 #include "media_processor.hpp"
 
 #include <common/logger.hpp>
-#include <core/tg_bot.hpp>
+#include <interfaces/telegram_bot.hpp>
 #include <fmt/format.h>
 #include <utility>
 
@@ -46,7 +46,7 @@ auto TelegramMediaProcessor::process_media_file(
     media_info.file_type = file_type;
 
     auto download_url_opt =
-        co_await dynamic_cast<obcx::core::TGBot &>(telegram_bot)
+        co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
             .get_media_download_url(media_info);
     if (!download_url_opt.has_value()) {
       throw std::runtime_error("无法获取文件下载链接");
@@ -120,10 +120,10 @@ auto TelegramMediaProcessor::process_media_file(
       result.push_back(obcx::common::MessageSegment{
           .type = "text", .data = std::move(caption_text)});
     }
-    PLUGIN_INFO("tg_to_qq", "成功处理Telegram {}文件: {}", file_type, filename);
+    OBCX_INFO("成功处理Telegram {}文件: {}", file_type, filename);
 
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("tg_to_qq", "处理媒体文件失败: {}", e.what());
+    OBCX_ERROR("处理媒体文件失败: {}", e.what());
   }
 
   co_return result;

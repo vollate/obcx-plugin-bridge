@@ -3,8 +3,7 @@
 #include "media_processor.hpp"
 
 #include <common/logger.hpp>
-#include <core/tg_bot.hpp>
-#include <telegram/network/connection_manager.hpp>
+#include <interfaces/telegram_bot.hpp>
 
 namespace bridge::telegram {
 
@@ -17,16 +16,11 @@ auto TelegramMediaProcessor::process_photo(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
-    auto *conn_manager =
-        dynamic_cast<obcx::network::TelegramConnectionManager *>(
-            tg_bot->get_connection_manager());
-    if (!conn_manager) {
-      throw std::runtime_error("无法获取TelegramConnectionManager实例");
-    }
+    auto &telegram_capability =
+        dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        conn_manager, file_url, "photo", filename);
+        &telegram_capability, file_url, "photo", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
@@ -39,13 +33,13 @@ auto TelegramMediaProcessor::process_photo(
       file_segment.type = "image";
       file_segment.data["file"] = "file:///" + container_path;
       file_segment.data["proxy"] = 1;
-      PLUGIN_INFO("tg_to_qq", "成功下载图片到本地: {} -> 容器路径: {}",
+      OBCX_INFO("成功下载图片到本地: {} -> 容器路径: {}",
                   local_file_path, container_path);
     } else {
       throw std::runtime_error("下载图片失败");
     }
   } catch (const std::exception &e) {
-    PLUGIN_WARN("tg_to_qq", "下载图片失败，回退到URL方式: {}", e.what());
+    OBCX_WARN("下载图片失败，回退到URL方式: {}", e.what());
     auto [final_url, _] = MediaProcessor::get_qq_file_info(file_url, "photo");
     file_segment.type = "image";
     file_segment.data["file"] = final_url;
@@ -64,16 +58,11 @@ auto TelegramMediaProcessor::process_video(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
-    auto *conn_manager =
-        dynamic_cast<obcx::network::TelegramConnectionManager *>(
-            tg_bot->get_connection_manager());
-    if (!conn_manager) {
-      throw std::runtime_error("无法获取TelegramConnectionManager实例");
-    }
+    auto &telegram_capability =
+        dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        conn_manager, file_url, "video", filename);
+        &telegram_capability, file_url, "video", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
@@ -85,13 +74,13 @@ auto TelegramMediaProcessor::process_video(
 
       file_segment.type = "video";
       file_segment.data["file"] = "file:///" + container_path;
-      PLUGIN_INFO("tg_to_qq", "成功下载视频到本地: {} -> 容器路径: {}",
+      OBCX_INFO("成功下载视频到本地: {} -> 容器路径: {}",
                   local_file_path, container_path);
     } else {
       throw std::runtime_error("下载视频失败");
     }
   } catch (const std::exception &e) {
-    PLUGIN_WARN("tg_to_qq", "下载视频失败，回退到URL方式: {}", e.what());
+    OBCX_WARN("下载视频失败，回退到URL方式: {}", e.what());
     auto [final_url, _] = MediaProcessor::get_qq_file_info(file_url, "video");
     file_segment.type = "video";
     file_segment.data["file"] = final_url;
@@ -110,16 +99,11 @@ auto TelegramMediaProcessor::process_audio(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
-    auto *conn_manager =
-        dynamic_cast<obcx::network::TelegramConnectionManager *>(
-            tg_bot->get_connection_manager());
-    if (!conn_manager) {
-      throw std::runtime_error("无法获取TelegramConnectionManager实例");
-    }
+    auto &telegram_capability =
+        dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        conn_manager, file_url, "audio", filename);
+        &telegram_capability, file_url, "audio", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
@@ -131,13 +115,13 @@ auto TelegramMediaProcessor::process_audio(
 
       file_segment.type = "record";
       file_segment.data["file"] = "file:///" + container_path;
-      PLUGIN_INFO("tg_to_qq", "成功下载音频到本地: {} -> 容器路径: {}",
+      OBCX_INFO("成功下载音频到本地: {} -> 容器路径: {}",
                   local_file_path, container_path);
     } else {
       throw std::runtime_error("下载音频失败");
     }
   } catch (const std::exception &e) {
-    PLUGIN_WARN("tg_to_qq", "下载音频失败，回退到URL方式: {}", e.what());
+    OBCX_WARN("下载音频失败，回退到URL方式: {}", e.what());
     auto [final_url, _] = MediaProcessor::get_qq_file_info(file_url, "audio");
     file_segment.type = "record";
     file_segment.data["file"] = final_url;
@@ -156,16 +140,11 @@ auto TelegramMediaProcessor::process_document(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
-    auto *conn_manager =
-        dynamic_cast<obcx::network::TelegramConnectionManager *>(
-            tg_bot->get_connection_manager());
-    if (!conn_manager) {
-      throw std::runtime_error("无法获取TelegramConnectionManager实例");
-    }
+    auto &telegram_capability =
+        dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        conn_manager, file_url, "document", filename);
+        &telegram_capability, file_url, "document", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
@@ -178,13 +157,13 @@ auto TelegramMediaProcessor::process_document(
       file_segment.type = "file";
       file_segment.data["file"] = "file:///" + container_path;
       file_segment.data["name"] = filename;
-      PLUGIN_INFO("tg_to_qq", "成功下载文档到本地: {} -> 容器路径: {}",
+      OBCX_INFO("成功下载文档到本地: {} -> 容器路径: {}",
                   local_file_path, container_path);
     } else {
       throw std::runtime_error("下载文档失败");
     }
   } catch (const std::exception &e) {
-    PLUGIN_WARN("tg_to_qq", "下载文档失败，回退到URL方式: {}", e.what());
+    OBCX_WARN("下载文档失败，回退到URL方式: {}", e.what());
     auto [final_url, _] =
         MediaProcessor::get_qq_file_info(file_url, "document");
     file_segment.type = "file";
@@ -205,16 +184,11 @@ auto TelegramMediaProcessor::process_video_note(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
-    auto *conn_manager =
-        dynamic_cast<obcx::network::TelegramConnectionManager *>(
-            tg_bot->get_connection_manager());
-    if (!conn_manager) {
-      throw std::runtime_error("无法获取TelegramConnectionManager实例");
-    }
+    auto &telegram_capability =
+        dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        conn_manager, file_url, "video_note", filename);
+        &telegram_capability, file_url, "video_note", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
@@ -226,13 +200,13 @@ auto TelegramMediaProcessor::process_video_note(
 
       file_segment.type = "video";
       file_segment.data["file"] = "file:///" + container_path;
-      PLUGIN_INFO("tg_to_qq", "成功下载视频消息到本地: {} -> 容器路径: {}",
+      OBCX_INFO("成功下载视频消息到本地: {} -> 容器路径: {}",
                   local_file_path, container_path);
     } else {
       throw std::runtime_error("下载视频消息失败");
     }
   } catch (const std::exception &e) {
-    PLUGIN_WARN("tg_to_qq", "下载视频消息失败，回退到URL方式: {}", e.what());
+    OBCX_WARN("下载视频消息失败，回退到URL方式: {}", e.what());
     auto [final_url, _] =
         MediaProcessor::get_qq_file_info(file_url, "video_note");
     file_segment.type = "video";
@@ -252,16 +226,11 @@ auto TelegramMediaProcessor::process_other_file(
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto *tg_bot = &dynamic_cast<obcx::core::TGBot &>(telegram_bot);
-    auto *conn_manager =
-        dynamic_cast<obcx::network::TelegramConnectionManager *>(
-            tg_bot->get_connection_manager());
-    if (!conn_manager) {
-      throw std::runtime_error("无法获取TelegramConnectionManager实例");
-    }
+    auto &telegram_capability =
+        dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        conn_manager, file_url, "file", filename);
+        &telegram_capability, file_url, "file", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
@@ -274,13 +243,13 @@ auto TelegramMediaProcessor::process_other_file(
       file_segment.type = "file";
       file_segment.data["file"] = "file:///" + container_path;
       file_segment.data["name"] = filename;
-      PLUGIN_INFO("tg_to_qq", "成功下载其他类型文件到本地: {} -> 容器路径: {}",
+      OBCX_INFO("成功下载其他类型文件到本地: {} -> 容器路径: {}",
                   local_file_path, container_path);
     } else {
       throw std::runtime_error("下载其他类型文件失败");
     }
   } catch (const std::exception &e) {
-    PLUGIN_WARN("tg_to_qq", "下载其他类型文件失败，回退到URL方式: {}",
+    OBCX_WARN("下载其他类型文件失败，回退到URL方式: {}",
                 e.what());
     auto [final_url, _] = MediaProcessor::get_qq_file_info(file_url, "file");
     file_segment.type = "file";

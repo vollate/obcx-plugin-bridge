@@ -1,0 +1,28 @@
+schema_version = 1
+
+[actor]
+id = "vollate.bridge"
+name = "bridge"
+version = "0.1.0"
+abi = 2
+
+[artifact]
+name = "bridge"
+target = "bridge_actor"
+kind = "shared-library"
+entrypoint = "obcx_create_actor_v2"
+platforms = ["linux-x86_64"]
+
+[dependencies]
+packages = ["tomlplusplus"]
+actors = [{ id = "onebot-cxx.message-store", version = ">=0.1.0,<1.0.0" }]
+
+[compatibility]
+obcx = ">=1.1.0,<2.0.0"
+actor_abi_min = 2
+actor_abi_max = 2
+
+[publication]
+repository = "https://github.com/vollate/obcx-actor-bridge"
+license = "MIT"
+description = "QQ and Telegram bidirectional bridge actor for OBCX"

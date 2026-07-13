@@ -11,18 +11,18 @@ namespace bridge {
 auto calculate_hash(const std::string &input) -> std::string {
   EVP_MD_CTX *context = EVP_MD_CTX_new();
   if (!context) {
-    PLUGIN_ERROR("bridge", "Failed to create EVP_MD_CTX");
+    OBCX_ERROR("Failed to create EVP_MD_CTX");
     return "";
   }
 
   if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) {
-    PLUGIN_ERROR("bridge", "EVP_DigestInit_ex failed");
+    OBCX_ERROR("EVP_DigestInit_ex failed");
     EVP_MD_CTX_free(context);
     return "";
   }
 
   if (EVP_DigestUpdate(context, input.c_str(), input.length()) != 1) {
-    PLUGIN_ERROR("bridge", "EVP_DigestUpdate failed");
+    OBCX_ERROR("EVP_DigestUpdate failed");
     EVP_MD_CTX_free(context);
     return "";
   }
@@ -30,7 +30,7 @@ auto calculate_hash(const std::string &input) -> std::string {
   unsigned char hash[EVP_MAX_MD_SIZE];
   unsigned int hash_len = 0;
   if (EVP_DigestFinal_ex(context, hash, &hash_len) != 1) {
-    PLUGIN_ERROR("bridge", "EVP_DigestFinal_ex failed");
+    OBCX_ERROR("EVP_DigestFinal_ex failed");
     EVP_MD_CTX_free(context);
     return "";
   }

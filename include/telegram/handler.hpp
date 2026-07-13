@@ -91,7 +91,7 @@ public:
   /**
    * @brief Synchronously flush any buffered Telegram media-groups.
    *
-   * Should be called by the plugin during shutdown so albums whose debounce
+   * Should be called by the actor during shutdown so albums whose debounce
    * timer is still pending are not silently dropped.
    */
   void flush_pending_media_groups();

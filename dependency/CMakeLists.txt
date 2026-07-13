@@ -1,5 +1,5 @@
 add_library(
-  bridge_core SHARED
+  bridge_core STATIC
   config.cpp
 	  bridge_db_runtime.cpp
 	  bridge_forwarding_runtime.cpp
@@ -34,4 +34,5 @@ add_library(
 	  telegram/message_formatter.cpp
 	  telegram/handler.cpp)
 
-target_link_libraries(bridge_core PUBLIC obcx_core )
+target_link_libraries(bridge_core PUBLIC obcx::obcx_core)
+set_target_properties(bridge_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

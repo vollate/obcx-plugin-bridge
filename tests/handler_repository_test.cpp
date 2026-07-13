@@ -127,13 +127,12 @@ TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
 }
 
 TEST(BridgeHandlerRepositoryTest,
-     ForwardingHandlersDoNotPersistRawMessagesDirectly) {
+     ActorOnlyEntryPointOwnsForwardingWithoutRawPersistence) {
   const auto source_root = std::filesystem::path{OBCX_BRIDGE_SOURCE_DIR};
   const auto qq_handler = source_root / "dependency" / "qq" / "handler.cpp";
   const auto tg_handler =
       source_root / "dependency" / "telegram" / "handler.cpp";
-  const auto qq_plugin = source_root / "qq_to_tg" / "qq_to_tg_plugin.cpp";
-  const auto tg_plugin = source_root / "tg_to_qq" / "tg_to_qq_plugin.cpp";
+  const auto actor = source_root / "actor" / "bridge_actor.cpp";
 
   auto read_file = [](const std::filesystem::path &path) {
     std::ifstream stream(path);
@@ -144,13 +143,17 @@ TEST(BridgeHandlerRepositoryTest,
 
   const auto qq_source = read_file(qq_handler);
   const auto tg_source = read_file(tg_handler);
-  const auto qq_plugin_source = read_file(qq_plugin);
-  const auto tg_plugin_source = read_file(tg_plugin);
+  const auto actor_source = read_file(actor);
 
   EXPECT_EQ(qq_source.find("save_message_from_event"), std::string::npos);
   EXPECT_EQ(qq_source.find("save_user_from_event"), std::string::npos);
   EXPECT_EQ(tg_source.find("save_message_from_event"), std::string::npos);
   EXPECT_EQ(tg_source.find("save_user_from_event"), std::string::npos);
-  EXPECT_NE(qq_plugin_source.find("actor_pipeline_enabled"), std::string::npos);
-  EXPECT_NE(tg_plugin_source.find("actor_pipeline_enabled"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(
+      source_root / "qq_to_tg" / "qq_to_tg_plugin.cpp"));
+  EXPECT_FALSE(std::filesystem::exists(
+      source_root / "tg_to_qq" / "tg_to_qq_plugin.cpp"));
+  EXPECT_NE(actor_source.find("OBCX_ACTOR_EXPORT_V2"), std::string::npos);
+  EXPECT_NE(actor_source.find("context.await_asio"), std::string::npos);
+  EXPECT_NE(actor_source.find("MessageStored"), std::string::npos);
 }

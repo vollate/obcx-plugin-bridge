@@ -144,17 +144,17 @@ auto QQMediaProcessor::process_json_segment(
     if (!json_data.empty()) {
       auto parse_result = parse_miniapp_json(json_data);
       converted = format_miniapp_message(parse_result);
-      PLUGIN_DEBUG("qq_to_tg", "转换QQ小程序JSON: success={}, title={}",
+      OBCX_DEBUG("转换QQ小程序JSON: success={}, title={}",
                    parse_result.success, parse_result.title);
     } else {
       converted.data.clear();
       converted.data["text"] = "📱 [小程序-无数据]";
-      PLUGIN_DEBUG("qq_to_tg", "QQ小程序JSON消息无数据");
+      OBCX_DEBUG("QQ小程序JSON消息无数据");
     }
   } catch (const std::exception &e) {
     converted.data.clear();
     converted.data["text"] = "📱 [小程序解析错误]";
-    PLUGIN_ERROR("qq_to_tg", "处理QQ小程序JSON时出错: {}", e.what());
+    OBCX_ERROR("处理QQ小程序JSON时出错: {}", e.what());
   }
 
   co_return converted;
@@ -181,12 +181,12 @@ auto QQMediaProcessor::process_app_segment(
       }
     }
     converted = format_miniapp_message(parse_result);
-    PLUGIN_DEBUG("qq_to_tg", "转换QQ应用分享: success={}, title={}",
+    OBCX_DEBUG("转换QQ应用分享: success={}, title={}",
                  parse_result.success, parse_result.title);
   } catch (const std::exception &e) {
     converted.data.clear();
     converted.data["text"] = "📱 [应用分享解析错误]";
-    PLUGIN_ERROR("qq_to_tg", "处理QQ应用分享时出错: {}", e.what());
+    OBCX_ERROR("处理QQ应用分享时出错: {}", e.what());
   }
 
   co_return converted;
@@ -222,12 +222,12 @@ auto QQMediaProcessor::process_ark_segment(
           !parse_result.urls.empty() || !parse_result.title.empty();
     }
     converted = format_miniapp_message(parse_result);
-    PLUGIN_DEBUG("qq_to_tg", "转换QQ ARK卡片: success={}, title={}",
+    OBCX_DEBUG("转换QQ ARK卡片: success={}, title={}",
                  parse_result.success, parse_result.title);
   } catch (const std::exception &e) {
     converted.data.clear();
     converted.data["text"] = "📱 [ARK卡片解析错误]";
-    PLUGIN_ERROR("qq_to_tg", "处理QQ ARK卡片时出错: {}", e.what());
+    OBCX_ERROR("处理QQ ARK卡片时出错: {}", e.what());
   }
 
   co_return converted;
@@ -254,12 +254,12 @@ auto QQMediaProcessor::process_miniapp_segment(
       }
     }
     converted = format_miniapp_message(parse_result);
-    PLUGIN_DEBUG("qq_to_tg", "转换QQ小程序: success={}, title={}",
+    OBCX_DEBUG("转换QQ小程序: success={}, title={}",
                  parse_result.success, parse_result.title);
   } catch (const std::exception &e) {
     converted.data.clear();
     converted.data["text"] = "📱 [小程序解析错误]";
-    PLUGIN_ERROR("qq_to_tg", "处理QQ小程序时出错: {}", e.what());
+    OBCX_ERROR("处理QQ小程序时出错: {}", e.what());
   }
 
   co_return converted;
@@ -374,13 +374,12 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
 
     result.success = !result.urls.empty() || !result.title.empty();
 
-    PLUGIN_DEBUG("qq_to_tg",
-                 "解析小程序: app={}, title={}, desc_len={}, urls_count={}",
+    OBCX_DEBUG("解析小程序: app={}, title={}, desc_len={}, urls_count={}",
                  result.app_name, result.title, result.description.size(),
                  result.urls.size());
 
   } catch (const std::exception &e) {
-    PLUGIN_DEBUG("qq_to_tg", "小程序JSON解析失败: {}", e.what());
+    OBCX_DEBUG("小程序JSON解析失败: {}", e.what());
     // 解析失败时仍然尝试用正则提取URL
     auto regex_urls = extract_urls_from_json(json_data);
     std::vector<std::string> deduped_urls;

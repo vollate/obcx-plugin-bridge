@@ -54,7 +54,7 @@ auto QQMediaProcessor::process_qq_media_segment(
       co_return segment;
     }
   } catch (const std::exception &e) {
-    PLUGIN_ERROR("qq_to_tg", "转换QQ消息段失败: {}", e.what());
+    OBCX_ERROR("转换QQ消息段失败: {}", e.what());
     co_return std::nullopt;
   }
 }

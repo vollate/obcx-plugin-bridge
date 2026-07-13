@@ -1,0 +1,109 @@
+# OBCX message-store -> bridge actor pipeline
+[global]
+locale = "zh_CN.UTF8"
+
+[bots.qq_bot]
+type = "qq"
+enabled = true
+
+[bots.qq_bot.connection]
+type = "websocket"
+host = "127.0.0.1"
+port = 3001
+access_token = ""
+use_ssl = false
+connect_timeout = 5000
+action_timeout = 30000
+heartbeat_interval = 5000
+
+[bots.telegram_bot]
+type = "telegram"
+enabled = true
+
+[bots.telegram_bot.connection]
+type = "http"
+host = "api.telegram.org"
+port = 443
+access_token = "YOUR_BOT_TOKEN"
+use_ssl = true
+connect_timeout = 5000
+poll_timeout = 25000
+poll_force_close = 30000
+poll_retry_interval = 3000
+proxy_host = "127.0.0.1"
+proxy_port = 10086
+proxy_type = "http"
+
+[actor_runtime.scheduler]
+policy = "stealing"
+workers = 0
+slow_resume_warning_ms = 10
+
+[db.instances.main]
+type = "sqlite"
+path = "bridge_bot.db"
+
+[actors.message_store]
+library = "message_store"
+enabled = true
+partition = "source_platform:conversation_id"
+db = "main"
+db_namespace = "message_store"
+
+[actors.bridge]
+library = "bridge"
+enabled = true
+partition = "source_platform:conversation_id"
+db = "main"
+db_namespace = "bridge"
+
+[actors.bridge.config]
+database_file = "bridge_bot.db"
+enable_retry_queue = true
+bridge_files_dir = "/tmp/bridge_files"
+bridge_files_container_dir = "/root/llonebot/bridge_files"
+gif_max_file_size = 0
+gif_max_duration = 5
+gif_max_fps = 0
+gif_max_width = 0
+gif_max_colors = 256
+
+[pipelines.message]
+source = "RawMessageEvent"
+
+[[pipelines.message.stages]]
+name = "persist"
+actor = "message_store"
+input = "RawMessageEvent"
+output = "MessageStored"
+mode = "await"
+
+[[pipelines.message.stages]]
+name = "forward"
+actor = "bridge"
+input = "MessageStored"
+output = ["MessageForwarded", "MessageForwardFailed"]
+after = ["persist"]
+mode = "await"
+
+[[group_mappings.group_to_group]]
+telegram_group_id = "YOUR_TG_GROUP_ID"
+qq_group_id = "YOUR_QQ_GROUP_ID"
+mode = "group_to_group"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = true
+enable_qq_to_tg = true
+enable_tg_to_qq = true
+
+[[group_mappings.topic_to_group]]
+telegram_group_id = "YOUR_TG_GROUP_ID"
+mode = "topic_to_group"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = true
+
+[[group_mappings.topics]]
+telegram_group_id = "YOUR_TG_GROUP_ID"
+telegram_topic_id = 33
+qq_group_id = "YOUR_QQ_GROUP_ID"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = true

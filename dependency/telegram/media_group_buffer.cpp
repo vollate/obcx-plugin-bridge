@@ -71,7 +71,7 @@ void TGMediaGroupBuffer::add(obcx::common::MessageEvent event,
   auto &group = groups_[key];
   group.events.push_back(std::move(event));
   // Always overwrite the callback with the latest one. The captured bot
-  // pointers are stable for the plugin's lifetime, so any of the calls yields
+  // pointers are stable for the actor's lifetime, so any of the calls yields
   // an equivalent functor; we just ensure the most recent capture is what
   // fires.
   group.flush_fn = std::move(flush_fn);
@@ -113,7 +113,7 @@ void TGMediaGroupBuffer::on_timer_fired_(GroupKey key) {
     try {
       fn(std::move(events));
     } catch (const std::exception &e) {
-      PLUGIN_ERROR("tg_to_qq", "Media group flush callback threw: {}",
+      OBCX_ERROR("Media group flush callback threw: {}",
                    e.what());
     }
   }
@@ -140,8 +140,7 @@ void TGMediaGroupBuffer::flush_all_now() {
   }
 
   if (!pending.empty()) {
-    PLUGIN_INFO("tg_to_qq",
-                "Flushing {} pending Telegram media groups synchronously",
+    OBCX_INFO("Flushing {} pending Telegram media groups synchronously",
                 pending.size());
   }
 
@@ -150,7 +149,7 @@ void TGMediaGroupBuffer::flush_all_now() {
       try {
         fn(std::move(events));
       } catch (const std::exception &e) {
-        PLUGIN_ERROR("tg_to_qq", "Media group sync flush callback threw: {}",
+        OBCX_ERROR("Media group sync flush callback threw: {}",
                      e.what());
       }
     }
