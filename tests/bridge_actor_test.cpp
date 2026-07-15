@@ -85,7 +85,7 @@ auto message_stored(const std::string &source_message_id,
     -> obcx::core::MessageEnvelope {
   obcx::core::MessageEnvelope envelope;
   envelope.id = "stored-" + source_message_id;
-  envelope.type = "MessageStored";
+  envelope.type = "obcx::message_store::events::MessageStored";
   envelope.source_platform = "qq";
   envelope.source_bot = "qq-main";
   envelope.correlation_id = "corr-" + source_message_id;
@@ -178,7 +178,7 @@ TEST(BridgeActorTest, PersistsMappingAndEmitsMessageForwarded) {
 
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(result.emitted.size(), 1);
-  EXPECT_EQ(result.emitted.front().type, "MessageForwarded");
+  EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwarded");
   EXPECT_EQ(result.emitted.front().payload["source_message_id"], "qq-7");
   EXPECT_EQ(result.emitted.front().payload["target_message_id"], "tg-9");
 
@@ -214,7 +214,7 @@ TEST(BridgeActorTest, EmitsMessageForwardFailedWhenMappingFieldsAreMissing) {
   ASSERT_TRUE(result.failure.has_value());
   EXPECT_EQ(result.failure->code, "missing_forward_mapping");
   ASSERT_EQ(result.emitted.size(), 1);
-  EXPECT_EQ(result.emitted.front().type, "MessageForwardFailed");
+  EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwardFailed");
   EXPECT_EQ(result.emitted.front().payload["code"], "missing_forward_mapping");
 
   std::filesystem::remove(db_path);
@@ -243,9 +243,9 @@ TEST(BridgeActorTest, ForwardsMessageStoredThroughRuntimeForwarder) {
 
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(forwarder->seen_messages.size(), 1);
-  EXPECT_EQ(forwarder->seen_messages.front().type, "MessageStored");
+  EXPECT_EQ(forwarder->seen_messages.front().type, "obcx::message_store::events::MessageStored");
   ASSERT_EQ(result.emitted.size(), 1);
-  EXPECT_EQ(result.emitted.front().type, "MessageForwarded");
+  EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwarded");
   EXPECT_EQ(result.emitted.front().payload["source_message_id"], "qq-actor-1");
   EXPECT_EQ(result.emitted.front().payload["target_message_id"], "tg-actor-9");
 
@@ -314,7 +314,7 @@ TEST(BridgeActorTest, ConvertsForwardingExceptionIntoRetryableFailure) {
   EXPECT_EQ(result.failure->code, "bridge_error");
   EXPECT_TRUE(result.failure->retryable);
   ASSERT_EQ(result.emitted.size(), 1);
-  EXPECT_EQ(result.emitted.front().type, "MessageForwardFailed");
+  EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwardFailed");
   EXPECT_EQ(result.emitted.front().payload["retryable"], true);
 
   std::filesystem::remove(db_path);

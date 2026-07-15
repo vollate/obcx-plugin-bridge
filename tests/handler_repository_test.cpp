@@ -55,20 +55,20 @@ library = "bridge"
 enabled = true
 
 [pipelines.received_message]
-source = "RawMessageEvent"
+source = "obcx::core::events::RawMessageEvent"
 
 [[pipelines.received_message.stages]]
 name = "persist_received"
 actor = "message_store"
-input = "RawMessageEvent"
-output = "MessageStored"
+input = "obcx::core::events::RawMessageEvent"
+output = "obcx::message_store::events::MessageStored"
 mode = "await"
 
 [[pipelines.received_message.stages]]
 name = "forward"
 actor = "bridge"
-input = "MessageStored"
-output = ["MessageForwarded", "MessageForwardFailed"]
+input = "obcx::message_store::events::MessageStored"
+output = ["bridge::events::MessageForwarded", "bridge::events::MessageForwardFailed"]
 after = ["persist_received"]
 mode = "await"
 )";
@@ -155,5 +155,5 @@ TEST(BridgeHandlerRepositoryTest,
       source_root / "tg_to_qq" / "tg_to_qq_plugin.cpp"));
   EXPECT_NE(actor_source.find("OBCX_ACTOR_EXPORT_V2"), std::string::npos);
   EXPECT_NE(actor_source.find("context.await_asio"), std::string::npos);
-  EXPECT_NE(actor_source.find("MessageStored"), std::string::npos);
+  EXPECT_NE(actor_source.find("obcx::message_store::events::MessageStored"), std::string::npos);
 }

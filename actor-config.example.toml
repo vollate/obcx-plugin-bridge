@@ -69,20 +69,20 @@ gif_max_width = 0
 gif_max_colors = 256
 
 [pipelines.message]
-source = "RawMessageEvent"
+source = "obcx::core::events::RawMessageEvent"
 
 [[pipelines.message.stages]]
 name = "persist"
 actor = "message_store"
-input = "RawMessageEvent"
-output = "MessageStored"
+input = "obcx::core::events::RawMessageEvent"
+output = "obcx::message_store::events::MessageStored"
 mode = "await"
 
 [[pipelines.message.stages]]
 name = "forward"
 actor = "bridge"
-input = "MessageStored"
-output = ["MessageForwarded", "MessageForwardFailed"]
+input = "obcx::message_store::events::MessageStored"
+output = ["bridge::events::MessageForwarded", "bridge::events::MessageForwardFailed"]
 after = ["persist"]
 mode = "await"
 

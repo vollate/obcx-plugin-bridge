@@ -3,7 +3,8 @@
 #include "bridge_forwarder.hpp"
 #include "bridge_state_repository.hpp"
 
-#include <core/actor.hpp>
+#include <core/actor_messages.hpp>
+#include <core/reflected_actor.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -19,16 +20,17 @@ class ReceivedMessageRepository;
 
 namespace bridge {
 
-class BridgeActor final : public obcx::core::IActorV2 {
+class BridgeActor final : public obcx::core::ReflectedActor<BridgeActor> {
 public:
+  static constexpr std::string_view actor_name = "bridge";
+  static constexpr std::string_view actor_version = "0.1.0";
+
   BridgeActor() = default;
 
-  [[nodiscard]] auto get_name() const -> std::string override;
-  [[nodiscard]] auto get_version() const -> std::string override;
-
-  auto handle_message(const obcx::core::MessageEnvelope &message,
-                      obcx::core::ActorContext &context)
-      -> obcx::core::ActorTask<obcx::core::ActorResult> override;
+  auto handle(const obcx::message_store::events::MessageStored &stored,
+              const obcx::core::MessageEnvelope &message,
+              obcx::core::ActorContext &context)
+      -> obcx::core::ActorTask<obcx::core::ActorResult>;
 
 private:
   auto resolve_repository(obcx::core::ActorContext &context)

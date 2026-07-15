@@ -40,7 +40,7 @@ auto build_forwarded_event(const obcx::core::MessageEnvelope &message,
   obcx::core::MessageEnvelope envelope;
   envelope.id =
       "forwarded-" + mapping.source_platform + "-" + mapping.source_message_id;
-  envelope.type = "MessageForwarded";
+  envelope.type = "bridge::events::MessageForwarded";
   envelope.source_platform = mapping.source_platform;
   envelope.source_bot = message.source_bot;
   envelope.correlation_id = message.correlation_id;
@@ -74,7 +74,7 @@ auto build_failed_event(const obcx::core::MessageEnvelope &message,
     -> obcx::core::MessageEnvelope {
   obcx::core::MessageEnvelope envelope;
   envelope.id = "forward-failed-" + message.id;
-  envelope.type = "MessageForwardFailed";
+  envelope.type = "bridge::events::MessageForwardFailed";
   envelope.source_platform = message.source_platform;
   envelope.source_bot = message.source_bot;
   envelope.correlation_id = message.correlation_id;
@@ -100,10 +100,6 @@ auto source_message_id(const obcx::core::MessageEnvelope &message)
 }
 
 } // namespace
-
-auto BridgeActor::get_name() const -> std::string { return "bridge"; }
-
-auto BridgeActor::get_version() const -> std::string { return "0.1.0"; }
 
 auto BridgeActor::resolve_repository(obcx::core::ActorContext &context)
     -> std::shared_ptr<BridgeStateRepository> {
@@ -158,18 +154,13 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
   return forwarder_;
 }
 
-auto BridgeActor::handle_message(const obcx::core::MessageEnvelope &message,
-                                 obcx::core::ActorContext &context)
+auto BridgeActor::handle(
+    const obcx::message_store::events::MessageStored &stored,
+    const obcx::core::MessageEnvelope &message,
+    obcx::core::ActorContext &context)
     -> obcx::core::ActorTask<obcx::core::ActorResult> {
+  (void)stored;
   try {
-    if (message.type != "MessageStored") {
-      auto result = obcx::core::ActorResult::failed(
-          "unsupported_message_type", "bridge accepts MessageStored", false);
-      result.emit(build_failed_event(message, "unsupported_message_type",
-                                     "bridge accepts MessageStored", false));
-      co_return result;
-    }
-
     auto executor = context.get_service<asio::any_io_executor>();
     auto repository = resolve_repository(context);
     if (auto forwarder = resolve_forwarder(

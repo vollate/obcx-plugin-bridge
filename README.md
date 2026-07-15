@@ -4,10 +4,11 @@
 and Telegram. It is loaded through the OBCX actor ABI and has one entry point,
 `obcx_create_actor_v2`.
 
-The actor accepts `MessageStored` envelopes from
+The actor accepts `obcx::message_store::events::MessageStored` envelopes from
 [`obcx-actor-message-store`](../obcx-actor-message-store), performs QQ or
 Telegram I/O through `ActorContext::await_asio`, and emits
-`MessageForwarded` or `MessageForwardFailed`.
+`bridge::events::MessageForwarded` or
+`bridge::events::MessageForwardFailed`.
 
 ## Package contract
 
@@ -49,7 +50,8 @@ Start from [`actor-config.example.toml`](actor-config.example.toml). The
 supported pipeline is:
 
 ```text
-RawMessageEvent -> message_store -> MessageStored -> bridge
+obcx::core::events::RawMessageEvent -> message_store ->
+obcx::message_store::events::MessageStored -> bridge
 ```
 
 Bridge-specific settings live under `[actors.bridge.config]`. Both bot

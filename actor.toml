@@ -11,7 +11,7 @@ name = "bridge"
 target = "bridge_actor"
 kind = "shared-library"
 entrypoint = "obcx_create_actor_v2"
-platforms = ["linux-x86_64"]
+platforms = ["linux-x86_64", "linux-arm64"]
 
 [dependencies]
 packages = ["tomlplusplus"]
@@ -21,6 +21,10 @@ actors = [{ id = "onebot-cxx.message-store", version = ">=0.1.0,<1.0.0" }]
 obcx = ">=1.1.0,<2.0.0"
 actor_abi_min = 2
 actor_abi_max = 2
+cpp_standard = 26
+compiler = "gcc>=16.1"
+reflection_macro = 202506
+input_contract_schema = 1
 
 [publication]
 repository = "https://github.com/vollate/obcx-actor-bridge"

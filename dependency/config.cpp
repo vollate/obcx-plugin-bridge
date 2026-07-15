@@ -162,19 +162,19 @@ bool actor_pipeline_enabled() {
   }
 
   for (const auto &pipeline : pipelines) {
-    if (pipeline.source != "RawMessageEvent") {
+    if (pipeline.source != "obcx::core::events::RawMessageEvent") {
       continue;
     }
 
     bool persists = false;
     bool forwards = false;
     for (const auto &stage : pipeline.stages) {
-      if (stage.actor == "message_store" && stage.input == "RawMessageEvent" &&
+      if (stage.actor == "message_store" && stage.input == "obcx::core::events::RawMessageEvent" &&
           std::find(stage.outputs.begin(), stage.outputs.end(),
-                    "MessageStored") != stage.outputs.end()) {
+                    "obcx::message_store::events::MessageStored") != stage.outputs.end()) {
         persists = true;
       }
-      if (stage.actor == "bridge" && stage.input == "MessageStored") {
+      if (stage.actor == "bridge" && stage.input == "obcx::message_store::events::MessageStored") {
         forwards = true;
       }
     }

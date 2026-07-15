@@ -9,7 +9,7 @@ namespace {
 auto stored_message_with_raw() -> obcx::core::MessageEnvelope {
   obcx::core::MessageEnvelope envelope;
   envelope.id = "stored-qq-raw";
-  envelope.type = "MessageStored";
+  envelope.type = "obcx::message_store::events::MessageStored";
   envelope.source_platform = "qq";
   envelope.source_bot = "qq-main";
   envelope.timestamp = std::chrono::system_clock::time_point{
@@ -62,7 +62,7 @@ TEST(BridgeMessageEventAdapterTest,
      RebuildsTextSegmentFromStoredPayloadWhenRawMessageIsSparse) {
   obcx::core::MessageEnvelope envelope;
   envelope.id = "stored-tg-sparse";
-  envelope.type = "MessageStored";
+  envelope.type = "obcx::message_store::events::MessageStored";
   envelope.source_platform = "telegram";
   envelope.source_bot = "tg-main";
   envelope.payload = {
