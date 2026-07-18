@@ -81,6 +81,26 @@ mode = "await"
   std::filesystem::remove(config_path);
 }
 
+TEST(BridgeHandlerRepositoryTest, LoadsFfmpegPathFromActorConfiguration) {
+  const auto config_path =
+      temp_db_path("actor_ffmpeg_path").replace_extension(".toml");
+  {
+    std::ofstream config(config_path);
+    config << R"(
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+ffmpeg_path = "/opt/bridge/bin/ffmpeg"
+)";
+  }
+
+  ASSERT_TRUE(
+      obcx::common::ConfigLoader::instance().load_config(config_path.string()));
+  bridge::config::load_config();
+  EXPECT_EQ(bridge::config::FFMPEG_PATH, "/opt/bridge/bin/ffmpeg");
+
+  std::filesystem::remove(config_path);
+}
+
 TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
   const auto bridge_db_path = temp_db_path("bridge_mapping");
 

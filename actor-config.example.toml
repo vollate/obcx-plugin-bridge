@@ -62,6 +62,7 @@ database_file = "bridge_bot.db"
 enable_retry_queue = true
 bridge_files_dir = "/tmp/bridge_files"
 bridge_files_container_dir = "/root/llonebot/bridge_files"
+ffmpeg_path = "ffmpeg"
 gif_max_file_size = 0
 gif_max_duration = 5
 gif_max_fps = 0

@@ -219,6 +219,7 @@ int MAX_RETRY_INTERVAL_SEC;
 std::string BRIDGE_FILES_DIR;
 std::string BRIDGE_FILES_CONTAINER_DIR;
 
+std::string FFMPEG_PATH = "ffmpeg";
 size_t GIF_MAX_FILE_SIZE = 0; // 0 = unlimited, preserve old lossless default
 int GIF_MAX_DURATION = 5;
 int GIF_MAX_FPS = 0;
@@ -268,6 +269,7 @@ void load_config() {
     MEDIA_RETRY_BASE_INTERVAL_SEC = 5;
     RETRY_QUEUE_CHECK_INTERVAL_SEC = 10;
     MAX_RETRY_INTERVAL_SEC = 300;
+    FFMPEG_PATH = "ffmpeg";
 
     constexpr std::string_view config_prefix = "actors.bridge.config.";
     const auto config_key = [config_prefix](const std::string_view field) {
@@ -298,6 +300,11 @@ void load_config() {
     if (auto val =
             loader.get_value<int64_t>(config_key("gif_max_file_size"))) {
       GIF_MAX_FILE_SIZE = static_cast<size_t>(*val);
+    }
+    if (auto val =
+            loader.get_value<std::string>(config_key("ffmpeg_path"));
+        val && !val->empty()) {
+      FFMPEG_PATH = *val;
     }
     if (auto val = loader.get_value<int64_t>(config_key("gif_max_duration"))) {
       GIF_MAX_DURATION = static_cast<int>(*val);
@@ -345,6 +352,7 @@ void load_config() {
     MAX_RETRY_INTERVAL_SEC = 300;
     BRIDGE_FILES_DIR = "/tmp/bridge_files";
     BRIDGE_FILES_CONTAINER_DIR = "/root/llonebot/bridge_files";
+    FFMPEG_PATH = "ffmpeg";
     GIF_MAX_FILE_SIZE = 0;
     GIF_MAX_DURATION = 5;
     GIF_MAX_FPS = 0;

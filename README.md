@@ -72,12 +72,16 @@ database_file = "bridge_bot.db"
 enable_retry_queue = true
 bridge_files_dir = "/tmp/bridge_files"
 bridge_files_container_dir = "/root/llonebot/bridge_files"
+ffmpeg_path = "ffmpeg"
 gif_max_file_size = 0
 gif_max_duration = 5
 gif_max_fps = 0
 gif_max_width = 0
 gif_max_colors = 256
 ```
+
+`ffmpeg_path` may be an absolute executable path; its default, `ffmpeg`, uses
+the process `PATH`.
 
 `action_timeout` should remain above the upstream first-media-send latency;
 30 seconds is the example default. Telegram `poll_force_close` must be larger
