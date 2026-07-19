@@ -1,25 +1,30 @@
 # OBCX Bridge Actor
 
-`obcx-actor-bridge` is the V2 actor that forwards stored messages between QQ
-and Telegram. It is loaded through the OBCX actor ABI and has one entry point,
-`obcx_create_actor_v2`.
+`obcx-actor-bridge` is the native ABI 2 actor that forwards stored messages
+between QQ and Telegram. It consumes
+`obcx::message_store::events::MessageStored` through generated reflected
+dispatch and performs bot I/O with `ActorContext::await_asio`. Successful and
+failed attempts emit `bridge::events::MessageForwarded` and
+`bridge::events::MessageForwardFailed`, respectively.
 
-The actor accepts `obcx::message_store::events::MessageStored` envelopes from
-[`obcx-actor-message-store`](../obcx-actor-message-store), performs QQ or
-Telegram I/O through `ActorContext::await_asio`, and emits
-`bridge::events::MessageForwarded` or
-`bridge::events::MessageForwardFailed`.
-
-## Package contract
+## Package Contract
 
 - Canonical metadata: `actor.toml`
 - Actor id: `vollate.bridge`
+- Actor name and version: `bridge` `0.1.0`
 - ABI: `2`
-- Artifact: `bridge.so`
-- CMake target: `bridge_actor`
+- CMake target and artifact: `bridge_actor`, `bridge.so`
+- Platforms: Linux x86_64 and arm64
 - Runtime dependency: `onebot-cxx.message-store >=0.1.0,<1.0.0`
 
-## Build against an installed SDK
+`OBCX_ACTOR_EXPORT_V2` exports the numeric ABI generation, factory,
+destructor, actor name, actor version, and generated schema-1 input contract.
+OBCX validates that contract before constructing the actor.
+
+## Build Against An Installed SDK
+
+The supported baseline is Linux x86_64/arm64, CMake 3.30+, GCC 16.1+, C++26,
+`-freflection`, and `__cpp_impl_reflection >= 202506L`.
 
 Install OBCX first, then configure this repository with that prefix:
 
@@ -44,31 +49,33 @@ lib/obcx/actors/bridge.so
 share/obcx/actors/vollate.bridge/actor.toml
 ```
 
-## Runtime configuration
+## Runtime Configuration
 
-Start from [`actor-config.example.toml`](actor-config.example.toml). The
-supported pipeline is:
+The supported pipeline is:
 
 ```text
 obcx::core::events::RawMessageEvent -> message_store ->
 obcx::message_store::events::MessageStored -> bridge
 ```
 
-Bridge-specific settings live under `[actors.bridge.config]`. Both bot
-connections must be configured because the actor resolves them through the
-runtime `BotRegistry`. `bridge_files_dir` is required. A representative
-configuration is:
+The actor uses the core `DbManager` service. `db = "main"` selects the
+configured database instance and `db_namespace = "bridge"` isolates the
+actor-owned schema. `bridge_files_dir` is required for media processing.
 
 ```toml
+[db.instances.main]
+type = "sqlite"
+path = "data/obcx.sqlite3"
+
 [actors.bridge]
 library = "bridge"
 enabled = true
+requires = ["message_store"]
 partition = "source_platform:conversation_id"
 db = "main"
 db_namespace = "bridge"
 
 [actors.bridge.config]
-database_file = "bridge_bot.db"
 enable_retry_queue = true
 bridge_files_dir = "/tmp/bridge_files"
 bridge_files_container_dir = "/root/llonebot/bridge_files"
@@ -80,12 +87,18 @@ gif_max_width = 0
 gif_max_colors = 256
 ```
 
-`ffmpeg_path` may be an absolute executable path; its default, `ffmpeg`, uses
-the process `PATH`.
+The forwarding runtime currently resolves bots by platform, not by bot id.
+Configure exactly one live QQ bot and exactly one live Telegram bot. Multiple
+live accounts on either platform make lookup ambiguous and forwarding fails.
 
-`action_timeout` should remain above the upstream first-media-send latency;
-30 seconds is the example default. Telegram `poll_force_close` must be larger
-than `poll_timeout`.
+`ffmpeg_path` may be an absolute executable path; its default, `ffmpeg`, uses
+the process `PATH`. `action_timeout` should remain above the upstream
+first-media-send latency; 30 seconds is the example default. Telegram
+`poll_force_close` must be larger than `poll_timeout`.
+
+[`actor-config.example.toml`](actor-config.example.toml) lists the bot,
+media, and group-mapping options. Use the actor dependency and database block
+above as the current runtime contract.
 
 ## Features
 
@@ -98,10 +111,11 @@ than `poll_timeout`.
 
 ## Tests
 
-The repository tests cover actor dispatch, mapping persistence, retries,
-message adaptation, database schema, and forwarding failure behavior. The OBCX
-cross-repository conformance test additionally proves clean-SDK configure,
-build, install, metadata installation, and test execution.
+The repository tests cover reflected actor dispatch, mapping persistence,
+retries, message adaptation, database schema, and forwarding failure behavior.
+The OBCX cross-repository conformance test additionally installs a clean SDK,
+builds and installs bridge plus message-store, dynamically loads both actors,
+and verifies the complete pipeline and shutdown path.
 
 ## License
 
