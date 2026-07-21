@@ -29,8 +29,8 @@ TEST(BridgeDbRuntimeTest, ReusesCoreDbManagerForSameDatabaseFile) {
   config.path = db_path.string();
 
   auto core = obcx::core::DbManager::shared_manager({config});
-  auto first = bridge::shared_core_db_manager(db_path.string());
-  auto second = bridge::shared_core_db_manager(db_path.string());
+  auto first = bridge::shared_core_db_manager({config});
+  auto second = bridge::shared_core_db_manager({config});
 
   ASSERT_NE(first, nullptr);
   ASSERT_EQ(first, core);

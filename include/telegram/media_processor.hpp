@@ -1,5 +1,8 @@
 #pragma once
 
+#include "config.hpp"
+#include "path_manager.hpp"
+
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <interfaces/bot.hpp>
@@ -25,6 +28,7 @@ public:
    * @brief 构造函数
    */
   explicit TelegramMediaProcessor(
+      std::shared_ptr<const bridge::BridgeConfig> config,
       std::shared_ptr<bridge::BridgeStateRepository> state_repository);
 
   /**
@@ -70,6 +74,8 @@ public:
       -> boost::asio::awaitable<std::optional<std::string>>;
 
 private:
+  std::shared_ptr<const bridge::BridgeConfig> config_;
+  PathManager path_manager_;
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
 
   /**

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <future>
 #include <string>
+#include <string_view>
 
 namespace bridge {
 
@@ -29,7 +30,8 @@ public:
    * @param max_colors Maximum palette colors (1-256, default 256)
    * @return true if conversion succeeded and output file is valid
    */
-  static auto convert_webm_to_gif(const std::string &webm_path,
+  static auto convert_webm_to_gif(std::string_view ffmpeg_path,
+                                  const std::string &webm_path,
                                   const std::string &output_path,
                                   int max_duration = 5, int max_width = 0,
                                   int max_fps = 0, int max_colors = 256)
@@ -38,7 +40,8 @@ public:
   /**
    * @brief Async version of convert_webm_to_gif
    */
-  static auto convert_webm_to_gif_async(const std::string &webm_path,
+  static auto convert_webm_to_gif_async(std::string ffmpeg_path,
+                                        const std::string &webm_path,
                                         const std::string &output_path,
                                         int max_duration = 5, int max_width = 0,
                                         int max_fps = 0, int max_colors = 256)
@@ -68,9 +71,10 @@ public:
    * @return true if any tier produced a valid file within the size limit
    */
   static auto convert_webm_to_gif_with_fallback(
-      const std::string &webm_path, const std::string &output_path,
-      int max_duration = 5, size_t max_file_size = DEFAULT_MAX_FILE_SIZE,
-      int max_width = 0, int max_fps = 0, int max_colors = 256) -> bool;
+      std::string_view ffmpeg_path, const std::string &webm_path,
+      const std::string &output_path, int max_duration = 5,
+      size_t max_file_size = DEFAULT_MAX_FILE_SIZE, int max_width = 0,
+      int max_fps = 0, int max_colors = 256) -> bool;
 
   /**
    * @brief Convert TGS (Telegram animated sticker) to GIF

@@ -7,7 +7,7 @@
 namespace bridge::telegram {
 
 auto TelegramMessageFormatter::format_sender_info(
-    const obcx::common::MessageEvent &event,
+    const BridgeConfig &config, const obcx::common::MessageEvent &event,
     const GroupBridgeConfig *bridge_config,
     const std::string &telegram_group_id,
     std::vector<obcx::common::MessageSegment> &message_to_send) -> void {
@@ -21,7 +21,7 @@ auto TelegramMessageFormatter::format_sender_info(
       message_thread_id = event.data["message_thread_id"].get<int64_t>();
     }
     const TopicBridgeConfig *topic_config =
-        get_topic_config(telegram_group_id, message_thread_id);
+        config.topic_config(telegram_group_id, message_thread_id);
     show_sender = topic_config ? topic_config->show_tg_to_qq_sender : false;
   }
 
@@ -41,8 +41,7 @@ auto TelegramMessageFormatter::format_sender_info(
                   : (has_genuine_reply ? sender_info + "[回复一条消息] "
                                        : sender_info);
     message_to_send.push_back(sender_segment);
-    OBCX_DEBUG("Telegram到QQ转发显示发送者：{}",
-                 sender_display_name);
+    OBCX_DEBUG("Telegram到QQ转发显示发送者：{}", sender_display_name);
   } else {
     if (event.data.contains("reply_to_message")) {
       bool has_reply = has_reply_segment(message_to_send);
@@ -71,8 +70,8 @@ auto TelegramMessageFormatter::format_reply_message(
     reply_segment.data["id"] = reply_to_message_id.value();
     message_to_send.insert(message_to_send.begin(), reply_segment);
 
-    OBCX_DEBUG("Telegram消息回复QQ消息: {} -> QQ消息ID: {}",
-                 event.message_id, reply_to_message_id.value());
+    OBCX_DEBUG("Telegram消息回复QQ消息: {} -> QQ消息ID: {}", event.message_id,
+               reply_to_message_id.value());
   } else if (event.data.contains("reply_to_message")) {
     OBCX_DEBUG("未找到Telegram引用消息对应的QQ消息ID，可能是原生Telegram消息");
   }

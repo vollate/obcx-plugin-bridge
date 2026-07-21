@@ -15,6 +15,7 @@
 namespace bridge {
 
 class ReceivedMessageRepository;
+struct BridgeConfig;
 
 } // namespace bridge
 
@@ -38,7 +39,10 @@ private:
   auto resolve_forwarder(obcx::core::ActorContext &context,
                          boost::asio::any_io_executor executor)
       -> std::shared_ptr<IBridgeForwarder>;
+  auto resolve_config(obcx::core::ActorContext &context)
+      -> std::shared_ptr<const BridgeConfig>;
 
+  std::shared_ptr<const BridgeConfig> config_;
   std::shared_ptr<BridgeStateRepository> repository_;
   std::shared_ptr<IBridgeForwarder> forwarder_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;

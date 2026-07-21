@@ -9,6 +9,7 @@ namespace bridge {
 
 // Forward declarations
 class BridgeStateRepository;
+struct BridgeConfig;
 class ReceivedMessageRepository;
 class RetryQueueManager;
 
@@ -31,6 +32,7 @@ public:
    * @param retry_manager 重试队列管理器（可选）
    */
   explicit QQHandler(
+      std::shared_ptr<const BridgeConfig> config,
       std::shared_ptr<RetryQueueManager> retry_manager = nullptr,
       std::shared_ptr<BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<ReceivedMessageRepository> received_message_repository =
@@ -94,6 +96,7 @@ public:
       -> boost::asio::awaitable<void>;
 
 private:
+  std::shared_ptr<const BridgeConfig> config_;
   std::shared_ptr<RetryQueueManager> retry_manager_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;

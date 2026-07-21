@@ -38,6 +38,15 @@ auto sqlite_config(const std::filesystem::path &path)
   return config;
 }
 
+auto bridge_config_view(const std::filesystem::path &path)
+    -> obcx::common::ActorConfigView {
+  auto built = obcx::common::ConfigLoader::build_snapshot(path.string());
+  if (!built) {
+    throw std::runtime_error("failed to build test config snapshot");
+  }
+  return {std::move(built.snapshot), "bridge"};
+}
+
 } // namespace
 
 TEST(BridgeHandlerRepositoryTest, DetectsActorPipelineOwnershipFromConfig) {
@@ -74,9 +83,7 @@ mode = "await"
 )";
   }
 
-  ASSERT_TRUE(
-      obcx::common::ConfigLoader::instance().load_config(config_path.string()));
-  EXPECT_TRUE(bridge::actor_pipeline_enabled());
+  EXPECT_TRUE(bridge::actor_pipeline_enabled(bridge_config_view(config_path)));
 
   std::filesystem::remove(config_path);
 }
@@ -93,12 +100,30 @@ ffmpeg_path = "/opt/bridge/bin/ffmpeg"
 )";
   }
 
-  ASSERT_TRUE(
-      obcx::common::ConfigLoader::instance().load_config(config_path.string()));
-  bridge::config::load_config();
-  EXPECT_EQ(bridge::config::FFMPEG_PATH, "/opt/bridge/bin/ffmpeg");
+  const auto config =
+      bridge::load_bridge_config(bridge_config_view(config_path));
+  EXPECT_EQ(config->ffmpeg_path, "/opt/bridge/bin/ffmpeg");
 
   std::filesystem::remove(config_path);
+}
+
+TEST(BridgeHandlerRepositoryTest,
+     ReverseLookupIgnoresMappingsWithQqToTelegramDisabled) {
+  bridge::BridgeConfig config;
+  config.group_map.emplace("tg-inbound-only",
+                           bridge::GroupBridgeConfig("tg-inbound-only",
+                                                     "qq-shared", true, true,
+                                                     false, true));
+  config.group_map.emplace("tg-bidirectional",
+                           bridge::GroupBridgeConfig("tg-bidirectional",
+                                                     "qq-shared", true, true,
+                                                     true, true));
+
+  const auto [telegram_group_id, topic_id] =
+      config.tg_group_and_topic_id("qq-shared");
+
+  EXPECT_EQ(telegram_group_id, "tg-bidirectional");
+  EXPECT_EQ(topic_id, -1);
 }
 
 TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
@@ -119,7 +144,8 @@ TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
   };
   ASSERT_TRUE(repository->add_message_mapping(mapping));
 
-  bridge::qq::QQMessageFormatter formatter(repository);
+  bridge::qq::QQMessageFormatter formatter(
+      std::make_shared<const bridge::BridgeConfig>(), repository);
 
   obcx::common::MessageEvent event;
   event.message_id = "qq-current";
@@ -169,11 +195,12 @@ TEST(BridgeHandlerRepositoryTest,
   EXPECT_EQ(qq_source.find("save_user_from_event"), std::string::npos);
   EXPECT_EQ(tg_source.find("save_message_from_event"), std::string::npos);
   EXPECT_EQ(tg_source.find("save_user_from_event"), std::string::npos);
-  EXPECT_FALSE(std::filesystem::exists(
-      source_root / "qq_to_tg" / "qq_to_tg_plugin.cpp"));
-  EXPECT_FALSE(std::filesystem::exists(
-      source_root / "tg_to_qq" / "tg_to_qq_plugin.cpp"));
+  EXPECT_FALSE(std::filesystem::exists(source_root / "qq_to_tg" /
+                                       "qq_to_tg_plugin.cpp"));
+  EXPECT_FALSE(std::filesystem::exists(source_root / "tg_to_qq" /
+                                       "tg_to_qq_plugin.cpp"));
   EXPECT_NE(actor_source.find("OBCX_ACTOR_EXPORT_V2"), std::string::npos);
   EXPECT_NE(actor_source.find("context.await_asio"), std::string::npos);
-  EXPECT_NE(actor_source.find("obcx::message_store::events::MessageStored"), std::string::npos);
+  EXPECT_NE(actor_source.find("obcx::message_store::events::MessageStored"),
+            std::string::npos);
 }

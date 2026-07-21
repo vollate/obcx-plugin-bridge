@@ -72,7 +72,7 @@ auto QQMediaProcessor::process_mface_segment(
     }
 
     OBCX_DEBUG("转换QQ超级表情为动画: url={}, summary={}, emoji_id={}", url,
-                 summary, emoji_id);
+               summary, emoji_id);
   } else {
     converted.type = "text";
     converted.data.clear();
@@ -81,8 +81,7 @@ auto QQMediaProcessor::process_mface_segment(
     } else {
       converted.data["text"] = "[QQ超级表情]";
     }
-    OBCX_WARN("QQ超级表情缺少URL，转换为文本: summary={}",
-                summary);
+    OBCX_WARN("QQ超级表情缺少URL，转换为文本: summary={}", summary);
   }
 
   co_return converted;
@@ -123,8 +122,7 @@ auto QQMediaProcessor::process_share_segment(
   std::string title = segment.data.value("title", "链接分享");
   converted.data.clear();
   converted.data["text"] = fmt::format("[{}]\t{}", title, url);
-  OBCX_DEBUG("转换QQ链接分享为文本: title={}, url={}", title,
-               url);
+  OBCX_DEBUG("转换QQ链接分享为文本: title={}, url={}", title, url);
   co_return converted;
 }
 

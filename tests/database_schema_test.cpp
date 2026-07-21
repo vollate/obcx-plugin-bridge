@@ -82,7 +82,8 @@ TEST(BridgeDatabaseSchemaTest,
   std::filesystem::remove(db_path);
 }
 
-TEST(BridgeDatabaseSchemaTest, BridgeStateRepositoryPersistsBridgeOwnedCacheState) {
+TEST(BridgeDatabaseSchemaTest,
+     BridgeStateRepositoryPersistsBridgeOwnedCacheState) {
   const auto db_path = temp_db_path("cache_state");
   const auto created_at =
       std::chrono::system_clock::time_point{std::chrono::seconds{10}};
@@ -106,7 +107,8 @@ TEST(BridgeDatabaseSchemaTest, BridgeStateRepositoryPersistsBridgeOwnedCacheStat
   telegram_user.last_name = "Lovelace";
   telegram_user.last_updated = std::chrono::system_clock::now();
   ASSERT_TRUE(repository.save_or_update_user(telegram_user));
-  EXPECT_EQ(repository.query_user_display_name("telegram", "tg-user"), "Ada Lovelace");
+  EXPECT_EQ(repository.query_user_display_name("telegram", "tg-user"),
+            "Ada Lovelace");
 
   storage::StickerCacheInfo sticker;
   sticker.platform = "telegram";
@@ -131,8 +133,7 @@ TEST(BridgeDatabaseSchemaTest, BridgeStateRepositoryPersistsBridgeOwnedCacheStat
   EXPECT_EQ(stored_sticker->file_size, 128);
 
   ASSERT_TRUE(repository.update_sticker_conversion("telegram", "hash-1",
-                                                   "success",
-                                                   "/tmp/wave.png"));
+                                                   "success", "/tmp/wave.png"));
   const auto converted_sticker =
       repository.get_sticker_cache("telegram", "hash-1");
   ASSERT_TRUE(converted_sticker.has_value());
@@ -150,8 +151,7 @@ TEST(BridgeDatabaseSchemaTest, BridgeStateRepositoryPersistsBridgeOwnedCacheStat
   mapping.last_checked_at = checked_at;
   ASSERT_TRUE(repository.save_qq_sticker_mapping(mapping));
 
-  const auto stored_mapping =
-      repository.get_qq_sticker_mapping("qq-hash-1");
+  const auto stored_mapping = repository.get_qq_sticker_mapping("qq-hash-1");
   ASSERT_TRUE(stored_mapping.has_value());
   EXPECT_EQ(stored_mapping->telegram_file_id, "tg-file-1");
   EXPECT_EQ(stored_mapping->is_gif, true);

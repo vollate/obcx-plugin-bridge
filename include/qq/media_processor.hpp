@@ -12,7 +12,8 @@
 
 namespace bridge {
 class BridgeStateRepository;
-}
+struct BridgeConfig;
+} // namespace bridge
 
 namespace bridge::qq {
 
@@ -39,6 +40,7 @@ public:
    * @brief 构造函数
    */
   explicit QQMediaProcessor(
+      std::shared_ptr<const bridge::BridgeConfig> config,
       std::shared_ptr<bridge::BridgeStateRepository> state_repository);
 
   /**
@@ -144,29 +146,29 @@ public:
   /**
    * @brief 处理JSON小程序段
    */
-  static auto process_json_segment(const obcx::common::MessageSegment &segment)
+  auto process_json_segment(const obcx::common::MessageSegment &segment)
       -> boost::asio::awaitable<obcx::common::MessageSegment>;
 
   /**
    * @brief 处理应用分享段
    */
-  static auto process_app_segment(const obcx::common::MessageSegment &segment)
+  auto process_app_segment(const obcx::common::MessageSegment &segment)
       -> boost::asio::awaitable<obcx::common::MessageSegment>;
 
   /**
    * @brief 处理ARK卡片段
    */
-  static auto process_ark_segment(const obcx::common::MessageSegment &segment)
+  auto process_ark_segment(const obcx::common::MessageSegment &segment)
       -> boost::asio::awaitable<obcx::common::MessageSegment>;
 
   /**
    * @brief 处理小程序段
    */
-  static auto process_miniapp_segment(
-      const obcx::common::MessageSegment &segment)
+  auto process_miniapp_segment(const obcx::common::MessageSegment &segment)
       -> boost::asio::awaitable<obcx::common::MessageSegment>;
 
 private:
+  std::shared_ptr<const bridge::BridgeConfig> config_;
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
 
   /**
@@ -194,13 +196,13 @@ private:
   /**
    * @brief 解析小程序JSON数据
    */
-  static auto parse_miniapp_json(const std::string &json_data)
+  auto parse_miniapp_json(const std::string &json_data) const
       -> MiniAppParseResult;
 
   /**
    * @brief 格式化小程序消息段
    */
-  static auto format_miniapp_message(const MiniAppParseResult &parse_result)
+  auto format_miniapp_message(const MiniAppParseResult &parse_result) const
       -> obcx::common::MessageSegment;
 
   /**

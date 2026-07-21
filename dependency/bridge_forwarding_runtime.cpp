@@ -1,6 +1,7 @@
 #include "bridge_forwarding_runtime.hpp"
 
 #include "bridge_message_event_adapter.hpp"
+#include "config.hpp"
 #include "qq/handler.hpp"
 #include "telegram/handler.hpp"
 
@@ -56,16 +57,17 @@ auto is_telegram_edit(const obcx::common::MessageEvent &event) -> bool {
 
 BridgeForwardingRuntime::BridgeForwardingRuntime(
     std::shared_ptr<obcx::core::BotRegistry> bot_registry,
+    std::shared_ptr<const BridgeConfig> config,
     std::shared_ptr<BridgeStateRepository> state_repository,
     std::shared_ptr<ReceivedMessageRepository> received_message_repository,
     boost::asio::any_io_executor buffer_executor)
-    : bot_registry_(std::move(bot_registry)),
+    : bot_registry_(std::move(bot_registry)), config_(std::move(config)),
       state_repository_(std::move(state_repository)),
       received_message_repository_(std::move(received_message_repository)),
-      qq_handler_(std::make_shared<QQHandler>(nullptr, state_repository_,
-                                              received_message_repository_)),
+      qq_handler_(std::make_shared<QQHandler>(
+          config_, nullptr, state_repository_, received_message_repository_)),
       telegram_handler_(std::make_shared<TelegramHandler>(
-          nullptr, std::move(buffer_executor), state_repository_,
+          config_, nullptr, std::move(buffer_executor), state_repository_,
           received_message_repository_)) {}
 
 auto BridgeForwardingRuntime::forward_message(

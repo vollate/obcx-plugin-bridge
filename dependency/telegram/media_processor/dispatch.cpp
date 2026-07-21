@@ -4,15 +4,19 @@
 #include "media_processor.hpp"
 
 #include <common/logger.hpp>
-#include <interfaces/telegram_bot.hpp>
 #include <fmt/format.h>
+#include <interfaces/telegram_bot.hpp>
 #include <utility>
 
 namespace bridge::telegram {
 
 TelegramMediaProcessor::TelegramMediaProcessor(
+    std::shared_ptr<const bridge::BridgeConfig> config,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository)
-    : state_repository_(std::move(state_repository)) {}
+    : config_(std::move(config)),
+      path_manager_(config_->bridge_files_dir,
+                    config_->bridge_files_container_dir),
+      state_repository_(std::move(state_repository)) {}
 
 auto TelegramMediaProcessor::process_media_file(
     obcx::core::IBot &telegram_bot, const std::string &file_type,

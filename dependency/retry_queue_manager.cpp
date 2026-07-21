@@ -91,8 +91,8 @@ void remove_persisted_message_retry(
     repository->remove_message_retry(
         entry.source_platform, entry.source_message_id, entry.target_platform);
   } catch (const std::exception &e) {
-    OBCX_ERROR("Failed to remove persisted message retry after {}: {}",
-                 outcome, e.what());
+    OBCX_ERROR("Failed to remove persisted message retry after {}: {}", outcome,
+               e.what());
   }
 }
 
@@ -108,8 +108,8 @@ void update_persisted_message_retry(
         entry.source_platform, entry.source_message_id, entry.target_platform,
         entry.retry_count, entry.next_retry_at, entry.failure_reason);
   } catch (const std::exception &e) {
-    OBCX_ERROR("Failed to update persisted message retry after {}: {}",
-                 outcome, e.what());
+    OBCX_ERROR("Failed to update persisted message retry after {}: {}", outcome,
+               e.what());
   }
 }
 
@@ -130,7 +130,7 @@ void persist_successful_message_mapping(
     repository->add_message_mapping(mapping);
   } catch (const std::exception &e) {
     OBCX_ERROR("Failed to persist mapping after successful retry: {}",
-                 e.what());
+               e.what());
   }
 }
 
@@ -205,8 +205,7 @@ void RetryQueueManager::stop() {
     size_t media_count = media_retry_queue_.size();
     media_retry_queue_.clear();
     if (media_count > 0) {
-      OBCX_INFO("Cleared {} pending media download retries",
-                  media_count);
+      OBCX_INFO("Cleared {} pending media download retries", media_count);
     }
   }
 }
@@ -248,8 +247,8 @@ void RetryQueueManager::add_message_retry(
     }
   }
 
-  OBCX_INFO("Added message retry: {} -> {} (msg_id: {})",
-              source_platform, target_platform, source_message_id);
+  OBCX_INFO("Added message retry: {} -> {} (msg_id: {})", source_platform,
+            target_platform, source_message_id);
 }
 
 void RetryQueueManager::add_media_download_retry(
@@ -278,21 +277,20 @@ void RetryQueueManager::add_media_download_retry(
   }
 
   OBCX_INFO("Added media download retry: {} (file_id: {}, use_proxy: {})",
-              platform, file_id, use_proxy);
+            platform, file_id, use_proxy);
 }
 
 void RetryQueueManager::register_message_send_callback(
     const std::string &target_platform, MessageSendCallback callback) {
   message_send_callbacks_[target_platform] = std::move(callback);
   OBCX_DEBUG("Registered message send callback for platform: {}",
-               target_platform);
+             target_platform);
 }
 
 void RetryQueueManager::register_media_download_callback(
     const std::string &platform, MediaDownloadCallback callback) {
   media_download_callbacks_[platform] = std::move(callback);
-  OBCX_DEBUG("Registered media download callback for platform: {}",
-               platform);
+  OBCX_DEBUG("Registered media download callback for platform: {}", platform);
 }
 
 auto RetryQueueManager::process_retry_queues() -> boost::asio::awaitable<void> {
@@ -319,8 +317,7 @@ auto RetryQueueManager::process_retry_queues() -> boost::asio::awaitable<void> {
       }
       OBCX_ERROR("Error in retry queue processing: {}", e.what());
     } catch (const std::exception &e) {
-      OBCX_ERROR("Exception in retry queue processing: {}",
-                   e.what());
+      OBCX_ERROR("Exception in retry queue processing: {}", e.what());
     }
 
     if (running_) {
@@ -365,7 +362,7 @@ auto RetryQueueManager::process_message_retries()
       auto callback_it = message_send_callbacks_.find(entry.target_platform);
       if (callback_it == message_send_callbacks_.end()) {
         OBCX_WARN("No callback registered for target platform: {}",
-                    entry.target_platform);
+                  entry.target_platform);
         // No handler yet - keep entry alive so it can be retried later
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
@@ -377,8 +374,8 @@ auto RetryQueueManager::process_message_retries()
       }
 
       OBCX_INFO("Retrying message send: {} -> {} (attempt {})",
-                  entry.source_platform, entry.target_platform,
-                  entry.retry_count + 1);
+                entry.source_platform, entry.target_platform,
+                entry.retry_count + 1);
 
       auto result = co_await callback_it->second(entry, entry.message);
 
@@ -388,15 +385,14 @@ auto RetryQueueManager::process_message_retries()
                                            result.value());
         remove_persisted_message_retry(state_repository_, entry, "success");
         OBCX_INFO("Message retry successful: {} -> {} (msg_id: {})",
-                    entry.source_platform, entry.target_platform,
-                    result.value());
+                  entry.source_platform, entry.target_platform, result.value());
       } else {
         entry.retry_count++;
 
         if (entry.retry_count >= entry.max_retry_count) {
           OBCX_WARN("Message retry failed after {} attempts: {} -> {}",
-                      entry.max_retry_count, entry.source_platform,
-                      entry.target_platform);
+                    entry.max_retry_count, entry.source_platform,
+                    entry.target_platform);
           remove_persisted_message_retry(state_repository_, entry,
                                          "max attempts");
           // Give up: do not re-add
@@ -406,10 +402,10 @@ auto RetryQueueManager::process_message_retries()
           update_persisted_message_retry(state_repository_, entry,
                                          "send failure");
           OBCX_DEBUG("Updated message retry count to {}, next retry in {}s",
-                       entry.retry_count,
-                       std::chrono::duration_cast<std::chrono::seconds>(
-                           entry.next_retry_at - now)
-                           .count());
+                     entry.retry_count,
+                     std::chrono::duration_cast<std::chrono::seconds>(
+                         entry.next_retry_at - now)
+                         .count());
 
           if (running_) {
             std::scoped_lock lock(message_retry_mutex_);
@@ -460,15 +456,13 @@ auto RetryQueueManager::process_media_download_retries()
     co_return;
   }
 
-  OBCX_DEBUG("Processing {} media download retries",
-               ready_entries.size());
+  OBCX_DEBUG("Processing {} media download retries", ready_entries.size());
 
   for (auto &entry : ready_entries) {
     try {
       auto callback_it = media_download_callbacks_.find(entry.platform);
       if (callback_it == media_download_callbacks_.end()) {
-        OBCX_WARN("No callback registered for platform: {}",
-                    entry.platform);
+        OBCX_WARN("No callback registered for platform: {}", entry.platform);
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
         std::scoped_lock lock(media_retry_mutex_);
@@ -477,14 +471,14 @@ auto RetryQueueManager::process_media_download_retries()
       }
 
       OBCX_INFO("Retrying media download: {} (attempt {}, use_proxy: {})",
-                  entry.file_id, entry.retry_count + 1, entry.use_proxy);
+                entry.file_id, entry.retry_count + 1, entry.use_proxy);
 
       auto result = co_await callback_it->second(
           entry.download_url, entry.local_path, entry.use_proxy);
 
       if (result.has_value()) {
-        OBCX_INFO("Media download retry successful: {} -> {}",
-                    entry.file_id, result.value());
+        OBCX_INFO("Media download retry successful: {} -> {}", entry.file_id,
+                  result.value());
       } else {
         entry.retry_count++;
 
@@ -492,7 +486,7 @@ auto RetryQueueManager::process_media_download_retries()
           // Proxy exhausted: fall back to direct connection with fresh count
           if (running_ && entry.use_proxy) {
             OBCX_INFO("Proxy download failed, trying direct connection: {}",
-                        entry.file_id);
+                      entry.file_id);
             entry.use_proxy = false;
             entry.retry_count = 0;
             entry.next_retry_at = calculate_next_retry_time(
@@ -501,7 +495,7 @@ auto RetryQueueManager::process_media_download_retries()
             media_retry_queue_.push_back(std::move(entry));
           } else {
             OBCX_WARN("Media download retry failed after {} attempts: {}",
-                        entry.max_retry_count, entry.file_id);
+                      entry.max_retry_count, entry.file_id);
           }
         } else if (running_) {
           entry.next_retry_at = calculate_next_retry_time(
@@ -512,8 +506,7 @@ auto RetryQueueManager::process_media_download_retries()
       }
 
     } catch (const std::exception &e) {
-      OBCX_ERROR("Error processing media download retry: {}",
-                   e.what());
+      OBCX_ERROR("Error processing media download retry: {}", e.what());
       entry.retry_count++;
       if (running_ && entry.retry_count < entry.max_retry_count) {
         entry.next_retry_at = calculate_next_retry_time(
@@ -562,7 +555,7 @@ void RetryQueueManager::restore_persisted_message_retries() {
   std::scoped_lock lock(message_retry_mutex_);
   message_retry_queue_ = std::move(restored);
   OBCX_INFO("Restored {} persisted message retries",
-              message_retry_queue_.size());
+            message_retry_queue_.size());
 }
 
 auto RetryQueueManager::get_retry_statistics() const -> std::string {

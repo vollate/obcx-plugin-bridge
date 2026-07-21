@@ -113,8 +113,7 @@ void TGMediaGroupBuffer::on_timer_fired_(GroupKey key) {
     try {
       fn(std::move(events));
     } catch (const std::exception &e) {
-      OBCX_ERROR("Media group flush callback threw: {}",
-                   e.what());
+      OBCX_ERROR("Media group flush callback threw: {}", e.what());
     }
   }
 }
@@ -141,7 +140,7 @@ void TGMediaGroupBuffer::flush_all_now() {
 
   if (!pending.empty()) {
     OBCX_INFO("Flushing {} pending Telegram media groups synchronously",
-                pending.size());
+              pending.size());
   }
 
   for (auto &[events, fn] : pending) {
@@ -149,8 +148,7 @@ void TGMediaGroupBuffer::flush_all_now() {
       try {
         fn(std::move(events));
       } catch (const std::exception &e) {
-        OBCX_ERROR("Media group sync flush callback threw: {}",
-                     e.what());
+        OBCX_ERROR("Media group sync flush callback threw: {}", e.what());
       }
     }
   }

@@ -8,8 +8,8 @@
 #include <algorithm>
 #include <boost/asio/io_context.hpp>
 #include <common/logger.hpp>
-#include <interfaces/telegram_bot.hpp>
 #include <fmt/format.h>
+#include <interfaces/telegram_bot.hpp>
 #include <iomanip>
 #include <network/http_client.hpp>
 #include <sstream>
@@ -45,8 +45,7 @@ auto QQMediaProcessor::process_image_segment(
   if (segment.data.contains("subType") && segment.data.at("subType") == 1 &&
       !url.empty()) {
     try {
-      std::string qq_sticker_hash =
-          bridge::calculate_hash(url);
+      std::string qq_sticker_hash = bridge::calculate_hash(url);
       auto cached_mapping =
           state_repository_
               ? state_repository_->get_qq_sticker_mapping(qq_sticker_hash)
@@ -54,15 +53,13 @@ auto QQMediaProcessor::process_image_segment(
 
       if (cached_mapping && cached_mapping->is_gif.has_value()) {
         is_gif = cached_mapping->is_gif.value();
-        OBCX_DEBUG("使用缓存的图片类型检测结果: {} -> is_gif={}",
-                     url, is_gif);
+        OBCX_DEBUG("使用缓存的图片类型检测结果: {} -> is_gif={}", url, is_gif);
       } else {
         is_gif = co_await detect_gif_format(url);
       }
     } catch (const std::exception &e) {
       is_gif = true;
-      OBCX_ERROR("图片类型检测异常，回退到默认行为: {} - {}", url,
-                   e.what());
+      OBCX_ERROR("图片类型检测异常，回退到默认行为: {} - {}", url, e.what());
     }
   }
 
@@ -82,8 +79,7 @@ auto QQMediaProcessor::process_image_segment(
     OBCX_DEBUG("检测到QQ表情包，使用压缩模式转发: {}", file_name);
   } else if (is_gif) {
     converted_segment.type = "animation";
-    OBCX_DEBUG("检测到QQ GIF动图，转为Telegram动画: {}",
-                 file_name);
+    OBCX_DEBUG("检测到QQ GIF动图，转为Telegram动画: {}", file_name);
   } else {
     OBCX_DEBUG("转发QQ图片文件: {}", file_name);
   }
@@ -137,7 +133,7 @@ auto QQMediaProcessor::handle_sticker_cache(
         show_sender_for_sticker = bridge_config->show_qq_to_tg_sender;
       } else {
         const TopicBridgeConfig *topic_config =
-            get_topic_config(telegram_group_id, topic_id);
+            config_->topic_config(telegram_group_id, topic_id);
         show_sender_for_sticker =
             topic_config ? topic_config->show_qq_to_tg_sender : false;
       }
@@ -150,9 +146,9 @@ auto QQMediaProcessor::handle_sticker_cache(
       if (topic_id == -1) {
         response =
             co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
-                       .send_group_photo(telegram_group_id,
-                                         cached_mapping->telegram_file_id,
-                                         caption_info);
+                .send_group_photo(telegram_group_id,
+                                  cached_mapping->telegram_file_id,
+                                  caption_info);
       } else {
         obcx::common::Message sticker_message;
         obcx::common::MessageSegment img_segment;
@@ -167,16 +163,15 @@ auto QQMediaProcessor::handle_sticker_cache(
         sticker_message.push_back(img_segment);
         response =
             co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
-                       .send_topic_message(telegram_group_id, topic_id,
-                                           sticker_message);
+                .send_topic_message(telegram_group_id, topic_id,
+                                    sticker_message);
       }
 
-      OBCX_INFO("使用缓存的QQ表情包发送成功: {} -> {}",
-                  qq_sticker_hash, cached_mapping->telegram_file_id);
+      OBCX_INFO("使用缓存的QQ表情包发送成功: {} -> {}", qq_sticker_hash,
+                cached_mapping->telegram_file_id);
       co_return true;
     }
-    OBCX_INFO("QQ表情包缓存未命中，将上传并缓存: {}",
-                qq_sticker_hash);
+    OBCX_INFO("QQ表情包缓存未命中，将上传并缓存: {}", qq_sticker_hash);
     co_return false;
   } catch (const std::exception &e) {
     OBCX_ERROR("处理QQ表情包缓存时出错: {}", e.what());
@@ -188,8 +183,8 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
     -> boost::asio::awaitable<bool> {
   try {
     OBCX_INFO("[图片类型检测] "
-                "subType=1图片缓存未命中，开始下载文件进行本地检测: {}",
-                url);
+              "subType=1图片缓存未命中，开始下载文件进行本地检测: {}",
+              url);
 
     const std::string &url_str(url);
     size_t protocol_pos = url_str.find("://");
@@ -207,7 +202,7 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
     std::string path = url_str.substr(path_start);
 
     OBCX_DEBUG("[图片类型检测] QQ文件URL解析完成 - Host: {}, Path: {}", host,
-                 path);
+               path);
 
     // QQ 图片下载强制直连，不能走 Telegram 代理。
     obcx::common::ConnectionConfig qq_config;
@@ -222,7 +217,7 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
     qq_config.proxy_password = "";
 
     OBCX_DEBUG("[图片类型检测] 创建专用QQ文件下载HttpClient - 主机: {}:{}",
-                 host, qq_config.port);
+               host, qq_config.port);
 
     boost::asio::io_context temp_ioc;
 
@@ -245,13 +240,12 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
         bool is_gif = MediaProcessor::is_gif_from_content(file_header);
 
         OBCX_INFO("[图片类型检测] 文件头部MIME检测成功: {} -> {} "
-                    "(is_gif={}, 读取了{}字节)",
-                    url, detected_mime, is_gif, file_header.size());
+                  "(is_gif={}, 读取了{}字节)",
+                  url, detected_mime, is_gif, file_header.size());
         OBCX_DEBUG("[图片类型检测] 文件头部16进制: {}",
-                     to_hex_string(file_header));
+                   to_hex_string(file_header));
 
-        std::string qq_sticker_hash =
-            bridge::calculate_hash(url);
+        std::string qq_sticker_hash = bridge::calculate_hash(url);
         storage::QQStickerMapping new_mapping;
         new_mapping.qq_sticker_hash = qq_sticker_hash;
         new_mapping.telegram_file_id = "";
@@ -273,14 +267,14 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
       }
     } else {
       OBCX_WARN("[图片类型检测] Range请求失败，状态码: {}, "
-                  "回退到默认行为: {}",
-                  response.status_code, url);
+                "回退到默认行为: {}",
+                response.status_code, url);
       co_return true;
     }
   } catch (const std::exception &e) {
     OBCX_ERROR("[图片类型检测] "
-                 "QQ文件Range请求或检测异常，回退到默认行为: {} - {}",
-                 url, e.what());
+               "QQ文件Range请求或检测异常，回退到默认行为: {} - {}",
+               url, e.what());
     co_return true;
   }
 }

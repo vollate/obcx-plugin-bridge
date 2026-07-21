@@ -92,7 +92,8 @@ void set_if_missing(obcx::common::json &raw, const char *key,
 auto message_event_from_message_stored(
     const obcx::core::MessageEnvelope &message)
     -> std::optional<obcx::common::MessageEvent> {
-  if (message.type != "obcx::message_store::events::MessageStored" || !message.payload.is_object()) {
+  if (message.type != "obcx::message_store::events::MessageStored" ||
+      !message.payload.is_object()) {
     return std::nullopt;
   }
 

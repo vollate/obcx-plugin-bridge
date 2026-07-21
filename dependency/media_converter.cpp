@@ -1,5 +1,4 @@
 #include "media_converter.hpp"
-#include "config.hpp"
 #include <common/logger.hpp>
 
 #include <cstdlib>
@@ -13,7 +12,8 @@ namespace {
 constexpr const char *LOG_TAG = "bridge";
 } // namespace
 
-auto MediaConverter::convert_webm_to_gif(const std::string &webm_path,
+auto MediaConverter::convert_webm_to_gif(std::string_view ffmpeg_path,
+                                         const std::string &webm_path,
                                          const std::string &output_path,
                                          int max_duration, int max_width,
                                          int max_fps, int max_colors) -> bool {
@@ -48,7 +48,7 @@ auto MediaConverter::convert_webm_to_gif(const std::string &webm_path,
            << ":bayer_scale=5:diff_mode=rectangle";
 
     std::ostringstream cmd;
-    cmd << "\"" << config::FFMPEG_PATH << "\" "
+    cmd << "\"" << ffmpeg_path << "\" "
         << "-i \"" << webm_path << "\" "
         << "-t " << max_duration << " "
         << "-vf \"" << filter.str() << "\" "
@@ -62,8 +62,7 @@ auto MediaConverter::convert_webm_to_gif(const std::string &webm_path,
 
     if (success && is_valid_file(output_path)) {
       auto file_size = std::filesystem::file_size(output_path);
-      OBCX_INFO("WebM到GIF转换成功, 输出文件大小: {} 字节",
-                  file_size);
+      OBCX_INFO("WebM到GIF转换成功, 输出文件大小: {} 字节", file_size);
       return true;
     }
 
@@ -76,23 +75,25 @@ auto MediaConverter::convert_webm_to_gif(const std::string &webm_path,
   }
 }
 
-auto MediaConverter::convert_webm_to_gif_async(const std::string &webm_path,
+auto MediaConverter::convert_webm_to_gif_async(std::string ffmpeg_path,
+                                               const std::string &webm_path,
                                                const std::string &output_path,
                                                int max_duration, int max_width,
                                                int max_fps, int max_colors)
     -> std::future<bool> {
   return std::async(std::launch::async, [=]() -> bool {
-    return convert_webm_to_gif(webm_path, output_path, max_duration, max_width,
-                               max_fps, max_colors);
+    return convert_webm_to_gif(ffmpeg_path, webm_path, output_path,
+                               max_duration, max_width, max_fps, max_colors);
   });
 }
 
 auto MediaConverter::convert_webm_to_gif_with_fallback(
-    const std::string &webm_path, const std::string &output_path,
-    int max_duration, size_t max_file_size, int max_width, int max_fps,
-    int max_colors) -> bool {
+    std::string_view ffmpeg_path, const std::string &webm_path,
+    const std::string &output_path, int max_duration, size_t max_file_size,
+    int max_width, int max_fps, int max_colors) -> bool {
   try {
-    OBCX_INFO("开始WebM到GIF转换(带回退), 输入: {}, 输出: {}, 大小限制: {} 字节",
+    OBCX_INFO(
+        "开始WebM到GIF转换(带回退), 输入: {}, 输出: {}, 大小限制: {} 字节",
         webm_path, output_path,
         max_file_size == 0 ? "无限制" : std::to_string(max_file_size));
 
@@ -113,14 +114,13 @@ auto MediaConverter::convert_webm_to_gif_with_fallback(
     };
 
     for (const auto &tier : tiers) {
-      OBCX_INFO("尝试 [{}] 级别转换 (宽度={}, fps={}, 颜色={})",
-                  tier.name,
-                  tier.max_width == 0 ? "原始" : std::to_string(tier.max_width),
-                  tier.max_fps == 0 ? "原始" : std::to_string(tier.max_fps),
-                  tier.max_colors);
+      OBCX_INFO("尝试 [{}] 级别转换 (宽度={}, fps={}, 颜色={})", tier.name,
+                tier.max_width == 0 ? "原始" : std::to_string(tier.max_width),
+                tier.max_fps == 0 ? "原始" : std::to_string(tier.max_fps),
+                tier.max_colors);
 
       bool success =
-          convert_webm_to_gif(webm_path, output_path, max_duration,
+          convert_webm_to_gif(ffmpeg_path, webm_path, output_path, max_duration,
                               tier.max_width, tier.max_fps, tier.max_colors);
 
       if (!success || !is_valid_file(output_path)) {
@@ -133,13 +133,12 @@ auto MediaConverter::convert_webm_to_gif_with_fallback(
 
       if (max_file_size > 0 && file_size > max_file_size) {
         OBCX_WARN("[{}] 级别输出过大 ({} 字节 > {} 字节限制), 尝试下一级",
-                    tier.name, file_size, max_file_size);
+                  tier.name, file_size, max_file_size);
         cleanup_temp_file(output_path);
         continue;
       }
 
-      OBCX_INFO("[{}] 级别转换成功, 输出大小: {} 字节", tier.name,
-                  file_size);
+      OBCX_INFO("[{}] 级别转换成功, 输出大小: {} 字节", tier.name, file_size);
       return true;
     }
 

@@ -14,11 +14,13 @@ namespace bridge {
 
 class QQHandler;
 class TelegramHandler;
+struct BridgeConfig;
 
 class BridgeForwardingRuntime final : public IBridgeForwarder {
 public:
   BridgeForwardingRuntime(
       std::shared_ptr<obcx::core::BotRegistry> bot_registry,
+      std::shared_ptr<const BridgeConfig> config,
       std::shared_ptr<BridgeStateRepository> state_repository,
       std::shared_ptr<ReceivedMessageRepository> received_message_repository,
       boost::asio::any_io_executor buffer_executor);
@@ -28,6 +30,7 @@ public:
 
 private:
   std::shared_ptr<obcx::core::BotRegistry> bot_registry_;
+  std::shared_ptr<const BridgeConfig> config_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;
   std::shared_ptr<QQHandler> qq_handler_;

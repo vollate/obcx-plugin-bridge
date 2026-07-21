@@ -156,7 +156,7 @@ void BridgeStateRepository::initialize_schema() {
           ON bridge_message_retry_queue(next_retry_at);
         )");
 
-	                                    connection.execute(R"(
+                                    connection.execute(R"(
 	          CREATE TABLE IF NOT EXISTS bridge_media_group_mappings (
 	            id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_platform TEXT NOT NULL,
@@ -233,8 +233,8 @@ void BridgeStateRepository::initialize_schema() {
             updated_at INTEGER NOT NULL
           );
         )");
-	                                  });
-	}
+                                  });
+}
 
 auto BridgeStateRepository::add_message_mapping(
     const storage::MessageMapping &mapping) -> bool {
@@ -499,8 +499,8 @@ auto BridgeStateRepository::delete_message_mapping(
         )",
             {source_platform, source_message_id, target_platform});
         return true;
-	      });
-	}
+      });
+}
 
 auto BridgeStateRepository::save_or_update_user(
     const storage::UserInfo &user_info, const bool force_update) -> bool {
@@ -514,8 +514,7 @@ auto BridgeStateRepository::save_or_update_user(
             IFNULL(bridge_users.first_name, '') != IFNULL(excluded.first_name, '') OR
             IFNULL(bridge_users.last_name, '') != IFNULL(excluded.last_name, '')
         )";
-        connection.execute(
-            std::string{R"(
+        connection.execute(std::string{R"(
           INSERT INTO bridge_users
             (platform, user_id, group_id, username, nickname, title, first_name,
              last_name, last_updated)
@@ -528,10 +527,11 @@ auto BridgeStateRepository::save_or_update_user(
             last_name = excluded.last_name,
             last_updated = excluded.last_updated
         )"} + update_guard + ";",
-            {user_info.platform, user_info.user_id, user_info.group_id,
-             user_info.username, user_info.nickname, user_info.title,
-             user_info.first_name, user_info.last_name,
-             timestamp_ms(user_info.last_updated)});
+                           {user_info.platform, user_info.user_id,
+                            user_info.group_id, user_info.username,
+                            user_info.nickname, user_info.title,
+                            user_info.first_name, user_info.last_name,
+                            timestamp_ms(user_info.last_updated)});
         return true;
       });
 }
@@ -570,9 +570,10 @@ auto BridgeStateRepository::get_user(const std::string &platform,
       });
 }
 
-auto BridgeStateRepository::query_user_display_name(
-    const std::string &platform, const std::string &user_id,
-    const std::string &group_id) -> std::optional<std::string> {
+auto BridgeStateRepository::query_user_display_name(const std::string &platform,
+                                                    const std::string &user_id,
+                                                    const std::string &group_id)
+    -> std::optional<std::string> {
   constexpr auto kUserInfoExpiration = std::chrono::minutes{10};
 
   const auto query_group_id = platform == "telegram" ? std::string{} : group_id;
@@ -644,9 +645,10 @@ auto BridgeStateRepository::save_sticker_cache(
             created_at = excluded.created_at,
             last_used_at = excluded.last_used_at;
         )",
-            {cache_info.platform, cache_info.sticker_id, cache_info.sticker_hash,
-             optional_string(cache_info.original_name), cache_info.file_type,
-             optional_string(cache_info.mime_type), cache_info.original_file_path,
+            {cache_info.platform, cache_info.sticker_id,
+             cache_info.sticker_hash, optional_string(cache_info.original_name),
+             cache_info.file_type, optional_string(cache_info.mime_type),
+             cache_info.original_file_path,
              optional_string(cache_info.converted_file_path),
              cache_info.container_path, optional_int64(cache_info.file_size),
              cache_info.conversion_status, timestamp_ms(cache_info.created_at),
@@ -655,8 +657,8 @@ auto BridgeStateRepository::save_sticker_cache(
       });
 }
 
-auto BridgeStateRepository::get_sticker_cache(
-    const std::string &platform, const std::string &sticker_hash)
+auto BridgeStateRepository::get_sticker_cache(const std::string &platform,
+                                              const std::string &sticker_hash)
     -> std::optional<storage::StickerCacheInfo> {
   return db_manager_.run_read<std::optional<storage::StickerCacheInfo>>(
       db_instance_, [&](obcx::core::IDbConnection &connection) {

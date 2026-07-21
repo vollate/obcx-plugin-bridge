@@ -36,6 +36,7 @@ public:
    */
   template <typename ConnectionManager>
   static auto download_media_file(ConnectionManager *conn_manager,
+                                  const PathManager &path_manager,
                                   const std::string &file_url,
                                   const std::string &file_type,
                                   const std::string &filename = "")
@@ -46,12 +47,6 @@ public:
    * @param file_path 要删除的文件路径
    */
   static auto cleanup_media_file(const std::string &file_path) -> void;
-
-  /**
-   * @brief 获取路径管理器实例
-   * @return PathManager 实例的引用
-   */
-  static auto get_path_manager() -> const PathManager &;
 
   /**
    * @brief 根据Content-Type判断是否为GIF格式
@@ -79,6 +74,7 @@ public:
 // 模板实现
 template <typename ConnectionManager>
 inline auto MediaProcessor::download_media_file(ConnectionManager *conn_manager,
+                                                const PathManager &path_manager,
                                                 const std::string &file_url,
                                                 const std::string &file_type,
                                                 const std::string &filename)
@@ -107,7 +103,6 @@ inline auto MediaProcessor::download_media_file(ConnectionManager *conn_manager,
     }
 
     // 构建完整的本地文件路径
-    const auto &path_manager = get_path_manager();
     std::string relative_path = "temp/" + target_filename;
     std::string local_file_path = path_manager.to_host_path(relative_path);
 

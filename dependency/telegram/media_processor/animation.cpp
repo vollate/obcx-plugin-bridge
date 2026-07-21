@@ -5,10 +5,10 @@
 #include "media_processor.hpp"
 
 #include <common/logger.hpp>
-#include <interfaces/telegram_bot.hpp>
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
+#include <interfaces/telegram_bot.hpp>
 #include <media_converter.hpp>
 
 namespace bridge::telegram {
@@ -33,13 +33,12 @@ auto TelegramMediaProcessor::process_animation(
       file_segment.data["name"] = filename;
 
       OBCX_INFO("成功缓存Telegram animation到容器路径: {}",
-                  container_file_path);
+                container_file_path);
     } else {
       throw std::runtime_error("缓存下载失败");
     }
   } catch (const std::exception &e) {
-    OBCX_WARN("缓存系统处理动画失败: {}, 回退到URL方式",
-                e.what());
+    OBCX_WARN("缓存系统处理动画失败: {}, 回退到URL方式", e.what());
     auto [final_url, _] = MediaProcessor::get_qq_file_info("", "animation");
     file_segment.type = "file";
     file_segment.data["file"] = final_url;
@@ -57,25 +56,22 @@ auto TelegramMediaProcessor::download_animation_with_cache(
 
   try {
     if (media_info.file_type != "animation") {
-      OBCX_ERROR("不支持的文件类型，仅支持animation: {}",
-                   media_info.file_type);
+      OBCX_ERROR("不支持的文件类型，仅支持animation: {}", media_info.file_type);
       co_return std::nullopt;
     }
 
     // 严格使用 file_unique_id 作为唯一缓存键，不要使用任何 hash
     if (media_info.file_unique_id.empty()) {
       OBCX_WARN("file_unique_id为空，跳过数据库缓存操作，直接下载: {}",
-                  media_info.file_id);
+                media_info.file_id);
     } else {
       std::string cache_key = media_info.file_unique_id;
-      OBCX_DEBUG("动画缓存查找，使用file_unique_id: {}",
-                   cache_key);
+      OBCX_DEBUG("动画缓存查找，使用file_unique_id: {}", cache_key);
 
-      auto cache_info =
-          state_repository_
-              ? state_repository_->get_sticker_cache("telegram_animation",
-                                                     cache_key)
-              : std::optional<storage::StickerCacheInfo>{};
+      auto cache_info = state_repository_
+                            ? state_repository_->get_sticker_cache(
+                                  "telegram_animation", cache_key)
+                            : std::optional<storage::StickerCacheInfo>{};
       if (cache_info.has_value()) {
         // 缓存命中也要校验文件实际存在，否则视为失效需重新下载
         bool file_exists = false;
@@ -102,11 +98,10 @@ auto TelegramMediaProcessor::download_animation_with_cache(
           }
 
           OBCX_DEBUG("动画缓存命中: {} -> {}", cache_key,
-                       cache_info->container_path);
+                     cache_info->container_path);
           co_return cache_info->container_path;
         } else {
-          OBCX_WARN("动画缓存项存在但文件丢失，将重新下载: {}",
-                      cache_key);
+          OBCX_WARN("动画缓存项存在但文件丢失，将重新下载: {}", cache_key);
         }
       }
     }
@@ -123,7 +118,7 @@ auto TelegramMediaProcessor::download_animation_with_cache(
 
     std::string download_url = download_urls[0].value();
 
-    std::string host_bridge_files_dir = bridge::config::BRIDGE_FILES_DIR;
+    const std::string &host_bridge_files_dir = config_->bridge_files_dir;
     std::string original_dir = host_bridge_files_dir + "/animations/original";
     std::string converted_dir = host_bridge_files_dir + "/animations/converted";
     std::filesystem::create_directories(original_dir);
@@ -177,8 +172,8 @@ auto TelegramMediaProcessor::download_animation_with_cache(
     file.write(file_content.data(), file_content.size());
     file.close();
 
-    OBCX_INFO("动画原始文件已下载: {} -> {} ({}字节)",
-                media_info.file_id, original_file_path, file_content.size());
+    OBCX_INFO("动画原始文件已下载: {} -> {} ({}字节)", media_info.file_id,
+              original_file_path, file_content.size());
 
     std::string final_file_path = original_file_path;
     std::string final_container_path;
@@ -187,8 +182,7 @@ auto TelegramMediaProcessor::download_animation_with_cache(
     // QQ 端不能直接发 webm 动图，必须先转成 gif；
     // 转换受 GIF_MAX_DURATION/SIZE/WIDTH/FPS/COLORS 等参数约束
     if (mime_type == "video/webm" || file_extension == ".webm") {
-      OBCX_INFO("检测到webm格式动画，开始转换为gif: {}",
-                  original_file_path);
+      OBCX_INFO("检测到webm格式动画，开始转换为gif: {}", original_file_path);
 
       std::string converted_filename = filename_prefix + ".gif";
       std::string converted_file_path =
@@ -199,14 +193,14 @@ auto TelegramMediaProcessor::download_animation_with_cache(
 
       bool conversion_success =
           bridge::MediaConverter::convert_webm_to_gif_with_fallback(
-              original_file_path, converted_file_path,
-              bridge::config::GIF_MAX_DURATION,
-              bridge::config::GIF_MAX_FILE_SIZE, bridge::config::GIF_MAX_WIDTH,
-              bridge::config::GIF_MAX_FPS, bridge::config::GIF_MAX_COLORS);
+              config_->ffmpeg_path, original_file_path, converted_file_path,
+              config_->gif_max_duration, config_->gif_max_file_size,
+              config_->gif_max_width, config_->gif_max_fps,
+              config_->gif_max_colors);
 
       if (conversion_success && std::filesystem::exists(converted_file_path)) {
-        OBCX_INFO("webm到gif转换成功: {} -> {}",
-                    original_file_path, converted_file_path);
+        OBCX_INFO("webm到gif转换成功: {} -> {}", original_file_path,
+                  converted_file_path);
         final_file_path = converted_file_path;
         final_container_path =
             "/root/llonebot/bridge_files/animations/converted/" +
@@ -214,7 +208,7 @@ auto TelegramMediaProcessor::download_animation_with_cache(
         conversion_status = "success";
       } else {
         OBCX_WARN("webm到gif转换失败，使用原始webm文件: {}",
-                    original_file_path);
+                  original_file_path);
         final_container_path =
             "/root/llonebot/bridge_files/animations/original/" +
             original_filename;
@@ -246,20 +240,18 @@ auto TelegramMediaProcessor::download_animation_with_cache(
 
       if (state_repository_ &&
           !state_repository_->save_sticker_cache(new_cache_info)) {
-        OBCX_WARN("保存动画缓存失败，但文件已下载: {}",
-                    final_file_path);
+        OBCX_WARN("保存动画缓存失败，但文件已下载: {}", final_file_path);
       }
     } else {
       OBCX_DEBUG("没有file_unique_id，跳过数据库保存");
     }
 
     OBCX_INFO("动画缓存完成: {} -> {}", media_info.file_id,
-                final_container_path);
+              final_container_path);
     co_return final_container_path;
 
   } catch (const std::exception &e) {
-    OBCX_ERROR("下载动画失败 (file_id: {}): {}",
-                 media_info.file_id, e.what());
+    OBCX_ERROR("下载动画失败 (file_id: {}): {}", media_info.file_id, e.what());
     co_return std::nullopt;
   }
 }

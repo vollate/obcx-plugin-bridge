@@ -144,8 +144,8 @@ auto QQMediaProcessor::process_json_segment(
     if (!json_data.empty()) {
       auto parse_result = parse_miniapp_json(json_data);
       converted = format_miniapp_message(parse_result);
-      OBCX_DEBUG("转换QQ小程序JSON: success={}, title={}",
-                   parse_result.success, parse_result.title);
+      OBCX_DEBUG("转换QQ小程序JSON: success={}, title={}", parse_result.success,
+                 parse_result.title);
     } else {
       converted.data.clear();
       converted.data["text"] = "📱 [小程序-无数据]";
@@ -181,8 +181,8 @@ auto QQMediaProcessor::process_app_segment(
       }
     }
     converted = format_miniapp_message(parse_result);
-    OBCX_DEBUG("转换QQ应用分享: success={}, title={}",
-                 parse_result.success, parse_result.title);
+    OBCX_DEBUG("转换QQ应用分享: success={}, title={}", parse_result.success,
+               parse_result.title);
   } catch (const std::exception &e) {
     converted.data.clear();
     converted.data["text"] = "📱 [应用分享解析错误]";
@@ -222,8 +222,8 @@ auto QQMediaProcessor::process_ark_segment(
           !parse_result.urls.empty() || !parse_result.title.empty();
     }
     converted = format_miniapp_message(parse_result);
-    OBCX_DEBUG("转换QQ ARK卡片: success={}, title={}",
-                 parse_result.success, parse_result.title);
+    OBCX_DEBUG("转换QQ ARK卡片: success={}, title={}", parse_result.success,
+               parse_result.title);
   } catch (const std::exception &e) {
     converted.data.clear();
     converted.data["text"] = "📱 [ARK卡片解析错误]";
@@ -254,8 +254,8 @@ auto QQMediaProcessor::process_miniapp_segment(
       }
     }
     converted = format_miniapp_message(parse_result);
-    OBCX_DEBUG("转换QQ小程序: success={}, title={}",
-                 parse_result.success, parse_result.title);
+    OBCX_DEBUG("转换QQ小程序: success={}, title={}", parse_result.success,
+               parse_result.title);
   } catch (const std::exception &e) {
     converted.data.clear();
     converted.data["text"] = "📱 [小程序解析错误]";
@@ -265,12 +265,12 @@ auto QQMediaProcessor::process_miniapp_segment(
   co_return converted;
 }
 
-auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
+auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data) const
     -> MiniAppParseResult {
   MiniAppParseResult result;
   result.raw_json = json_data;
 
-  if (!config::ENABLE_MINIAPP_PARSING) {
+  if (!config_->enable_miniapp_parsing) {
     return result;
   }
 
@@ -375,8 +375,8 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
     result.success = !result.urls.empty() || !result.title.empty();
 
     OBCX_DEBUG("解析小程序: app={}, title={}, desc_len={}, urls_count={}",
-                 result.app_name, result.title, result.description.size(),
-                 result.urls.size());
+               result.app_name, result.title, result.description.size(),
+               result.urls.size());
 
   } catch (const std::exception &e) {
     OBCX_DEBUG("小程序JSON解析失败: {}", e.what());
@@ -398,7 +398,8 @@ auto QQMediaProcessor::parse_miniapp_json(const std::string &json_data)
 }
 
 auto QQMediaProcessor::format_miniapp_message(
-    const MiniAppParseResult &parse_result) -> obcx::common::MessageSegment {
+    const MiniAppParseResult &parse_result) const
+    -> obcx::common::MessageSegment {
   obcx::common::MessageSegment segment;
   segment.type = "text";
 
@@ -431,11 +432,12 @@ auto QQMediaProcessor::format_miniapp_message(
   } else {
     message_text = "📱 [无法解析的小程序]";
 
-    if (config::SHOW_RAW_JSON_ON_PARSE_FAIL) {
+    if (config_->show_raw_json_on_parse_fail) {
       std::string json_to_show = parse_result.raw_json;
-      if (json_to_show.length() > config::MAX_JSON_DISPLAY_LENGTH) {
+      if (json_to_show.length() >
+          static_cast<std::size_t>(config_->max_json_display_length)) {
         json_to_show =
-            json_to_show.substr(0, config::MAX_JSON_DISPLAY_LENGTH) + "...";
+            json_to_show.substr(0, config_->max_json_display_length) + "...";
       }
       message_text +=
           fmt::format("\n原始数据:\n```json\n{}\n```", json_to_show);

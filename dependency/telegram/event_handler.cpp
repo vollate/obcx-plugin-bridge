@@ -40,8 +40,8 @@ auto TelegramEventHandler::handle_message_edited(
     }
 
     const std::string telegram_group_id = event.group_id.value();
-    OBCX_INFO("处理Telegram群 {} 中消息 {} 的编辑事件",
-                telegram_group_id, event.message_id);
+    OBCX_INFO("处理Telegram群 {} 中消息 {} 的编辑事件", telegram_group_id,
+              event.message_id);
 
     auto target_message_id = state_repository_
                                  ? state_repository_->get_target_message_id(
@@ -49,8 +49,7 @@ auto TelegramEventHandler::handle_message_edited(
                                  : std::optional<std::string>{};
 
     if (!target_message_id.has_value()) {
-      OBCX_DEBUG("未找到Telegram消息 {} 对应的QQ消息映射",
-                   event.message_id);
+      OBCX_DEBUG("未找到Telegram消息 {} 对应的QQ消息映射", event.message_id);
       co_return;
     }
 
@@ -64,12 +63,11 @@ auto TelegramEventHandler::handle_message_edited(
       nlohmann::json recall_json = nlohmann::json::parse(recall_response);
 
       if (recall_json.contains("status") && recall_json["status"] == "ok") {
-        OBCX_INFO("成功在QQ撤回消息: {}",
-                    target_message_id.value());
+        OBCX_INFO("成功在QQ撤回消息: {}", target_message_id.value());
         recall_success = true;
       } else {
-        OBCX_WARN("QQ撤回消息失败: {}, 响应: {}",
-                    target_message_id.value(), recall_response);
+        OBCX_WARN("QQ撤回消息失败: {}, 响应: {}", target_message_id.value(),
+                  recall_response);
       }
 
     } catch (const std::exception &e) {
@@ -78,7 +76,7 @@ auto TelegramEventHandler::handle_message_edited(
 
     // 无论撤回是否成功，都尝试重发编辑后的消息
     OBCX_INFO("开始重发编辑后的消息到QQ (撤回状态: {})",
-                recall_success ? "成功" : "失败");
+              recall_success ? "成功" : "失败");
 
     try {
       // 标记此消息为编辑消息，让 forward_function_ 走"更新映射"分支而非新建

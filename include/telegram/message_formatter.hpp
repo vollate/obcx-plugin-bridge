@@ -24,7 +24,7 @@ public:
    * @param message_to_send 消息段列表（输出参数）
    */
   static auto format_sender_info(
-      const obcx::common::MessageEvent &event,
+      const BridgeConfig &config, const obcx::common::MessageEvent &event,
       const GroupBridgeConfig *bridge_config,
       const std::string &telegram_group_id,
       std::vector<obcx::common::MessageSegment> &message_to_send) -> void;

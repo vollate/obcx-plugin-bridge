@@ -7,6 +7,7 @@
 
 namespace bridge {
 class BridgeStateRepository;
+struct BridgeConfig;
 class ReceivedMessageRepository;
 } // namespace bridge
 
@@ -23,6 +24,7 @@ public:
    * @brief 构造函数
    */
   explicit QQEventHandler(
+      std::shared_ptr<const bridge::BridgeConfig> config,
       std::shared_ptr<bridge::BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<bridge::ReceivedMessageRepository>
           received_message_repository = nullptr);
@@ -51,6 +53,7 @@ public:
       -> boost::asio::awaitable<void>;
 
 private:
+  std::shared_ptr<const bridge::BridgeConfig> config_;
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
   std::shared_ptr<bridge::ReceivedMessageRepository>
       received_message_repository_;

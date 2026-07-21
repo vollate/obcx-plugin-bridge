@@ -9,7 +9,8 @@ PathManager::PathManager(const std::string &host_base,
                          const std::string &container_base)
     : host_base_(normalize_path(host_base)),
       container_base_(normalize_path(container_base)) {
-  OBCX_DEBUG("PathManager initialized with host_base: '{}', container_base: '{}'",
+  OBCX_DEBUG(
+      "PathManager initialized with host_base: '{}', container_base: '{}'",
       host_base_, container_base_);
 }
 
@@ -79,7 +80,7 @@ auto PathManager::host_to_container_absolute(
   }
 
   OBCX_WARN("Host path '{}' is not within the mounted directory '{}'",
-              normalized_host_path, host_base_);
+            normalized_host_path, host_base_);
   return normalized_host_path;
 }
 
@@ -100,7 +101,7 @@ auto PathManager::container_to_host_absolute(
   }
 
   OBCX_WARN("Container path '{}' is not within the mounted directory '{}'",
-              normalized_container_path, container_base_);
+            normalized_container_path, container_base_);
   return normalized_container_path;
 }
 
@@ -113,7 +114,7 @@ auto PathManager::ensure_directory(const std::string &relative_path) const
     return true;
   } catch (const std::exception &e) {
     OBCX_ERROR("Failed to create directory for relative path '{}': {}",
-                 relative_path, e.what());
+               relative_path, e.what());
     return false;
   }
 }

@@ -100,13 +100,13 @@ auto probe_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
 
 // 单 URL 的指数退避探测：base, base*2, base*4 … 最多 max_attempts 次。
 // 任一次成功即返回 true；全部失败返回 false 并把最后一次错误写入 fail_reason。
-auto probe_with_backoff(std::string url, std::string &fail_reason)
-    -> asio::awaitable<bool> {
-  const int max_attempts = std::max(1, config::IMAGE_URL_PROBE_MAX_ATTEMPTS);
+auto probe_with_backoff(const BridgeConfig &config, std::string url,
+                        std::string &fail_reason) -> asio::awaitable<bool> {
+  const int max_attempts = std::max(1, config.image_url_probe_max_attempts);
   const auto base_delay = std::chrono::milliseconds(
-      std::max(1, config::IMAGE_URL_PROBE_BASE_DELAY_MS));
-  const auto per_attempt_timeout = std::chrono::milliseconds(
-      std::max(1, config::IMAGE_URL_PROBE_TIMEOUT_MS));
+      std::max(1, config.image_url_probe_base_delay_ms));
+  const auto per_attempt_timeout =
+      std::chrono::milliseconds(std::max(1, config.image_url_probe_timeout_ms));
 
   ParsedUrl parsed = parse_url(url);
   if (!parsed.valid) {
@@ -141,6 +141,7 @@ auto probe_with_backoff(std::string url, std::string &fail_reason)
 } // namespace
 
 auto ImageUrlValidator::validate(
+    const BridgeConfig &config,
     const std::vector<std::pair<std::string, std::string>> &media)
     -> asio::awaitable<std::vector<ImageUrlValidation>> {
   std::vector<ImageUrlValidation> results(media.size());
@@ -167,12 +168,12 @@ auto ImageUrlValidator::validate(
   for (std::size_t i = 0; i < media.size(); ++i) {
     asio::co_spawn(
         executor,
-        [i, url = media[i].second, remaining, barrier, reasons,
+        [i, &config, url = media[i].second, remaining, barrier, reasons,
          reachable]() -> asio::awaitable<void> {
           std::string reason;
           bool ok = false;
           try {
-            ok = co_await probe_with_backoff(url, reason);
+            ok = co_await probe_with_backoff(config, url, reason);
           } catch (const std::exception &e) {
             reason = e.what();
           }
@@ -191,7 +192,7 @@ auto ImageUrlValidator::validate(
   boost::system::error_code ec;
   co_await barrier->async_wait(asio::redirect_error(asio::use_awaitable, ec));
 
-  const std::string &configured = config::IMAGE_PLACEHOLDER_URL;
+  const std::string &configured = config.image_placeholder_url;
   // 即使用户在配置里把占位图清空，也要保证有一个内置兜底，否则替换语义会变成
   // 「丢弃」，那就违反了「失败 == 替换」的约定。
   static constexpr std::string_view kBuiltinPlaceholder =
@@ -207,18 +208,19 @@ auto ImageUrlValidator::validate(
     results[i].effective_url = placeholder;
     results[i].status = ImageUrlStatus::Replaced;
     OBCX_WARN("[图片URL校验] 探测失败，使用占位图替换: {} (reason: {})",
-                results[i].original_url, results[i].failure_reason);
+              results[i].original_url, results[i].failure_reason);
   }
   co_return results;
 }
 
 auto ImageUrlValidator::sanitize(
+    const BridgeConfig &config,
     const std::vector<std::pair<std::string, std::string>> &media,
     std::vector<std::string> &replaced_urls)
     -> asio::awaitable<std::vector<std::pair<std::string, std::string>>> {
   replaced_urls.clear();
 
-  auto results = co_await validate(media);
+  auto results = co_await validate(config, media);
 
   std::vector<std::pair<std::string, std::string>> out;
   out.reserve(media.size());

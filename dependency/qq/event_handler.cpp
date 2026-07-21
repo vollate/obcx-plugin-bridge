@@ -4,8 +4,8 @@
 #include "received_message_repository.hpp"
 
 #include <common/logger.hpp>
-#include <interfaces/telegram_bot.hpp>
 #include <fmt/format.h>
+#include <interfaces/telegram_bot.hpp>
 #include <nlohmann/json.hpp>
 
 namespace bridge::qq {
@@ -39,10 +39,12 @@ auto is_picture_message(const storage::MessageInfo &message) -> bool {
 } // namespace
 
 QQEventHandler::QQEventHandler(
+    std::shared_ptr<const bridge::BridgeConfig> config,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::shared_ptr<bridge::ReceivedMessageRepository>
         received_message_repository)
-    : state_repository_(std::move(state_repository)),
+    : config_(std::move(config)),
+      state_repository_(std::move(state_repository)),
       received_message_repository_(std::move(received_message_repository)) {}
 
 auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
@@ -84,7 +86,7 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
         recalled_message_id = std::to_string(message_id_value.get<int64_t>());
       } else {
         OBCX_WARN("撤回事件message_id类型不支持: {}",
-                    message_id_value.type_name());
+                  message_id_value.type_name());
         co_return;
       }
     } else {
@@ -93,20 +95,19 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
     }
 
     OBCX_INFO("处理QQ群 {} 中消息 {} 的撤回事件", qq_group_id,
-                recalled_message_id);
+              recalled_message_id);
 
-    auto [telegram_group_id, topic_id] = get_tg_group_and_topic_id(qq_group_id);
+    auto [telegram_group_id, topic_id] =
+        config_->tg_group_and_topic_id(qq_group_id);
     if (telegram_group_id.empty()) {
-      OBCX_DEBUG("未找到QQ群 {} 对应的Telegram群映射",
-                   qq_group_id);
+      OBCX_DEBUG("未找到QQ群 {} 对应的Telegram群映射", qq_group_id);
       co_return;
     }
 
     const GroupBridgeConfig *bridge_config =
-        get_bridge_config(telegram_group_id);
+        config_->bridge_config(telegram_group_id);
     if (!bridge_config) {
-      OBCX_DEBUG("未找到Telegram群 {} 的bridge配置",
-                   telegram_group_id);
+      OBCX_DEBUG("未找到Telegram群 {} 的bridge配置", telegram_group_id);
       co_return;
     }
 
@@ -116,8 +117,7 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
                                  : std::optional<std::string>{};
 
     if (!target_message_id.has_value()) {
-      OBCX_DEBUG("未找到QQ消息 {} 对应的Telegram消息映射",
-                   recalled_message_id);
+      OBCX_DEBUG("未找到QQ消息 {} 对应的Telegram消息映射", recalled_message_id);
       co_return;
     }
 
@@ -143,10 +143,10 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
         nlohmann::json response_json = nlohmann::json::parse(response);
         if (response_json.contains("ok") && response_json["ok"].get<bool>()) {
           OBCX_INFO("成功删除已撤回QQ图片对应的Telegram消息: {}:{}",
-                      telegram_group_id, target_message_id.value());
+                    telegram_group_id, target_message_id.value());
         } else {
           OBCX_WARN("删除Telegram图片消息失败: {}:{}, 响应: {}",
-                      telegram_group_id, target_message_id.value(), response);
+                    telegram_group_id, target_message_id.value(), response);
         }
 
         co_return;
@@ -157,7 +157,7 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
         show_sender = bridge_config->show_qq_to_tg_sender;
       } else {
         const TopicBridgeConfig *topic_config =
-            get_topic_config(telegram_group_id, topic_id);
+            config_->topic_config(telegram_group_id, topic_id);
         show_sender = topic_config ? topic_config->show_qq_to_tg_sender : false;
       }
 
@@ -179,11 +179,11 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
       nlohmann::json response_json = nlohmann::json::parse(response);
 
       if (response_json.contains("ok") && response_json["ok"].get<bool>()) {
-        OBCX_INFO("成功编辑Telegram消息为撤回状态: {}:{}",
-                    telegram_group_id, target_message_id.value());
+        OBCX_INFO("成功编辑Telegram消息为撤回状态: {}:{}", telegram_group_id,
+                  target_message_id.value());
       } else {
-        OBCX_WARN("编辑Telegram消息失败: {}:{}, 响应: {}",
-                    telegram_group_id, target_message_id.value(), response);
+        OBCX_WARN("编辑Telegram消息失败: {}:{}, 响应: {}", telegram_group_id,
+                  target_message_id.value(), response);
       }
 
     } catch (const std::exception &e) {
@@ -266,20 +266,19 @@ auto QQEventHandler::handle_poke_event(obcx::core::IBot &telegram_bot,
     }
 
     OBCX_INFO("处理QQ群 {} 中的戳一戳事件: {} -> {}, type={}, id={}, action={}",
-        qq_group_id, user_id, target_id, poke_type, poke_id, action_name);
+              qq_group_id, user_id, target_id, poke_type, poke_id, action_name);
 
-    auto [telegram_group_id, topic_id] = get_tg_group_and_topic_id(qq_group_id);
+    auto [telegram_group_id, topic_id] =
+        config_->tg_group_and_topic_id(qq_group_id);
     if (telegram_group_id.empty()) {
-      OBCX_DEBUG("未找到QQ群 {} 对应的Telegram群映射",
-                   qq_group_id);
+      OBCX_DEBUG("未找到QQ群 {} 对应的Telegram群映射", qq_group_id);
       co_return;
     }
 
     const GroupBridgeConfig *bridge_config =
-        get_bridge_config(telegram_group_id);
+        config_->bridge_config(telegram_group_id);
     if (!bridge_config) {
-      OBCX_DEBUG("未找到Telegram群 {} 的bridge配置",
-                   telegram_group_id);
+      OBCX_DEBUG("未找到Telegram群 {} 的bridge配置", telegram_group_id);
       co_return;
     }
 
@@ -290,7 +289,7 @@ auto QQEventHandler::handle_poke_event(obcx::core::IBot &telegram_bot,
       display_name = bridge_config->show_qq_to_tg_sender;
     } else {
       const TopicBridgeConfig *topic_config =
-          get_topic_config(telegram_group_id, topic_id);
+          config_->topic_config(telegram_group_id, topic_id);
       forward_enabled = topic_config ? topic_config->enable_qq_to_tg : false;
       display_name = topic_config ? topic_config->show_qq_to_tg_sender : false;
     }
@@ -349,8 +348,7 @@ auto QQEventHandler::handle_poke_event(obcx::core::IBot &telegram_bot,
 
       nlohmann::json response_json = nlohmann::json::parse(response);
       if (response_json.contains("ok") && response_json["ok"].get<bool>()) {
-        OBCX_INFO("成功发送戳一戳消息到Telegram群 {}",
-                    telegram_group_id);
+        OBCX_INFO("成功发送戳一戳消息到Telegram群 {}", telegram_group_id);
       } else {
         OBCX_WARN("发送戳一戳消息失败: {}", response);
       }
@@ -439,12 +437,12 @@ auto QQEventHandler::fetch_user_display_name(obcx::core::IBot &qq_bot,
 
   if (!display_name.has_value()) {
     OBCX_DEBUG("Fetch userinfo for platform: qq, group: {}, id: {}", group_id,
-                 user_id);
+               user_id);
     co_await fetch_user_info(qq_bot, user_id, group_id);
-    display_name =
-        state_repository_
-            ? state_repository_->query_user_display_name("qq", user_id, group_id)
-            : std::optional<std::string>{};
+    display_name = state_repository_
+                       ? state_repository_->query_user_display_name(
+                             "qq", user_id, group_id)
+                       : std::optional<std::string>{};
   }
 
   co_return display_name.value_or(user_id);
@@ -489,16 +487,14 @@ auto QQEventHandler::fetch_user_info(obcx::core::IBot &qq_bot,
 
       if (!card.empty()) {
         user_info.nickname = card;
-        OBCX_DEBUG("使用QQ群名片作为显示名称: {} -> {}", user_id,
-                     card);
+        OBCX_DEBUG("使用QQ群名片作为显示名称: {} -> {}", user_id, card);
       } else if (!title.empty()) {
         user_info.nickname = title;
-        OBCX_DEBUG("使用QQ群头衔作为显示名称: {} -> {}", user_id,
-                     title);
+        OBCX_DEBUG("使用QQ群头衔作为显示名称: {} -> {}", user_id, title);
       } else if (!general_nickname.empty()) {
         user_info.nickname = general_nickname;
-        OBCX_DEBUG("使用QQ一般昵称作为显示名称: {} -> {}",
-                     user_id, general_nickname);
+        OBCX_DEBUG("使用QQ一般昵称作为显示名称: {} -> {}", user_id,
+                   general_nickname);
       }
 
       if (!title.empty()) {
@@ -507,11 +503,9 @@ auto QQEventHandler::fetch_user_info(obcx::core::IBot &qq_bot,
 
       if (state_repository_ &&
           state_repository_->save_or_update_user(user_info, true)) {
-        OBCX_DEBUG("获取QQ用户信息成功：{} -> {}", user_id,
-                     user_info.nickname);
+        OBCX_DEBUG("获取QQ用户信息成功：{} -> {}", user_id, user_info.nickname);
       } else {
-        OBCX_WARN("保存QQ用户信息失败：{} -> {}", user_id,
-                    user_info.nickname);
+        OBCX_WARN("保存QQ用户信息失败：{} -> {}", user_id, user_info.nickname);
       }
     }
   } catch (const std::exception &e) {

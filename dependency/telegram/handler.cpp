@@ -45,15 +45,16 @@ auto get_media_group_id(const obcx::common::MessageEvent &event)
 } // namespace
 
 TelegramHandler::TelegramHandler(
+    std::shared_ptr<const BridgeConfig> config,
     std::shared_ptr<RetryQueueManager> retry_manager,
     boost::asio::any_io_executor buffer_executor,
     std::shared_ptr<BridgeStateRepository> state_repository,
     std::shared_ptr<ReceivedMessageRepository> received_message_repository)
-    : retry_manager_(std::move(retry_manager)),
+    : config_(std::move(config)), retry_manager_(std::move(retry_manager)),
       state_repository_(std::move(state_repository)),
       received_message_repository_(std::move(received_message_repository)),
       media_processor_(std::make_unique<telegram::TelegramMediaProcessor>(
-          state_repository_)),
+          config_, state_repository_)),
       command_handler_(std::make_unique<telegram::TelegramCommandHandler>(
           state_repository_, received_message_repository_)),
       event_handler_(std::make_unique<telegram::TelegramEventHandler>(
@@ -125,22 +126,20 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
   std::string qq_group_id;
   const GroupBridgeConfig *bridge_config = nullptr;
 
-  auto it = GROUP_MAP.find(telegram_group_id);
-  if (it == GROUP_MAP.end()) {
-    OBCX_DEBUG("Telegram群 {} 没有对应的QQ群配置",
-                 telegram_group_id);
+  bridge_config = config_->bridge_config(telegram_group_id);
+  if (bridge_config == nullptr) {
+    OBCX_DEBUG("Telegram群 {} 没有对应的QQ群配置", telegram_group_id);
     co_return;
   }
-  bridge_config = &it->second;
 
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
     qq_group_id = bridge_config->qq_group_id;
-    OBCX_DEBUG("群组模式：Telegram群 {} 转发到QQ群 {}",
-                 telegram_group_id, qq_group_id);
+    OBCX_DEBUG("群组模式：Telegram群 {} 转发到QQ群 {}", telegram_group_id,
+               qq_group_id);
 
     if (!bridge_config->enable_tg_to_qq) {
       OBCX_DEBUG("Telegram群 {} 到QQ群 {} 的转发已禁用，跳过",
-                   telegram_group_id, qq_group_id);
+                 telegram_group_id, qq_group_id);
       co_return;
     }
   } else {
@@ -151,20 +150,20 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
     }
 
     const TopicBridgeConfig *topic_config =
-        get_topic_config(telegram_group_id, message_thread_id);
+        config_->topic_config(telegram_group_id, message_thread_id);
     if (!topic_config) {
       OBCX_DEBUG("Telegram消息来自topic {}，没有对应的QQ群配置，跳过转发",
-                   message_thread_id);
+                 message_thread_id);
       co_return;
     }
 
     qq_group_id = topic_config->qq_group_id;
-    OBCX_DEBUG("Topic模式：Telegram topic {} 转发到QQ群 {}",
-                 message_thread_id, qq_group_id);
+    OBCX_DEBUG("Topic模式：Telegram topic {} 转发到QQ群 {}", message_thread_id,
+               qq_group_id);
 
     if (!topic_config->enable_tg_to_qq) {
       OBCX_DEBUG("Telegram topic {} 到QQ群 {} 的转发已禁用，跳过",
-                   message_thread_id, qq_group_id);
+                 message_thread_id, qq_group_id);
       co_return;
     }
   }
@@ -177,9 +176,9 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
   }
 
   if (event.raw_message.starts_with("/checkalive")) {
-    if (GROUP_MAP.find(telegram_group_id) == GROUP_MAP.end()) {
+    if (config_->bridge_config(telegram_group_id) == nullptr) {
       OBCX_DEBUG("Telegram群 {} 不在配置中，忽略 /checkalive 命令",
-                   telegram_group_id);
+                 telegram_group_id);
       co_return;
     }
 
@@ -190,9 +189,9 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
   }
 
   if (event.raw_message.starts_with("/poke")) {
-    if (GROUP_MAP.find(telegram_group_id) == GROUP_MAP.end()) {
+    if (config_->bridge_config(telegram_group_id) == nullptr) {
       OBCX_DEBUG("Telegram群 {} 不在配置中，忽略 /poke 命令",
-                   telegram_group_id);
+                 telegram_group_id);
       co_return;
     }
 
@@ -205,7 +204,7 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
   // 忽略其他所有 / 开头的命令，不转发
   if (event.raw_message.starts_with("/")) {
     OBCX_DEBUG("忽略未处理的命令消息，不转发: {}",
-                 event.raw_message.substr(0, 20));
+               event.raw_message.substr(0, 20));
     co_return;
   }
 
@@ -224,13 +223,12 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
                                "telegram", event.message_id, "qq")
                          : std::optional<std::string>{})
           .has_value()) {
-    OBCX_DEBUG("Telegram消息 {} 已转发到QQ，跳过重复处理",
-                 event.message_id);
+    OBCX_DEBUG("Telegram消息 {} 已转发到QQ，跳过重复处理", event.message_id);
     co_return;
   }
 
-  OBCX_INFO("准备从Telegram群 {} 转发消息到QQ群 {}",
-              telegram_group_id, qq_group_id);
+  OBCX_INFO("准备从Telegram群 {} 转发消息到QQ群 {}", telegram_group_id,
+            qq_group_id);
 
   std::vector<std::string> temp_files_to_cleanup;
   std::vector<obcx::common::MessageSegment> message_to_send;
@@ -265,9 +263,9 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
         }
 
         OBCX_DEBUG("TG回复消息映射查找: TG消息ID {} -> QQ消息ID {}",
-            replied_message_id,
-            reply_to_message_id.has_value() ? reply_to_message_id.value()
-                                            : "未找到");
+                   replied_message_id,
+                   reply_to_message_id.has_value() ? reply_to_message_id.value()
+                                                   : "未找到");
       }
     }
 
@@ -275,7 +273,7 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
         event, reply_to_message_id, message_to_send);
 
     telegram::TelegramMessageFormatter::format_sender_info(
-        event, bridge_config, telegram_group_id, message_to_send);
+        *config_, event, bridge_config, telegram_group_id, message_to_send);
 
     for (const auto &segment : event.message) {
       if (segment.type != "image" && segment.type != "video" &&
@@ -322,10 +320,10 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
                                     : false;
               if (!updated) {
                 OBCX_WARN("更新消息映射失败: telegram:{} -> qq:{}",
-                            event.message_id, qq_message_id.value());
+                          event.message_id, qq_message_id.value());
               } else {
                 OBCX_INFO("成功更新消息映射: telegram:{} -> qq:{}",
-                            event.message_id, qq_message_id.value());
+                          event.message_id, qq_message_id.value());
               }
             } else {
               storage::MessageMapping mapping;
@@ -341,17 +339,16 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
                       : false;
               if (!added) {
                 OBCX_WARN("保存消息映射失败: telegram:{} -> qq:{}",
-                            event.message_id, qq_message_id.value());
+                          event.message_id, qq_message_id.value());
               }
             }
 
-            OBCX_INFO("成功转发Telegram消息到QQ: {} -> {}",
-                        event.message_id, qq_message_id.value());
+            OBCX_INFO("成功转发Telegram消息到QQ: {} -> {}", event.message_id,
+                      qq_message_id.value());
           } else {
             failure_reason =
                 fmt::format("Invalid response format: {}", qq_response);
-            OBCX_WARN("QQ响应格式错误，无法提取消息ID: {}",
-                        qq_response);
+            OBCX_WARN("QQ响应格式错误，无法提取消息ID: {}", qq_response);
           }
         } else {
           failure_reason = "Empty response from QQ API";
@@ -363,16 +360,15 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
       }
 
       if (!qq_message_id.has_value() && retry_manager_ &&
-          config::ENABLE_RETRY_QUEUE) {
-        OBCX_INFO("消息发送失败，添加到重试队列: {} -> {}",
-                    event.message_id, qq_group_id);
+          config_->enable_retry_queue) {
+        OBCX_INFO("消息发送失败，添加到重试队列: {} -> {}", event.message_id,
+                  qq_group_id);
         retry_manager_->add_message_retry(
             "telegram", "qq", event.message_id, message_to_send, qq_group_id,
-            telegram_group_id, -1, config::MESSAGE_RETRY_MAX_ATTEMPTS,
+            telegram_group_id, -1, config_->message_retry_max_attempts,
             failure_reason);
       } else if (!qq_message_id.has_value()) {
-        OBCX_ERROR("消息发送失败且未启用重试: {}",
-                     failure_reason);
+        OBCX_ERROR("消息发送失败且未启用重试: {}", failure_reason);
       }
     }
 
@@ -446,13 +442,12 @@ auto TelegramHandler::forward_media_group_to_qq(
   std::string qq_group_id;
   const GroupBridgeConfig *bridge_config = nullptr;
 
-  auto it = GROUP_MAP.find(telegram_group_id);
-  if (it == GROUP_MAP.end()) {
+  bridge_config = config_->bridge_config(telegram_group_id);
+  if (bridge_config == nullptr) {
     OBCX_DEBUG("[media-group] Telegram群 {} 没有对应的QQ群配置",
-                 telegram_group_id);
+               telegram_group_id);
     co_return;
   }
-  bridge_config = &it->second;
 
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
     qq_group_id = bridge_config->qq_group_id;
@@ -465,7 +460,7 @@ auto TelegramHandler::forward_media_group_to_qq(
       message_thread_id = primary.data["message_thread_id"].get<int64_t>();
     }
     const TopicBridgeConfig *topic_config =
-        get_topic_config(telegram_group_id, message_thread_id);
+        config_->topic_config(telegram_group_id, message_thread_id);
     if (!topic_config) {
       co_return;
     }
@@ -501,7 +496,7 @@ auto TelegramHandler::forward_media_group_to_qq(
                              : false;
       if (!added) {
         OBCX_WARN("修复media-group消息映射失败: telegram:{} -> qq:{}",
-                    ev.message_id, existing_qq_message_id.value());
+                  ev.message_id, existing_qq_message_id.value());
       }
       if (state_repository_) {
         const std::string media_group_id = get_media_group_id(ev);
@@ -518,12 +513,12 @@ auto TelegramHandler::forward_media_group_to_qq(
       }
     }
     OBCX_DEBUG("media-group 已转发到QQ消息 {}，跳过重复发送",
-                 existing_qq_message_id.value());
+               existing_qq_message_id.value());
     co_return;
   }
 
   OBCX_INFO("准备转发 Telegram media-group: {} 张消息, 群 {} -> QQ群 {}",
-              events.size(), telegram_group_id, qq_group_id);
+            events.size(), telegram_group_id, qq_group_id);
 
   std::vector<std::string> temp_files_to_cleanup;
   std::vector<obcx::common::MessageSegment> message_to_send;
@@ -557,7 +552,8 @@ auto TelegramHandler::forward_media_group_to_qq(
     telegram::TelegramMessageFormatter::format_reply_message(
         primary_for_reply, reply_to_message_id, message_to_send);
     telegram::TelegramMessageFormatter::format_sender_info(
-        primary_for_reply, bridge_config, telegram_group_id, message_to_send);
+        *config_, primary_for_reply, bridge_config, telegram_group_id,
+        message_to_send);
 
     // Walk every event, gather media segments. Captions are stripped from the
     // per-event media_data so the dispatcher doesn't append a duplicate text
@@ -639,7 +635,7 @@ auto TelegramHandler::forward_media_group_to_qq(
                       : false;
               if (!added) {
                 OBCX_WARN("保存media-group消息映射失败: telegram:{} -> qq:{}",
-                            ev.message_id, qq_message_id.value());
+                          ev.message_id, qq_message_id.value());
               }
               if (state_repository_) {
                 const std::string media_group_id = get_media_group_id(ev);
@@ -657,7 +653,7 @@ auto TelegramHandler::forward_media_group_to_qq(
             }
 
             OBCX_INFO("成功转发Telegram media-group({}张): {} -> {}",
-                events.size(), primary.message_id, qq_message_id.value());
+                      events.size(), primary.message_id, qq_message_id.value());
           } else {
             failure_reason =
                 fmt::format("Invalid response format: {}", qq_response);
@@ -671,19 +667,17 @@ auto TelegramHandler::forward_media_group_to_qq(
       }
 
       if (!qq_message_id.has_value() && retry_manager_ &&
-          config::ENABLE_RETRY_QUEUE) {
+          config_->enable_retry_queue) {
         retry_manager_->add_message_retry(
             "telegram", "qq", primary.message_id, message_to_send, qq_group_id,
-            telegram_group_id, -1, config::MESSAGE_RETRY_MAX_ATTEMPTS,
+            telegram_group_id, -1, config_->message_retry_max_attempts,
             failure_reason);
       } else if (!qq_message_id.has_value()) {
-        OBCX_ERROR("media-group 发送失败且未启用重试: {}",
-                     failure_reason);
+        OBCX_ERROR("media-group 发送失败且未启用重试: {}", failure_reason);
       }
     }
   } catch (const std::exception &e) {
-    OBCX_ERROR("处理 Telegram media-group 转发时出错: {}",
-                 e.what());
+    OBCX_ERROR("处理 Telegram media-group 转发时出错: {}", e.what());
   }
 
   for (const std::string &temp_file : temp_files_to_cleanup) {

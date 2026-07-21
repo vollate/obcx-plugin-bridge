@@ -122,6 +122,14 @@ auto BridgeActor::resolve_repository(obcx::core::ActorContext &context)
   return repository_;
 }
 
+auto BridgeActor::resolve_config(obcx::core::ActorContext &context)
+    -> std::shared_ptr<const BridgeConfig> {
+  if (!config_) {
+    config_ = load_bridge_config(context.config());
+  }
+  return config_;
+}
+
 auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
                                     boost::asio::any_io_executor executor)
     -> std::shared_ptr<IBridgeForwarder> {
@@ -149,8 +157,9 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
       *db_manager, db_instance, "message_store");
 
   forwarder_ = std::make_shared<BridgeForwardingRuntime>(
-      std::move(bot_registry), resolve_repository(context),
-      received_message_repository_, std::move(executor));
+      std::move(bot_registry), resolve_config(context),
+      resolve_repository(context), received_message_repository_,
+      std::move(executor));
   return forwarder_;
 }
 

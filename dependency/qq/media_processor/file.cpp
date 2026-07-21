@@ -6,8 +6,8 @@
 #include "qq/media_processor.hpp"
 
 #include <common/logger.hpp>
-#include <interfaces/qq_bot.hpp>
 #include <fmt/format.h>
+#include <interfaces/qq_bot.hpp>
 #include <nlohmann/json.hpp>
 
 namespace bridge::qq {
@@ -57,8 +57,7 @@ auto QQMediaProcessor::process_file_segment(
         std::string download_url = response_json["data"]["url"];
         converted_segment.data.erase("file_id");
         converted_segment.data["url"] = download_url;
-        OBCX_DEBUG("成功通过API获取文件下载URL: {}",
-                     download_url);
+        OBCX_DEBUG("成功通过API获取文件下载URL: {}", download_url);
       } else {
         throw std::runtime_error("API响应中没有找到下载URL");
       }

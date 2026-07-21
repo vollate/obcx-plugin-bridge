@@ -20,21 +20,20 @@ auto TelegramMediaProcessor::process_photo(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, file_url, "photo", filename);
+        &telegram_capability, path_manager_, file_url, "photo", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      const auto &path_manager = MediaProcessor::get_path_manager();
       std::string container_path =
-          path_manager.host_to_container_absolute(local_file_path);
+          path_manager_.host_to_container_absolute(local_file_path);
 
       file_segment.type = "image";
       file_segment.data["file"] = "file:///" + container_path;
       file_segment.data["proxy"] = 1;
-      OBCX_INFO("成功下载图片到本地: {} -> 容器路径: {}",
-                  local_file_path, container_path);
+      OBCX_INFO("成功下载图片到本地: {} -> 容器路径: {}", local_file_path,
+                container_path);
     } else {
       throw std::runtime_error("下载图片失败");
     }
@@ -62,20 +61,19 @@ auto TelegramMediaProcessor::process_video(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, file_url, "video", filename);
+        &telegram_capability, path_manager_, file_url, "video", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      const auto &path_manager = MediaProcessor::get_path_manager();
       std::string container_path =
-          path_manager.host_to_container_absolute(local_file_path);
+          path_manager_.host_to_container_absolute(local_file_path);
 
       file_segment.type = "video";
       file_segment.data["file"] = "file:///" + container_path;
-      OBCX_INFO("成功下载视频到本地: {} -> 容器路径: {}",
-                  local_file_path, container_path);
+      OBCX_INFO("成功下载视频到本地: {} -> 容器路径: {}", local_file_path,
+                container_path);
     } else {
       throw std::runtime_error("下载视频失败");
     }
@@ -103,20 +101,19 @@ auto TelegramMediaProcessor::process_audio(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, file_url, "audio", filename);
+        &telegram_capability, path_manager_, file_url, "audio", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      const auto &path_manager = MediaProcessor::get_path_manager();
       std::string container_path =
-          path_manager.host_to_container_absolute(local_file_path);
+          path_manager_.host_to_container_absolute(local_file_path);
 
       file_segment.type = "record";
       file_segment.data["file"] = "file:///" + container_path;
-      OBCX_INFO("成功下载音频到本地: {} -> 容器路径: {}",
-                  local_file_path, container_path);
+      OBCX_INFO("成功下载音频到本地: {} -> 容器路径: {}", local_file_path,
+                container_path);
     } else {
       throw std::runtime_error("下载音频失败");
     }
@@ -144,21 +141,20 @@ auto TelegramMediaProcessor::process_document(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, file_url, "document", filename);
+        &telegram_capability, path_manager_, file_url, "document", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      const auto &path_manager = MediaProcessor::get_path_manager();
       std::string container_path =
-          path_manager.host_to_container_absolute(local_file_path);
+          path_manager_.host_to_container_absolute(local_file_path);
 
       file_segment.type = "file";
       file_segment.data["file"] = "file:///" + container_path;
       file_segment.data["name"] = filename;
-      OBCX_INFO("成功下载文档到本地: {} -> 容器路径: {}",
-                  local_file_path, container_path);
+      OBCX_INFO("成功下载文档到本地: {} -> 容器路径: {}", local_file_path,
+                container_path);
     } else {
       throw std::runtime_error("下载文档失败");
     }
@@ -188,20 +184,19 @@ auto TelegramMediaProcessor::process_video_note(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, file_url, "video_note", filename);
+        &telegram_capability, path_manager_, file_url, "video_note", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      const auto &path_manager = MediaProcessor::get_path_manager();
       std::string container_path =
-          path_manager.host_to_container_absolute(local_file_path);
+          path_manager_.host_to_container_absolute(local_file_path);
 
       file_segment.type = "video";
       file_segment.data["file"] = "file:///" + container_path;
-      OBCX_INFO("成功下载视频消息到本地: {} -> 容器路径: {}",
-                  local_file_path, container_path);
+      OBCX_INFO("成功下载视频消息到本地: {} -> 容器路径: {}", local_file_path,
+                container_path);
     } else {
       throw std::runtime_error("下载视频消息失败");
     }
@@ -230,27 +225,25 @@ auto TelegramMediaProcessor::process_other_file(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, file_url, "file", filename);
+        &telegram_capability, path_manager_, file_url, "file", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      const auto &path_manager = MediaProcessor::get_path_manager();
       std::string container_path =
-          path_manager.host_to_container_absolute(local_file_path);
+          path_manager_.host_to_container_absolute(local_file_path);
 
       file_segment.type = "file";
       file_segment.data["file"] = "file:///" + container_path;
       file_segment.data["name"] = filename;
       OBCX_INFO("成功下载其他类型文件到本地: {} -> 容器路径: {}",
-                  local_file_path, container_path);
+                local_file_path, container_path);
     } else {
       throw std::runtime_error("下载其他类型文件失败");
     }
   } catch (const std::exception &e) {
-    OBCX_WARN("下载其他类型文件失败，回退到URL方式: {}",
-                e.what());
+    OBCX_WARN("下载其他类型文件失败，回退到URL方式: {}", e.what());
     auto [final_url, _] = MediaProcessor::get_qq_file_info(file_url, "file");
     file_segment.type = "file";
     file_segment.data["file"] = final_url;

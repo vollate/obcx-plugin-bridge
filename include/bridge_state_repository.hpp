@@ -68,7 +68,8 @@ public:
       const std::optional<std::string> &converted_file_path = std::nullopt)
       -> bool;
 
-  auto save_qq_sticker_mapping(const storage::QQStickerMapping &mapping) -> bool;
+  auto save_qq_sticker_mapping(const storage::QQStickerMapping &mapping)
+      -> bool;
   auto get_qq_sticker_mapping(const std::string &qq_sticker_hash)
       -> std::optional<storage::QQStickerMapping>;
   auto update_qq_sticker_last_used(const std::string &qq_sticker_hash) -> bool;

@@ -11,7 +11,8 @@
 
 namespace bridge {
 class BridgeStateRepository;
-}
+struct BridgeConfig;
+} // namespace bridge
 
 namespace bridge::qq {
 
@@ -27,6 +28,7 @@ public:
    * @param db_manager 数据库管理器
    */
   explicit QQMessageFormatter(
+      std::shared_ptr<const bridge::BridgeConfig> config,
       std::shared_ptr<bridge::BridgeStateRepository> state_repository =
           nullptr);
 
@@ -115,6 +117,7 @@ public:
       const std::string &group_id) -> boost::asio::awaitable<void>;
 
 private:
+  std::shared_ptr<const bridge::BridgeConfig> config_;
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
 
   /**

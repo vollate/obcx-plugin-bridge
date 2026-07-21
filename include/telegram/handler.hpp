@@ -13,6 +13,7 @@ namespace bridge {
 
 // Forward declarations
 class BridgeStateRepository;
+struct BridgeConfig;
 class ReceivedMessageRepository;
 class RetryQueueManager;
 
@@ -33,6 +34,7 @@ public:
    * @param buffer_executor 用于驱动 media-group 缓冲区去抖定时器的 executor
    */
   explicit TelegramHandler(
+      std::shared_ptr<const BridgeConfig> config,
       std::shared_ptr<RetryQueueManager> retry_manager,
       boost::asio::any_io_executor buffer_executor,
       std::shared_ptr<BridgeStateRepository> state_repository = nullptr,
@@ -109,6 +111,7 @@ private:
                                  std::vector<obcx::common::MessageEvent> events)
       -> boost::asio::awaitable<void>;
 
+  std::shared_ptr<const BridgeConfig> config_;
   std::shared_ptr<RetryQueueManager> retry_manager_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;

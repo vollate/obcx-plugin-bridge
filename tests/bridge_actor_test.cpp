@@ -1,6 +1,7 @@
 #include "bridge_actor.hpp"
 #include "bridge_forwarder.hpp"
 #include "common/config_loader.hpp"
+#include "config.hpp"
 #include "core/db_manager.hpp"
 #include "core/native_actor_scheduler.hpp"
 
@@ -12,9 +13,10 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
@@ -26,8 +28,7 @@ namespace asio = boost::asio;
 namespace {
 
 auto run_actor(std::shared_ptr<obcx::core::ActorServices> services,
-               obcx::core::MessageEnvelope message)
-    -> obcx::core::ActorResult {
+               obcx::core::MessageEnvelope message) -> obcx::core::ActorResult {
   using namespace std::chrono_literals;
 
   asio::io_context ioc;
@@ -98,6 +99,40 @@ auto message_stored(const std::string &source_message_id,
 }
 
 } // namespace
+
+TEST(BridgeActorTest, LoadsGroupMappingsFromGenerationSnapshot) {
+  const auto config_path =
+      temp_db_path("actor_config").replace_extension(".toml");
+  {
+    std::ofstream config(config_path);
+    config << R"(
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+
+[[group_mappings.group_to_group]]
+telegram_group_id = "tg-group"
+qq_group_id = "qq-group"
+mode = "group_to_group"
+show_qq_to_tg_sender = true
+show_tg_to_qq_sender = false
+enable_qq_to_tg = true
+enable_tg_to_qq = true
+)";
+  }
+
+  auto built = obcx::common::ConfigLoader::build_snapshot(config_path.string());
+  ASSERT_TRUE(built);
+  const auto config = bridge::load_bridge_config(
+      obcx::common::ActorConfigView{built.snapshot, "bridge"});
+
+  const auto mapping = config->group_map.find("tg-group");
+  ASSERT_NE(mapping, config->group_map.end());
+  EXPECT_EQ(mapping->second.qq_group_id, "qq-group");
+  EXPECT_TRUE(mapping->second.enable_qq_to_tg);
+  EXPECT_FALSE(mapping->second.show_tg_to_qq_sender);
+
+  std::filesystem::remove(config_path);
+}
 
 class RecordingForwarder final : public bridge::IBridgeForwarder {
 public:
@@ -173,8 +208,7 @@ TEST(BridgeActorTest, PersistsMappingAndEmitsMessageForwarded) {
   auto services = std::make_shared<obcx::core::ActorServices>();
   services->register_service<obcx::core::DbManager>(db_manager);
 
-  const auto result =
-      run_actor(services, message_stored("qq-7", "tg-9"));
+  const auto result = run_actor(services, message_stored("qq-7", "tg-9"));
 
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(result.emitted.size(), 1);
@@ -214,7 +248,8 @@ TEST(BridgeActorTest, EmitsMessageForwardFailedWhenMappingFieldsAreMissing) {
   ASSERT_TRUE(result.failure.has_value());
   EXPECT_EQ(result.failure->code, "missing_forward_mapping");
   ASSERT_EQ(result.emitted.size(), 1);
-  EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwardFailed");
+  EXPECT_EQ(result.emitted.front().type,
+            "bridge::events::MessageForwardFailed");
   EXPECT_EQ(result.emitted.front().payload["code"], "missing_forward_mapping");
 
   std::filesystem::remove(db_path);
@@ -243,7 +278,8 @@ TEST(BridgeActorTest, ForwardsMessageStoredThroughRuntimeForwarder) {
 
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(forwarder->seen_messages.size(), 1);
-  EXPECT_EQ(forwarder->seen_messages.front().type, "obcx::message_store::events::MessageStored");
+  EXPECT_EQ(forwarder->seen_messages.front().type,
+            "obcx::message_store::events::MessageStored");
   ASSERT_EQ(result.emitted.size(), 1);
   EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwarded");
   EXPECT_EQ(result.emitted.front().payload["source_message_id"], "qq-actor-1");
@@ -281,7 +317,9 @@ TEST(BridgeActorTest, PreservesMediaPayloadAcrossActorAsioSuspension) {
   stored.raw = {
       {"message",
        {{{"type", "image"},
-         {"data", {{"file", "photo.jpg"}, {"url", "https://example.test/photo.jpg"}}}}}},
+         {"data",
+          {{"file", "photo.jpg"},
+           {"url", "https://example.test/photo.jpg"}}}}}},
   };
 
   const auto result = run_actor(services, stored);
@@ -290,8 +328,7 @@ TEST(BridgeActorTest, PreservesMediaPayloadAcrossActorAsioSuspension) {
   ASSERT_TRUE(forwarder->seen_message.has_value());
   EXPECT_EQ(forwarder->seen_message->raw, stored.raw);
   ASSERT_EQ(result.emitted.size(), 1);
-  EXPECT_EQ(result.emitted.front().payload["target_message_id"],
-            "tg-media-1");
+  EXPECT_EQ(result.emitted.front().payload["target_message_id"], "tg-media-1");
 
   std::filesystem::remove(db_path);
 }
@@ -314,7 +351,8 @@ TEST(BridgeActorTest, ConvertsForwardingExceptionIntoRetryableFailure) {
   EXPECT_EQ(result.failure->code, "bridge_error");
   EXPECT_TRUE(result.failure->retryable);
   ASSERT_EQ(result.emitted.size(), 1);
-  EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwardFailed");
+  EXPECT_EQ(result.emitted.front().type,
+            "bridge::events::MessageForwardFailed");
   EXPECT_EQ(result.emitted.front().payload["retryable"], true);
 
   std::filesystem::remove(db_path);
