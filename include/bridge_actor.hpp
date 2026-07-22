@@ -26,6 +26,23 @@ public:
   static constexpr std::string_view actor_name = "bridge";
   static constexpr std::string_view actor_version = "0.1.0";
 
+  [[nodiscard]] static auto configuration_contract() -> obcx::common::json {
+    return {
+        {"integers",
+         {{"max_retry_interval_sec", {{"default", 300}, {"minimum", 1}}},
+          {"message_retry_base_interval_sec", {{"default", 2}, {"minimum", 1}}},
+          {"message_retry_max_attempts", {{"default", 5}, {"minimum", 1}}},
+          {"retry_queue_check_interval_sec",
+           {{"default", 10}, {"minimum", 1}}}}},
+        {"less_equal",
+         obcx::common::json::array(
+             {obcx::common::json::array({"message_retry_base_interval_sec",
+                                         "max_retry_interval_sec"}),
+              obcx::common::json::array({"retry_queue_check_interval_sec",
+                                         "max_retry_interval_sec"})})},
+    };
+  }
+
   BridgeActor() = default;
 
   auto handle(const obcx::message_store::events::MessageStored &stored,

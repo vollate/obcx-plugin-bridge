@@ -7,6 +7,7 @@
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -15,6 +16,13 @@
 namespace bridge {
 
 class BridgeStateRepository;
+
+struct RetryQueuePolicy {
+  int message_retry_base_interval_sec = 2;
+  int media_retry_base_interval_sec = 5;
+  int retry_queue_check_interval_sec = 10;
+  int max_retry_interval_sec = 300;
+};
 
 /**
  * @brief Message retry info used by the in-memory scheduler and optional
@@ -77,9 +85,11 @@ public:
    * @brief 构造函数
    * @param io_context ASIO IO上下文
    */
-  explicit RetryQueueManager(boost::asio::io_context &io_context);
+  explicit RetryQueueManager(boost::asio::io_context &io_context,
+                             RetryQueuePolicy policy = {});
   RetryQueueManager(boost::asio::io_context &io_context,
-                    std::shared_ptr<BridgeStateRepository> state_repository);
+                    std::shared_ptr<BridgeStateRepository> state_repository,
+                    RetryQueuePolicy policy = {});
 
   /**
    * @brief 析构函数
@@ -95,6 +105,9 @@ public:
    * @brief 停止重试队列处理
    */
   void stop();
+
+  /** Completes when the queue-processing coroutine has fully retired. */
+  [[nodiscard]] auto stopped() const -> std::shared_future<void>;
 
   /**
    * @brief 添加消息发送重试
@@ -155,8 +168,12 @@ public:
 private:
   boost::asio::io_context &io_context_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
+  RetryQueuePolicy policy_;
   std::unique_ptr<boost::asio::steady_timer> retry_timer_;
   std::atomic_bool running_;
+  std::promise<void> stopped_promise_;
+  std::shared_future<void> stopped_future_;
+  std::atomic_bool stopped_signalled_{false};
 
   // In-memory retry queues (thread-safe)
   mutable std::mutex message_retry_mutex_;
@@ -168,12 +185,6 @@ private:
   std::unordered_map<std::string, MessageSendCallback> message_send_callbacks_;
   std::unordered_map<std::string, MediaDownloadCallback>
       media_download_callbacks_;
-
-  // Retry configuration
-  static constexpr int DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS = 2;
-  static constexpr int DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS = 5;
-  static constexpr int MAX_RETRY_INTERVAL_SECONDS = 300; // 5 minutes
-  static constexpr int RETRY_QUEUE_CHECK_INTERVAL_SECONDS = 10;
 
   /**
    * @brief 定期检查重试队列
@@ -196,6 +207,8 @@ private:
   auto calculate_next_retry_time(int retry_count,
                                  int base_interval_seconds) const
       -> std::chrono::system_clock::time_point;
+
+  void signal_stopped() noexcept;
 };
 
 } // namespace bridge

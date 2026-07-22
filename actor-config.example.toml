@@ -60,6 +60,10 @@ db_namespace = "bridge"
 [actors.bridge.config]
 database_file = "bridge_bot.db"
 enable_retry_queue = true
+message_retry_max_attempts = 5
+message_retry_base_interval_sec = 2
+retry_queue_check_interval_sec = 10
+max_retry_interval_sec = 300
 bridge_files_dir = "/tmp/bridge_files"
 bridge_files_container_dir = "/root/llonebot/bridge_files"
 ffmpeg_path = "ffmpeg"

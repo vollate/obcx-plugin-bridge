@@ -17,7 +17,9 @@
 #include <future>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -107,6 +109,62 @@ ffmpeg_path = "/opt/bridge/bin/ffmpeg"
   std::filesystem::remove(config_path);
 }
 
+TEST(BridgeHandlerRepositoryTest, LoadsConfiguredMessageRetryPolicy) {
+  const auto config_path =
+      temp_db_path("actor_retry_policy").replace_extension(".toml");
+  {
+    std::ofstream config(config_path);
+    config << R"(
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+enable_retry_queue = true
+message_retry_max_attempts = 7
+message_retry_base_interval_sec = 3
+retry_queue_check_interval_sec = 4
+max_retry_interval_sec = 20
+)";
+  }
+
+  const auto config =
+      bridge::load_bridge_config(bridge_config_view(config_path));
+  EXPECT_TRUE(config->enable_retry_queue);
+  EXPECT_EQ(config->message_retry_max_attempts, 7);
+  EXPECT_EQ(config->message_retry_base_interval_sec, 3);
+  EXPECT_EQ(config->retry_queue_check_interval_sec, 4);
+  EXPECT_EQ(config->max_retry_interval_sec, 20);
+
+  std::filesystem::remove(config_path);
+}
+
+TEST(BridgeHandlerRepositoryTest, RejectsInvalidMessageRetryPolicy) {
+  const std::vector<std::string> invalid_values = {
+      "message_retry_max_attempts = 0\n",
+      "message_retry_base_interval_sec = 0\n",
+      "retry_queue_check_interval_sec = -1\n",
+      "max_retry_interval_sec = 0\n",
+      "message_retry_base_interval_sec = 11\nmax_retry_interval_sec = 10\n",
+      "retry_queue_check_interval_sec = 11\nmax_retry_interval_sec = 10\n",
+  };
+
+  for (std::size_t index = 0; index < invalid_values.size(); ++index) {
+    const auto config_path =
+        temp_db_path("invalid_retry_policy_" + std::to_string(index))
+            .replace_extension(".toml");
+    {
+      std::ofstream config(config_path);
+      config << "[actors.bridge.config]\n"
+                "bridge_files_dir = \"/tmp/bridge_files\"\n"
+             << invalid_values[index];
+    }
+
+    EXPECT_THROW(
+        (void)bridge::load_bridge_config(bridge_config_view(config_path)),
+        std::runtime_error)
+        << "invalid case " << index;
+    std::filesystem::remove(config_path);
+  }
+}
+
 TEST(BridgeHandlerRepositoryTest,
      ReverseLookupIgnoresMappingsWithQqToTelegramDisabled) {
   bridge::BridgeConfig config;
@@ -179,6 +237,8 @@ TEST(BridgeHandlerRepositoryTest,
   const auto tg_handler =
       source_root / "dependency" / "telegram" / "handler.cpp";
   const auto actor = source_root / "actor" / "bridge_actor.cpp";
+  const auto forwarding_runtime =
+      source_root / "dependency" / "bridge_forwarding_runtime.cpp";
 
   auto read_file = [](const std::filesystem::path &path) {
     std::ifstream stream(path);
@@ -190,6 +250,7 @@ TEST(BridgeHandlerRepositoryTest,
   const auto qq_source = read_file(qq_handler);
   const auto tg_source = read_file(tg_handler);
   const auto actor_source = read_file(actor);
+  const auto runtime_source = read_file(forwarding_runtime);
 
   EXPECT_EQ(qq_source.find("save_message_from_event"), std::string::npos);
   EXPECT_EQ(qq_source.find("save_user_from_event"), std::string::npos);
@@ -203,4 +264,14 @@ TEST(BridgeHandlerRepositoryTest,
   EXPECT_NE(actor_source.find("context.await_asio"), std::string::npos);
   EXPECT_NE(actor_source.find("obcx::message_store::events::MessageStored"),
             std::string::npos);
+  EXPECT_NE(runtime_source.find("RetryQueueWorker"), std::string::npos);
+  EXPECT_NE(runtime_source.find("BotRegistry"), std::string::npos);
+  EXPECT_EQ(runtime_source.find("IPlugin"), std::string::npos);
+  EXPECT_EQ(runtime_source.find("get_bots"), std::string::npos);
+  EXPECT_NE(qq_source.find("消息发送失败且重试队列不可用"), std::string::npos);
+  EXPECT_NE(qq_source.find("消息发送失败且未启用重试"), std::string::npos);
+  EXPECT_NE(tg_source.find("消息发送失败且重试队列不可用"), std::string::npos);
+  EXPECT_NE(tg_source.find("消息发送失败且未启用重试"), std::string::npos);
+  EXPECT_EQ(qq_source.find("API响应: {}"), std::string::npos);
+  EXPECT_EQ(tg_source.find("API响应: {}"), std::string::npos);
 }

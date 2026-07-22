@@ -117,6 +117,9 @@ struct BridgeConfig final {
 [[nodiscard]] auto load_bridge_config(const obcx::common::ActorConfigView &view)
     -> std::shared_ptr<const BridgeConfig>;
 
+/** Validate bridge-owned values after loading one immutable generation. */
+void validate_bridge_config(const BridgeConfig &config);
+
 /** Whether the supplied immutable snapshot assigns forwarding to actors. */
 [[nodiscard]] auto actor_pipeline_enabled(
     const obcx::common::ActorConfigView &view) -> bool;

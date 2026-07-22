@@ -205,7 +205,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
       }
 
       if (!response.empty()) {
-        OBCX_DEBUG("Telegram API响应: {}", response);
         nlohmann::json response_json = nlohmann::json::parse(response);
         if (response_json.contains("result") &&
             response_json["result"].is_object() &&
@@ -226,16 +225,16 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
           OBCX_INFO("QQ消息 {} 成功转发到Telegram，Telegram消息ID: {}",
                     event.message_id, telegram_message_id.value());
         } else {
-          failure_reason = fmt::format("Invalid response format: {}", response);
-          OBCX_WARN("转发QQ消息后，无法解析Telegram消息ID。响应: {}", response);
+          failure_reason = "Invalid response format from Telegram API";
+          OBCX_WARN("转发QQ消息后，无法解析Telegram消息ID");
         }
       } else {
         failure_reason = "Empty response from Telegram API";
         OBCX_WARN("Telegram API返回空响应");
       }
-    } catch (const std::exception &e) {
-      failure_reason = fmt::format("Send failed: {}", e.what());
-      OBCX_WARN("发送QQ消息到Telegram时出错: {}", e.what());
+    } catch (const std::exception &) {
+      failure_reason = "Telegram API send failed";
+      OBCX_WARN("发送QQ消息到Telegram时出错");
     }
 
     if (!telegram_message_id.has_value() && retry_manager_ &&
@@ -246,6 +245,9 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
           "qq", "telegram", event.message_id, message_to_send,
           telegram_group_id, qq_group_id, topic_id,
           config_->message_retry_max_attempts, failure_reason);
+    } else if (!telegram_message_id.has_value() &&
+               config_->enable_retry_queue) {
+      OBCX_ERROR("消息发送失败且重试队列不可用: {}", failure_reason);
     } else if (!telegram_message_id.has_value()) {
       OBCX_ERROR("消息发送失败且未启用重试: {}", failure_reason);
     }

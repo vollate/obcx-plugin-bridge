@@ -1,8 +1,10 @@
 #include "retry_queue_manager.hpp"
 #include "bridge_state_repository.hpp"
 
-#include <cmath>
+#include <algorithm>
 #include <common/logger.hpp>
+#include <cstdint>
+#include <exception>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <utility>
@@ -80,44 +82,50 @@ auto to_retry_entry(const storage::MessageRetryInfo &retry_info)
   return entry;
 }
 
-void remove_persisted_message_retry(
+auto remove_persisted_message_retry(
     const std::shared_ptr<BridgeStateRepository> &repository,
-    const MessageRetryEntry &entry, const char *outcome) {
+    const MessageRetryEntry &entry, const char *outcome) -> bool {
   if (!repository) {
-    return;
+    return true;
   }
 
   try {
-    repository->remove_message_retry(
+    return repository->remove_message_retry(
         entry.source_platform, entry.source_message_id, entry.target_platform);
   } catch (const std::exception &e) {
     OBCX_ERROR("Failed to remove persisted message retry after {}: {}", outcome,
                e.what());
+    return false;
   }
 }
 
-void update_persisted_message_retry(
+auto update_persisted_message_retry(
     const std::shared_ptr<BridgeStateRepository> &repository,
-    const MessageRetryEntry &entry, const char *outcome) {
+    const MessageRetryEntry &entry, const char *outcome) -> bool {
   if (!repository) {
-    return;
+    return true;
   }
 
   try {
-    repository->update_message_retry(
+    return repository->update_message_retry(
         entry.source_platform, entry.source_message_id, entry.target_platform,
         entry.retry_count, entry.next_retry_at, entry.failure_reason);
   } catch (const std::exception &e) {
     OBCX_ERROR("Failed to update persisted message retry after {}: {}", outcome,
                e.what());
+    return false;
   }
 }
 
-void persist_successful_message_mapping(
+auto persist_successful_message_mapping(
     const std::shared_ptr<BridgeStateRepository> &repository,
-    const MessageRetryEntry &entry, const std::string &target_message_id) {
-  if (!repository || target_message_id.empty()) {
-    return;
+    const MessageRetryEntry &entry, const std::string &target_message_id)
+    -> bool {
+  if (!repository) {
+    return true;
+  }
+  if (target_message_id.empty()) {
+    return false;
   }
 
   try {
@@ -127,28 +135,39 @@ void persist_successful_message_mapping(
     mapping.target_platform = entry.target_platform;
     mapping.target_message_id = target_message_id;
     mapping.created_at = std::chrono::system_clock::now();
-    repository->add_message_mapping(mapping);
+    return repository->add_message_mapping(mapping);
   } catch (const std::exception &e) {
     OBCX_ERROR("Failed to persist mapping after successful retry: {}",
                e.what());
+    return false;
   }
+}
+
+auto same_retry_identity(const MessageRetryEntry &left,
+                         const MessageRetryEntry &right) -> bool {
+  return left.source_platform == right.source_platform &&
+         left.source_message_id == right.source_message_id &&
+         left.target_platform == right.target_platform;
 }
 
 } // namespace
 
-RetryQueueManager::RetryQueueManager(boost::asio::io_context &io_context)
-    : io_context_(io_context),
+RetryQueueManager::RetryQueueManager(boost::asio::io_context &io_context,
+                                     RetryQueuePolicy policy)
+    : io_context_(io_context), policy_(policy),
       retry_timer_(std::make_unique<boost::asio::steady_timer>(io_context)),
-      running_(false) {
+      running_(false), stopped_future_(stopped_promise_.get_future().share()) {
   OBCX_INFO("RetryQueueManager initialized (in-memory mode)");
 }
 
 RetryQueueManager::RetryQueueManager(
     boost::asio::io_context &io_context,
-    std::shared_ptr<BridgeStateRepository> state_repository)
+    std::shared_ptr<BridgeStateRepository> state_repository,
+    RetryQueuePolicy policy)
     : io_context_(io_context), state_repository_(std::move(state_repository)),
+      policy_(policy),
       retry_timer_(std::make_unique<boost::asio::steady_timer>(io_context)),
-      running_(false) {
+      running_(false), stopped_future_(stopped_promise_.get_future().share()) {
   OBCX_INFO("RetryQueueManager initialized (persistent mode)");
 }
 
@@ -173,10 +192,27 @@ void RetryQueueManager::start() {
         [self]() -> boost::asio::awaitable<void> {
           co_await self->process_retry_queues();
         },
-        boost::asio::detached);
+        [self](std::exception_ptr error) {
+          if (error) {
+            try {
+              std::rethrow_exception(error);
+            } catch (const std::exception &exception) {
+              OBCX_ERROR("Retry queue terminated with an exception: {}",
+                         exception.what());
+            } catch (...) {
+              OBCX_ERROR("Retry queue terminated with an unknown exception");
+            }
+          }
+          self->signal_stopped();
+        });
   } else {
-    boost::asio::co_spawn(io_context_, process_retry_queues(),
-                          boost::asio::detached);
+    boost::asio::co_spawn(
+        io_context_, process_retry_queues(), [this](std::exception_ptr error) {
+          if (error) {
+            OBCX_ERROR("Retry queue terminated with an exception");
+          }
+          signal_stopped();
+        });
   }
 }
 
@@ -210,6 +246,10 @@ void RetryQueueManager::stop() {
   }
 }
 
+auto RetryQueueManager::stopped() const -> std::shared_future<void> {
+  return stopped_future_;
+}
+
 void RetryQueueManager::add_message_retry(
     const std::string &source_platform, const std::string &target_platform,
     const std::string &source_message_id, const obcx::common::Message &message,
@@ -230,13 +270,21 @@ void RetryQueueManager::add_message_retry(
   entry.failure_reason = failure_reason;
   entry.created_at = std::chrono::system_clock::now();
   entry.next_retry_at =
-      calculate_next_retry_time(0, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
+      calculate_next_retry_time(0, policy_.message_retry_base_interval_sec);
 
   const auto retry_info = to_retry_info(entry);
 
   {
     std::scoped_lock lock(message_retry_mutex_);
-    message_retry_queue_.push_back(std::move(entry));
+    const auto existing = std::ranges::find_if(
+        message_retry_queue_, [&entry](const MessageRetryEntry &candidate) {
+          return same_retry_identity(candidate, entry);
+        });
+    if (existing == message_retry_queue_.end()) {
+      message_retry_queue_.push_back(entry);
+    } else {
+      *existing = entry;
+    }
   }
 
   if (state_repository_) {
@@ -269,7 +317,7 @@ void RetryQueueManager::add_media_download_retry(
   entry.failure_reason = failure_reason;
   entry.created_at = std::chrono::system_clock::now();
   entry.next_retry_at =
-      calculate_next_retry_time(0, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
+      calculate_next_retry_time(0, policy_.media_retry_base_interval_sec);
 
   {
     std::scoped_lock lock(media_retry_mutex_);
@@ -307,7 +355,7 @@ auto RetryQueueManager::process_retry_queues() -> boost::asio::awaitable<void> {
       }
 
       retry_timer_->expires_after(
-          std::chrono::seconds(RETRY_QUEUE_CHECK_INTERVAL_SECONDS));
+          std::chrono::seconds(policy_.retry_queue_check_interval_sec));
       co_await retry_timer_->async_wait(boost::asio::use_awaitable);
 
     } catch (const boost::system::system_error &e) {
@@ -322,7 +370,8 @@ auto RetryQueueManager::process_retry_queues() -> boost::asio::awaitable<void> {
 
     if (running_) {
       try {
-        retry_timer_->expires_after(std::chrono::seconds(5));
+        retry_timer_->expires_after(
+            std::chrono::seconds(policy_.retry_queue_check_interval_sec));
         co_await retry_timer_->async_wait(boost::asio::use_awaitable);
       } catch (const boost::system::system_error &) {
         break;
@@ -365,7 +414,7 @@ auto RetryQueueManager::process_message_retries()
                   entry.target_platform);
         // No handler yet - keep entry alive so it can be retried later
         entry.next_retry_at = calculate_next_retry_time(
-            entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
+            entry.retry_count, policy_.message_retry_base_interval_sec);
         update_persisted_message_retry(state_repository_, entry,
                                        "missing callback");
         std::scoped_lock lock(message_retry_mutex_);
@@ -377,15 +426,49 @@ auto RetryQueueManager::process_message_retries()
                 entry.source_platform, entry.target_platform,
                 entry.retry_count + 1);
 
+      if (state_repository_) {
+        const auto mapped = state_repository_->get_target_message_id(
+            entry.source_platform, entry.source_message_id,
+            entry.target_platform);
+        if (mapped.has_value()) {
+          if (remove_persisted_message_retry(state_repository_, entry,
+                                             "existing mapping")) {
+            OBCX_INFO("Removed completed retry with existing mapping: {} -> {}",
+                      entry.source_platform, entry.target_platform);
+          } else if (running_) {
+            entry.failure_reason = "retry row cleanup failed";
+            entry.next_retry_at = calculate_next_retry_time(
+                entry.retry_count, policy_.message_retry_base_interval_sec);
+            std::scoped_lock lock(message_retry_mutex_);
+            message_retry_queue_.push_back(std::move(entry));
+          }
+          continue;
+        }
+      }
+
       auto result = co_await callback_it->second(entry, entry.message);
 
       if (result.has_value()) {
-        // Success: do not re-add to queue
-        persist_successful_message_mapping(state_repository_, entry,
-                                           result.value());
-        remove_persisted_message_retry(state_repository_, entry, "success");
-        OBCX_INFO("Message retry successful: {} -> {} (msg_id: {})",
-                  entry.source_platform, entry.target_platform, result.value());
+        const bool mapping_persisted = persist_successful_message_mapping(
+            state_repository_, entry, result.value());
+        const bool retry_removed =
+            mapping_persisted &&
+            remove_persisted_message_retry(state_repository_, entry, "success");
+        if (mapping_persisted && retry_removed) {
+          OBCX_INFO("Message retry successful: {} -> {} (msg_id: {})",
+                    entry.source_platform, entry.target_platform,
+                    result.value());
+        } else if (running_) {
+          entry.failure_reason = mapping_persisted
+                                     ? "retry row cleanup failed"
+                                     : "retry mapping persistence failed";
+          entry.next_retry_at = calculate_next_retry_time(
+              entry.retry_count, policy_.message_retry_base_interval_sec);
+          update_persisted_message_retry(state_repository_, entry,
+                                         "completion persistence failure");
+          std::scoped_lock lock(message_retry_mutex_);
+          message_retry_queue_.push_back(std::move(entry));
+        }
       } else {
         entry.retry_count++;
 
@@ -398,7 +481,7 @@ auto RetryQueueManager::process_message_retries()
           // Give up: do not re-add
         } else {
           entry.next_retry_at = calculate_next_retry_time(
-              entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
+              entry.retry_count, policy_.message_retry_base_interval_sec);
           update_persisted_message_retry(state_repository_, entry,
                                          "send failure");
           OBCX_DEBUG("Updated message retry count to {}, next retry in {}s",
@@ -423,7 +506,7 @@ auto RetryQueueManager::process_message_retries()
                                        "exception max attempts");
       } else {
         entry.next_retry_at = calculate_next_retry_time(
-            entry.retry_count, DEFAULT_MESSAGE_RETRY_INTERVAL_SECONDS);
+            entry.retry_count, policy_.message_retry_base_interval_sec);
         update_persisted_message_retry(state_repository_, entry, "exception");
         if (running_) {
           std::scoped_lock lock(message_retry_mutex_);
@@ -464,7 +547,7 @@ auto RetryQueueManager::process_media_download_retries()
       if (callback_it == media_download_callbacks_.end()) {
         OBCX_WARN("No callback registered for platform: {}", entry.platform);
         entry.next_retry_at = calculate_next_retry_time(
-            entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
+            entry.retry_count, policy_.media_retry_base_interval_sec);
         std::scoped_lock lock(media_retry_mutex_);
         media_retry_queue_.push_back(std::move(entry));
         continue;
@@ -490,7 +573,7 @@ auto RetryQueueManager::process_media_download_retries()
             entry.use_proxy = false;
             entry.retry_count = 0;
             entry.next_retry_at = calculate_next_retry_time(
-                0, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
+                0, policy_.media_retry_base_interval_sec);
             std::scoped_lock lock(media_retry_mutex_);
             media_retry_queue_.push_back(std::move(entry));
           } else {
@@ -499,7 +582,7 @@ auto RetryQueueManager::process_media_download_retries()
           }
         } else if (running_) {
           entry.next_retry_at = calculate_next_retry_time(
-              entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
+              entry.retry_count, policy_.media_retry_base_interval_sec);
           std::scoped_lock lock(media_retry_mutex_);
           media_retry_queue_.push_back(std::move(entry));
         }
@@ -510,7 +593,7 @@ auto RetryQueueManager::process_media_download_retries()
       entry.retry_count++;
       if (running_ && entry.retry_count < entry.max_retry_count) {
         entry.next_retry_at = calculate_next_retry_time(
-            entry.retry_count, DEFAULT_MEDIA_RETRY_INTERVAL_SECONDS);
+            entry.retry_count, policy_.media_retry_base_interval_sec);
         std::scoped_lock lock(media_retry_mutex_);
         media_retry_queue_.push_back(std::move(entry));
       }
@@ -521,10 +604,16 @@ auto RetryQueueManager::process_media_download_retries()
 auto RetryQueueManager::calculate_next_retry_time(
     int retry_count, int base_interval_seconds) const
     -> std::chrono::system_clock::time_point {
-  // Exponential backoff: 2^retry_count * base_interval, with max limit
-  int delay_seconds =
-      static_cast<int>(std::pow(2, retry_count)) * base_interval_seconds;
-  delay_seconds = std::min(delay_seconds, MAX_RETRY_INTERVAL_SECONDS);
+  const auto safe_retry_count = std::max(0, retry_count);
+  std::int64_t delay_seconds = base_interval_seconds;
+  for (int attempt = 0; attempt < safe_retry_count &&
+                        delay_seconds < policy_.max_retry_interval_sec;
+       ++attempt) {
+    delay_seconds = std::min<std::int64_t>(delay_seconds * 2,
+                                           policy_.max_retry_interval_sec);
+  }
+  delay_seconds = std::clamp<std::int64_t>(delay_seconds, 1,
+                                           policy_.max_retry_interval_sec);
 
   return std::chrono::system_clock::now() + std::chrono::seconds(delay_seconds);
 }
@@ -569,6 +658,18 @@ auto RetryQueueManager::get_retry_statistics() const -> std::string {
   stats << "Pending media download retries: " << media_count << "\n";
 
   return stats.str();
+}
+
+void RetryQueueManager::signal_stopped() noexcept {
+  bool expected = false;
+  if (!stopped_signalled_.compare_exchange_strong(expected, true,
+                                                  std::memory_order_acq_rel)) {
+    return;
+  }
+  try {
+    stopped_promise_.set_value();
+  } catch (...) {
+  }
 }
 
 } // namespace bridge

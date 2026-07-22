@@ -218,7 +218,35 @@ auto load_bridge_config(const obcx::common::ActorConfigView &view)
     result->ffmpeg_path = "ffmpeg";
   }
 
+  validate_bridge_config(*result);
+
   return result;
+}
+
+void validate_bridge_config(const BridgeConfig &config) {
+  if (config.message_retry_max_attempts <= 0) {
+    throw std::runtime_error(
+        "bridge message_retry_max_attempts must be positive");
+  }
+  if (config.message_retry_base_interval_sec <= 0) {
+    throw std::runtime_error(
+        "bridge message_retry_base_interval_sec must be positive");
+  }
+  if (config.retry_queue_check_interval_sec <= 0) {
+    throw std::runtime_error(
+        "bridge retry_queue_check_interval_sec must be positive");
+  }
+  if (config.max_retry_interval_sec <= 0) {
+    throw std::runtime_error("bridge max_retry_interval_sec must be positive");
+  }
+  if (config.message_retry_base_interval_sec > config.max_retry_interval_sec) {
+    throw std::runtime_error(
+        "bridge message retry base interval cannot exceed the maximum");
+  }
+  if (config.retry_queue_check_interval_sec > config.max_retry_interval_sec) {
+    throw std::runtime_error(
+        "bridge retry queue check interval cannot exceed the maximum");
+  }
 }
 
 auto actor_pipeline_enabled(const obcx::common::ActorConfigView &view) -> bool {

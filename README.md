@@ -77,6 +77,10 @@ db_namespace = "bridge"
 
 [actors.bridge.config]
 enable_retry_queue = true
+message_retry_max_attempts = 5
+message_retry_base_interval_sec = 2
+retry_queue_check_interval_sec = 10
+max_retry_interval_sec = 300
 bridge_files_dir = "/tmp/bridge_files"
 bridge_files_container_dir = "/root/llonebot/bridge_files"
 ffmpeg_path = "ffmpeg"
@@ -95,6 +99,33 @@ live accounts on either platform make lookup ambiguous and forwarding fails.
 the process `PATH`. `action_timeout` should remain above the upstream
 first-media-send latency; 30 seconds is the example default. Telegram
 `poll_force_close` must be larger than `poll_timeout`.
+
+### Message retry operations
+
+When `enable_retry_queue` is `true`, one worker belongs to the active bridge
+actor generation. A failed QQ-to-Telegram or Telegram-to-QQ send is stored in
+`bridge_message_retry_queue`; the worker resends through the process-owned
+`BotRegistry`, writes the source-to-target message mapping, and removes the
+queue row only after both persistence operations succeed. Pending rows survive
+process restart and actor reload. Reload stops the retired generation's worker
+before post-cutover ingress can initialize the candidate worker.
+
+Message delivery is at-least-once. A target platform may accept a send before
+the local mapping or queue cleanup fails, so recovery first checks for an
+existing mapping and operators should not assume exactly-once delivery.
+Duplicate enqueue identity is `(source_platform, source_message_id,
+target_platform)`.
+
+The defaults are 5 maximum attempts, a 2-second base backoff, a 10-second queue
+check interval, and a 300-second maximum backoff. All four values must be
+positive; the base and check intervals must not exceed the maximum. Startup,
+`--validate-config`, and reload reject invalid values with
+`reload_actor_config_invalid` before activating the generation.
+
+Diagnostics distinguish an explicitly disabled queue (`消息发送失败且未启用重试`)
+from an enabled but unavailable queue (`消息发送失败且重试队列不可用`). Retry logs
+contain platform direction, source identity, and attempt outcome, but not
+message bodies, bot tokens, proxy credentials, or complete API responses.
 
 [`actor-config.example.toml`](actor-config.example.toml) lists the bot,
 media, and group-mapping options. Use the actor dependency and database block

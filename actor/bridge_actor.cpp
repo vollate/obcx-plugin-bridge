@@ -235,6 +235,12 @@ auto BridgeActor::handle(
     result.emit(build_forwarded_event(
         message, mapping, payload_string(message.payload, "target_bot")));
     co_return result;
+  } catch (const BridgeRetryUnavailable &error) {
+    auto result = obcx::core::ActorResult::failed("bridge_retry_unavailable",
+                                                  error.what(), true);
+    result.emit(build_failed_event(message, "bridge_retry_unavailable",
+                                   error.what(), true));
+    co_return result;
   } catch (const std::exception &error) {
     auto result =
         obcx::core::ActorResult::failed("bridge_error", error.what(), true);

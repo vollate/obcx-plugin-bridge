@@ -3,9 +3,22 @@
 #include "bridge_message_event_adapter.hpp"
 #include "config.hpp"
 #include "qq/handler.hpp"
+#include "retry_queue_manager.hpp"
 #include "telegram/handler.hpp"
 
+#include <common/logger.hpp>
+#include <interfaces/telegram_bot.hpp>
+
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
+
+#include <chrono>
+#include <future>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace bridge {
@@ -53,7 +66,194 @@ auto is_telegram_edit(const obcx::common::MessageEvent &event) -> bool {
                                         event.data["is_edited"].get<bool>());
 }
 
+auto retry_policy(const BridgeConfig &config) -> RetryQueuePolicy {
+  return RetryQueuePolicy{
+      .message_retry_base_interval_sec = config.message_retry_base_interval_sec,
+      .media_retry_base_interval_sec = config.media_retry_base_interval_sec,
+      .retry_queue_check_interval_sec = config.retry_queue_check_interval_sec,
+      .max_retry_interval_sec = config.max_retry_interval_sec,
+  };
+}
+
+auto response_message_id(const std::string &response, const char *container)
+    -> std::optional<std::string> {
+  if (response.empty()) {
+    return std::nullopt;
+  }
+  const auto document = nlohmann::json::parse(response, nullptr, false, true);
+  if (document.is_discarded() || !document.is_object() ||
+      !document.contains(container) || !document.at(container).is_object() ||
+      !document.at(container).contains("message_id")) {
+    return std::nullopt;
+  }
+  const auto &message_id = document.at(container).at("message_id");
+  if (message_id.is_string()) {
+    return message_id.get<std::string>();
+  }
+  if (message_id.is_number_integer()) {
+    return std::to_string(message_id.get<std::int64_t>());
+  }
+  if (message_id.is_number_unsigned()) {
+    return std::to_string(message_id.get<std::uint64_t>());
+  }
+  return std::nullopt;
+}
+
+auto telegram_retry_callback(
+    const std::shared_ptr<obcx::core::BotRegistry> &bot_registry)
+    -> RetryQueueManager::MessageSendCallback {
+  return [bot_registry](const MessageRetryEntry &retry,
+                        const obcx::common::Message &message)
+             -> boost::asio::awaitable<std::optional<std::string>> {
+    const auto registration =
+        bot_registry ? bot_registry->find_bot("telegram") : std::nullopt;
+    if (!registration.has_value() || !registration->bot) {
+      OBCX_WARN("Telegram bot unavailable for bridge message retry");
+      co_return std::nullopt;
+    }
+
+    try {
+      std::string response;
+      if (retry.target_topic_id > 0) {
+        auto *telegram =
+            dynamic_cast<obcx::core::ITelegramBot *>(registration->bot.get());
+        if (telegram == nullptr) {
+          OBCX_WARN("Registered Telegram bot lacks topic-send capability");
+          co_return std::nullopt;
+        }
+        response = co_await telegram->send_topic_message(
+            retry.group_id, retry.target_topic_id, message);
+      } else {
+        response = co_await registration->bot->send_group_message(
+            retry.group_id, message);
+      }
+      co_return response_message_id(response, "result");
+    } catch (const std::exception &) {
+      OBCX_WARN("Telegram bridge message retry send failed");
+      co_return std::nullopt;
+    }
+  };
+}
+
+auto qq_retry_callback(
+    const std::shared_ptr<obcx::core::BotRegistry> &bot_registry)
+    -> RetryQueueManager::MessageSendCallback {
+  return [bot_registry](const MessageRetryEntry &retry,
+                        const obcx::common::Message &message)
+             -> boost::asio::awaitable<std::optional<std::string>> {
+    const auto registration =
+        bot_registry ? bot_registry->find_bot("qq") : std::nullopt;
+    if (!registration.has_value() || !registration->bot) {
+      OBCX_WARN("QQ bot unavailable for bridge message retry");
+      co_return std::nullopt;
+    }
+
+    try {
+      const auto response = co_await registration->bot->send_group_message(
+          retry.group_id, message);
+      co_return response_message_id(response, "data");
+    } catch (const std::exception &) {
+      OBCX_WARN("QQ bridge message retry send failed");
+      co_return std::nullopt;
+    }
+  };
+}
+
 } // namespace
+
+class RetryQueueWorker {
+public:
+  RetryQueueWorker(std::shared_ptr<obcx::core::BotRegistry> bot_registry,
+                   const BridgeConfig &config,
+                   std::shared_ptr<BridgeStateRepository> state_repository)
+      : work_guard_(std::make_unique<WorkGuard>(
+            boost::asio::make_work_guard(io_context_))),
+        manager_(std::make_shared<RetryQueueManager>(
+            io_context_, std::move(state_repository), retry_policy(config))) {
+    manager_->register_message_send_callback(
+        "telegram", telegram_retry_callback(bot_registry));
+    manager_->register_message_send_callback("qq",
+                                             qq_retry_callback(bot_registry));
+    manager_->restore_persisted_message_retries();
+    manager_->start();
+    worker_thread_ = std::thread([this] {
+      OBCX_INFO("Bridge retry worker thread started");
+      io_context_.run();
+      OBCX_INFO("Bridge retry worker thread stopped");
+    });
+  }
+
+  RetryQueueWorker(const RetryQueueWorker &) = delete;
+  auto operator=(const RetryQueueWorker &) -> RetryQueueWorker & = delete;
+  ~RetryQueueWorker() { shutdown(); }
+
+  [[nodiscard]] auto manager() const -> std::shared_ptr<RetryQueueManager> {
+    return manager_;
+  }
+
+  void shutdown() noexcept {
+    bool expected = false;
+    if (!shutting_down_.compare_exchange_strong(expected, true,
+                                                std::memory_order_acq_rel)) {
+      return;
+    }
+
+    try {
+      const auto manager = manager_;
+      const auto stopped =
+          manager ? manager->stopped() : std::shared_future<void>{};
+      if (manager) {
+        boost::asio::post(io_context_, [manager] { manager->stop(); });
+      }
+
+      bool timed_out = false;
+      if (stopped.valid() && stopped.wait_for(std::chrono::seconds{35}) !=
+                                 std::future_status::ready) {
+        timed_out = true;
+        OBCX_ERROR("Bridge retry worker did not stop before its deadline");
+      }
+
+      work_guard_.reset();
+      if (timed_out) {
+        io_context_.stop();
+      }
+      if (worker_thread_.joinable()) {
+        worker_thread_.join();
+      }
+      io_context_.stop();
+      manager_.reset();
+    } catch (const std::exception &error) {
+      OBCX_ERROR("Bridge retry worker shutdown failed: {}", error.what());
+      io_context_.stop();
+      if (worker_thread_.joinable()) {
+        try {
+          worker_thread_.join();
+        } catch (...) {
+        }
+      }
+      manager_.reset();
+    } catch (...) {
+      io_context_.stop();
+      if (worker_thread_.joinable()) {
+        try {
+          worker_thread_.join();
+        } catch (...) {
+        }
+      }
+      manager_.reset();
+    }
+  }
+
+private:
+  using WorkGuard =
+      boost::asio::executor_work_guard<boost::asio::io_context::executor_type>;
+
+  boost::asio::io_context io_context_;
+  std::unique_ptr<WorkGuard> work_guard_;
+  std::shared_ptr<RetryQueueManager> manager_;
+  std::thread worker_thread_;
+  std::atomic_bool shutting_down_{false};
+};
 
 BridgeForwardingRuntime::BridgeForwardingRuntime(
     std::shared_ptr<obcx::core::BotRegistry> bot_registry,
@@ -63,16 +263,56 @@ BridgeForwardingRuntime::BridgeForwardingRuntime(
     boost::asio::any_io_executor buffer_executor)
     : bot_registry_(std::move(bot_registry)), config_(std::move(config)),
       state_repository_(std::move(state_repository)),
-      received_message_repository_(std::move(received_message_repository)),
-      qq_handler_(std::make_shared<QQHandler>(
-          config_, nullptr, state_repository_, received_message_repository_)),
-      telegram_handler_(std::make_shared<TelegramHandler>(
-          config_, nullptr, std::move(buffer_executor), state_repository_,
-          received_message_repository_)) {}
+      received_message_repository_(std::move(received_message_repository)) {
+  if (!config_) {
+    throw std::invalid_argument("bridge forwarding requires configuration");
+  }
+
+  std::shared_ptr<RetryQueueManager> retry_manager;
+  if (config_->enable_retry_queue) {
+    try {
+      retry_worker_ = std::make_unique<RetryQueueWorker>(
+          bot_registry_, *config_, state_repository_);
+      retry_manager = retry_worker_->manager();
+    } catch (const std::exception &error) {
+      throw BridgeRetryUnavailable(
+          std::string{"bridge retry worker initialization failed: "} +
+          error.what());
+    }
+  }
+
+  qq_handler_ = std::make_shared<QQHandler>(
+      config_, retry_manager, state_repository_, received_message_repository_);
+  telegram_handler_ = std::make_shared<TelegramHandler>(
+      config_, std::move(retry_manager), std::move(buffer_executor),
+      state_repository_, received_message_repository_);
+}
+
+BridgeForwardingRuntime::~BridgeForwardingRuntime() { shutdown(); }
+
+void BridgeForwardingRuntime::shutdown() noexcept {
+  bool expected = false;
+  if (!shutting_down_.compare_exchange_strong(expected, true,
+                                              std::memory_order_acq_rel)) {
+    return;
+  }
+  if (telegram_handler_) {
+    try {
+      telegram_handler_->flush_pending_media_groups();
+    } catch (...) {
+    }
+  }
+  if (retry_worker_) {
+    retry_worker_->shutdown();
+  }
+}
 
 auto BridgeForwardingRuntime::forward_message(
     const obcx::core::MessageEnvelope &message)
     -> boost::asio::awaitable<BridgeForwardResult> {
+  if (shutting_down_.load(std::memory_order_acquire)) {
+    throw std::runtime_error("bridge forwarding runtime is shutting down");
+  }
   const auto event = message_event_from_message_stored(message);
   if (!event.has_value()) {
     throw std::runtime_error(

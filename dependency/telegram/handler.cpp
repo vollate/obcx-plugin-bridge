@@ -301,7 +301,6 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
             co_await qq_bot.send_group_message(qq_group_id, message_to_send);
 
         if (!qq_response.empty()) {
-          OBCX_DEBUG("QQ API响应: {}", qq_response);
           nlohmann::json response_json = nlohmann::json::parse(qq_response);
           if (response_json.contains("status") &&
               response_json["status"] == "ok" &&
@@ -346,17 +345,16 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
             OBCX_INFO("成功转发Telegram消息到QQ: {} -> {}", event.message_id,
                       qq_message_id.value());
           } else {
-            failure_reason =
-                fmt::format("Invalid response format: {}", qq_response);
-            OBCX_WARN("QQ响应格式错误，无法提取消息ID: {}", qq_response);
+            failure_reason = "Invalid response format from QQ API";
+            OBCX_WARN("QQ响应格式错误，无法提取消息ID");
           }
         } else {
           failure_reason = "Empty response from QQ API";
           OBCX_WARN("QQ API返回空响应");
         }
-      } catch (const std::exception &e) {
-        failure_reason = fmt::format("Send failed: {}", e.what());
-        OBCX_WARN("发送Telegram消息到QQ时出错: {}", e.what());
+      } catch (const std::exception &) {
+        failure_reason = "QQ API send failed";
+        OBCX_WARN("发送Telegram消息到QQ时出错");
       }
 
       if (!qq_message_id.has_value() && retry_manager_ &&
@@ -367,6 +365,8 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
             "telegram", "qq", event.message_id, message_to_send, qq_group_id,
             telegram_group_id, -1, config_->message_retry_max_attempts,
             failure_reason);
+      } else if (!qq_message_id.has_value() && config_->enable_retry_queue) {
+        OBCX_ERROR("消息发送失败且重试队列不可用: {}", failure_reason);
       } else if (!qq_message_id.has_value()) {
         OBCX_ERROR("消息发送失败且未启用重试: {}", failure_reason);
       }
@@ -655,15 +655,14 @@ auto TelegramHandler::forward_media_group_to_qq(
             OBCX_INFO("成功转发Telegram media-group({}张): {} -> {}",
                       events.size(), primary.message_id, qq_message_id.value());
           } else {
-            failure_reason =
-                fmt::format("Invalid response format: {}", qq_response);
+            failure_reason = "Invalid response format from QQ API";
           }
         } else {
           failure_reason = "Empty response from QQ API";
         }
-      } catch (const std::exception &e) {
-        failure_reason = fmt::format("Send failed: {}", e.what());
-        OBCX_WARN("发送 media-group 到QQ时出错: {}", e.what());
+      } catch (const std::exception &) {
+        failure_reason = "QQ API media-group send failed";
+        OBCX_WARN("发送 media-group 到QQ时出错");
       }
 
       if (!qq_message_id.has_value() && retry_manager_ &&
