@@ -5,10 +5,15 @@
 #include "core/bot_registry.hpp"
 #include "core/db_manager.hpp"
 #include "core/native_actor_scheduler.hpp"
+#if __has_include("core/qq_bot.hpp") && __has_include("core/tg_bot.hpp")
+#define OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS 1
 #include "core/qq_bot.hpp"
 #include "core/tg_bot.hpp"
 #include "onebot11/adapter/protocol_adapter.hpp"
 #include "telegram/adapter/protocol_adapter.hpp"
+#else
+#define OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS 0
+#endif
 
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
@@ -104,6 +109,7 @@ auto message_stored(const std::string &source_message_id,
   return envelope;
 }
 
+#if OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS
 auto bridge_message_stored(std::string source_platform,
                            std::string source_message_id, std::string group_id)
     -> obcx::core::MessageEnvelope {
@@ -321,6 +327,7 @@ auto run_actor_until_retry(
   ioc.stop();
   return result;
 }
+#endif
 
 } // namespace
 
@@ -582,6 +589,7 @@ TEST(BridgeActorTest, ConvertsForwardingExceptionIntoRetryableFailure) {
   std::filesystem::remove(db_path);
 }
 
+#if OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS
 TEST(BridgeActorTest, EnabledQqToTelegramFailurePersistsMessageRetry) {
   const auto db_path = temp_db_path("qq_to_tg_retry");
   auto db_manager = std::make_shared<obcx::core::DbManager>();
@@ -750,6 +758,7 @@ TEST(BridgeActorTest, QqGroupRetryUsesBotRegistryAndPersistsMapping) {
 
   std::filesystem::remove(db_path);
 }
+#endif
 
 TEST(BridgeActorTest, ShutdownCancelsSuspendedForwardingWithoutLateResume) {
   using namespace std::chrono_literals;

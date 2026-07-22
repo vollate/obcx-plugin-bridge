@@ -8,7 +8,7 @@ namespace bridge {
  * @brief 主机与容器路径转换管理器
  *
  * 用于处理主机挂载目录和容器内挂载目录之间的路径转换
- * 例如：主机路径 ~/Codes/OBCX/tests/llonebot/bridge_files
+ * 例如：主机路径 ~/Codes/OBCX/dev/onebot/llonebot/bridge_files
  *      容器路径 /root/llonebot/bridge_files
  */
 class PathManager {
@@ -24,7 +24,7 @@ public:
    * @brief 将相对路径转换为主机端绝对路径
    * @param relative_path 相对于挂载目录的路径，如 "temp/file.jpg"
    * @return 主机端完整路径，如
-   * "~/Codes/OBCX/tests/llonebot/bridge_files/temp/file.jpg"
+   * "~/Codes/OBCX/dev/onebot/llonebot/bridge_files/temp/file.jpg"
    */
   auto to_host_path(const std::string &relative_path) const -> std::string;
 
