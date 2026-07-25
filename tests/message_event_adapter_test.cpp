@@ -86,3 +86,35 @@ TEST(BridgeMessageEventAdapterTest,
   EXPECT_EQ(event->message.front().type, "text");
   EXPECT_EQ(event->message.front().data["text"], "hello from payload");
 }
+
+TEST(BridgeMessageEventAdapterTest, RebuildsPokeNoticeFromRawNoticeEnvelope) {
+  obcx::core::MessageEnvelope envelope;
+  envelope.id = "notice-qq-poke";
+  envelope.type = "obcx::core::events::RawNoticeEvent";
+  envelope.source_platform = "qq";
+  envelope.source_bot = "qq-main";
+  envelope.conversation_id = "group:qq-group";
+  envelope.timestamp = std::chrono::system_clock::time_point{
+      std::chrono::milliseconds{1720000000456}};
+  envelope.payload = {
+      {"notice_type", "notify"},
+      {"sender", "user-7"},
+      {"group_id", "qq-group"},
+      {"payload", {{"sub_type", "poke"}, {"target_id", 80008}}},
+  };
+  envelope.raw = {
+      {"time", 1720000000.456},  {"self_id", 90001},   {"post_type", "notice"},
+      {"notice_type", "notify"}, {"sub_type", "poke"}, {"user_id", 70007},
+      {"target_id", 80008},      {"group_id", 30003},
+  };
+
+  const auto event = bridge::notice_event_from_raw_notice(envelope);
+
+  ASSERT_TRUE(event.has_value());
+  EXPECT_EQ(event->notice_type, "notify");
+  EXPECT_EQ(event->user_id, "70007");
+  ASSERT_TRUE(event->group_id.has_value());
+  EXPECT_EQ(event->group_id.value(), "30003");
+  EXPECT_EQ(event->data["sub_type"], "poke");
+  EXPECT_EQ(event->data["target_id"], 80008);
+}

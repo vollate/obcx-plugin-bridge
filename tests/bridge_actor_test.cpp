@@ -147,6 +147,32 @@ auto command_message(std::string name, std::string platform = "telegram")
   return envelope;
 }
 
+auto raw_poke_notice() -> obcx::core::MessageEnvelope {
+  obcx::core::events::RawNoticeEvent notice{
+      .payload =
+          {
+              {"notice_type", "notify"},
+              {"sender", "user-7"},
+              {"group_id", "qq-group"},
+              {"payload", {{"sub_type", "poke"}, {"target_id", 80008}}},
+          },
+  };
+  obcx::core::MessageEnvelope envelope;
+  envelope.id = "notice-qq-poke";
+  envelope.type = obcx::core::canonical_message_type_name<decltype(notice)>();
+  envelope.source_platform = "qq";
+  envelope.source_bot = "qq-main";
+  envelope.conversation_id = "group:qq-group";
+  envelope.payload = notice;
+  envelope.raw = {
+      {"time", 1720000000.456}, {"self_id", 90001},
+      {"post_type", "notice"},  {"notice_type", "notify"},
+      {"sub_type", "poke"},     {"user_id", 70007},
+      {"target_id", 80008},     {"group_id", "qq-group"},
+  };
+  return envelope;
+}
+
 #if OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS
 auto bridge_message_stored(std::string source_platform,
                            std::string source_message_id, std::string group_id)
@@ -286,6 +312,24 @@ public:
   std::atomic_bool succeed_after_first = false;
 };
 
+class NoticeTestTelegramBot final : public obcx::core::TGBot {
+public:
+  NoticeTestTelegramBot() : TGBot(obcx::adapter::telegram::ProtocolAdapter{}) {}
+
+  auto send_group_message(std::string_view group_id,
+                          const obcx::common::Message &message)
+      -> asio::awaitable<std::string> override {
+    last_group_id = group_id;
+    last_message = message;
+    send_group_calls.fetch_add(1, std::memory_order_relaxed);
+    co_return R"({"ok":true,"result":{"message_id":8001}})";
+  }
+
+  std::atomic_int send_group_calls = 0;
+  std::string last_group_id;
+  obcx::common::Message last_message;
+};
+
 auto bridge_retry_services(
     const std::shared_ptr<obcx::core::DbManager> &db_manager,
     const std::shared_ptr<RetryTestQQBot> &qq_bot,
@@ -420,7 +464,14 @@ public:
     co_return true;
   }
 
+  auto handle_notice(const obcx::core::MessageEnvelope &notice)
+      -> asio::awaitable<bool> override {
+    seen_notices.push_back(notice);
+    co_return true;
+  }
+
   std::vector<obcx::core::MessageEnvelope> seen_messages;
+  std::vector<obcx::core::MessageEnvelope> seen_notices;
   std::vector<obcx::command::CommandInvocation> seen_commands;
 
 private:
@@ -486,6 +537,10 @@ TEST(BridgeActorTest, DeclaresTypedCommandsWithoutHandlerMetadata) {
   EXPECT_EQ(contract["commands"][2]["name"], "recall");
   EXPECT_FALSE(contract["commands"][0].contains("handler"));
   EXPECT_FALSE(contract["commands"][0].contains("callable"));
+  EXPECT_TRUE(
+      std::ranges::any_of(contract["accepted_inputs"], [](const auto &input) {
+        return input == "obcx::core::events::RawNoticeEvent";
+      }));
 }
 
 TEST(BridgeActorTest, HandlesTypedCommandAndReturnsContinueCompletion) {
@@ -536,6 +591,21 @@ TEST(BridgeActorTest, HandlesEveryConfiguredPlatformCommandAsTypedMessage) {
   EXPECT_EQ(forwarder->seen_commands[1].name, "poke");
   EXPECT_EQ(forwarder->seen_commands[2].source_platform, "qq");
   EXPECT_EQ(forwarder->seen_commands[2].name, "checkalive");
+}
+
+TEST(BridgeActorTest, RoutesTypedNoticeThroughActorForwarder) {
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  auto forwarder =
+      std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{});
+  services->register_service<bridge::IBridgeForwarder>(forwarder);
+
+  const auto result = run_actor(services, raw_poke_notice());
+
+  ASSERT_TRUE(result.ok());
+  ASSERT_EQ(forwarder->seen_notices.size(), 1U);
+  EXPECT_EQ(forwarder->seen_notices.front().source_platform, "qq");
+  EXPECT_EQ(forwarder->seen_notices.front().raw["sub_type"], "poke");
+  EXPECT_TRUE(result.emitted.empty());
 }
 
 TEST(BridgeActorTest, ProcessedStoredCommandIsNotForwardedOrMappedAgain) {
@@ -714,6 +784,36 @@ TEST(BridgeActorTest, ConvertsForwardingExceptionIntoRetryableFailure) {
 }
 
 #if OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS
+TEST(BridgeActorTest, ForwardsQqPokeNoticeToTelegramThroughRuntime) {
+  const auto db_path = temp_db_path("poke_notice");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  auto telegram_bot = std::make_shared<NoticeTestTelegramBot>();
+  auto registry = std::make_shared<obcx::core::BotRegistry>();
+  registry->register_bot("qq", "qq-main", qq_bot);
+  registry->register_bot("telegram", "tg-main", telegram_bot);
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  services->register_service<obcx::core::DbManager>(db_manager);
+  services->register_service<obcx::core::BotRegistry>(registry);
+  services->register_service<obcx::common::ActorConfigService>(
+      bridge_config_service(false));
+
+  const auto result = run_actor(services, raw_poke_notice());
+
+  ASSERT_TRUE(result.ok());
+  EXPECT_EQ(telegram_bot->send_group_calls.load(), 1);
+  EXPECT_EQ(telegram_bot->last_group_id, "tg-group");
+  ASSERT_EQ(telegram_bot->last_message.size(), 1U);
+  EXPECT_EQ(telegram_bot->last_message.front().type, "text");
+  EXPECT_NE(
+      telegram_bot->last_message.front().data["text"].get<std::string>().find(
+          "戳了戳"),
+      std::string::npos);
+
+  std::filesystem::remove(db_path);
+}
+
 TEST(BridgeActorTest, EnabledQqToTelegramFailurePersistsMessageRetry) {
   const auto db_path = temp_db_path("qq_to_tg_retry");
   auto db_manager = std::make_shared<obcx::core::DbManager>();

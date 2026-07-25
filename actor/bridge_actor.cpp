@@ -315,6 +315,36 @@ auto BridgeActor::handle(
   }
 }
 
+auto BridgeActor::handle(const obcx::core::events::RawNoticeEvent &notice,
+                         const obcx::core::MessageEnvelope &message,
+                         obcx::core::ActorContext &context)
+    -> obcx::core::ActorTask<obcx::core::ActorResult> {
+  (void)notice;
+  try {
+    auto executor = context.get_service<asio::any_io_executor>();
+    if (!executor) {
+      co_return obcx::core::ActorResult::failed(
+          "bridge_notice_executor_missing",
+          "bridge notice handling requires an Asio executor", true);
+    }
+    auto forwarder = resolve_forwarder(context, *executor);
+    if (!forwarder) {
+      co_return obcx::core::ActorResult::failed(
+          "bridge_notice_runtime_unavailable",
+          "bridge notice runtime is unavailable", true);
+    }
+    co_await context.await_asio(
+        *executor,
+        [forwarder, forwarded = message]() mutable -> asio::awaitable<void> {
+          (void)co_await forwarder->handle_notice(forwarded);
+        });
+    co_return obcx::core::ActorResult::success();
+  } catch (const std::exception &error) {
+    co_return obcx::core::ActorResult::failed("bridge_notice_failed",
+                                              error.what(), true);
+  }
+}
+
 #ifndef OBCX_BRIDGE_ACTOR_NO_EXPORT
 OBCX_ACTOR_EXPORT_V2(bridge::BridgeActor)
 #endif

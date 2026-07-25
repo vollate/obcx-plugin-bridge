@@ -73,6 +73,18 @@ auto require_source_bot(
   return require_bot(registry, invocation.source_platform);
 }
 
+auto require_source_bot(
+    const std::shared_ptr<obcx::core::BotRegistry> &registry,
+    const obcx::core::MessageEnvelope &message) -> obcx::core::RegisteredBot {
+  if (registry && !message.source_bot.empty()) {
+    if (auto bot =
+            registry->find_bot(message.source_platform, message.source_bot)) {
+      return *bot;
+    }
+  }
+  return require_bot(registry, message.source_platform);
+}
+
 auto command_message(const obcx::command::CommandInvocation &invocation)
     -> obcx::core::MessageEnvelope {
   obcx::core::MessageEnvelope message;
@@ -446,6 +458,28 @@ auto BridgeForwardingRuntime::handle_command(
     co_return true;
   }
   co_return false;
+}
+
+auto BridgeForwardingRuntime::handle_notice(
+    const obcx::core::MessageEnvelope &message)
+    -> boost::asio::awaitable<bool> {
+  if (shutting_down_.load(std::memory_order_acquire)) {
+    throw std::runtime_error("bridge forwarding runtime is shutting down");
+  }
+  if (message.source_platform != "qq") {
+    co_return false;
+  }
+  const auto notice = notice_event_from_raw_notice(message);
+  if (!notice.has_value()) {
+    co_return false;
+  }
+
+  const auto source = require_source_bot(bot_registry_, message);
+  const auto target = require_bot(bot_registry_, "telegram");
+  obcx::common::Event event = *notice;
+  co_await qq_handler_->handle_recall_event(*target.bot, *source.bot,
+                                            std::move(event));
+  co_return true;
 }
 
 } // namespace bridge

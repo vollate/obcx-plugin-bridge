@@ -57,6 +57,7 @@ The supported pipeline is:
 RawMessageEvent -> command coordinator -> typed bridge command -> Continue
 obcx::core::events::RawMessageEvent -> message_store ->
 obcx::message_store::events::MessageStored -> bridge
+obcx::core::events::RawNoticeEvent -> bridge
 ```
 
 The actor declares typed observations for Telegram `recall`, `checkalive`, and
@@ -68,6 +69,12 @@ Telegram menu replacement belong to the runtime adapter. The actor returns
 event; the inherited `obcx.command.processed` header makes the later
 `MessageStored` bridge stage a no-op so the command is neither executed nor
 forwarded twice.
+
+QQ notices use a separate actor pipeline. The runtime converts platform
+`NoticeEvent` values into `obcx::core::events::RawNoticeEvent`; bridge consumes
+that typed input to retain the former plugin behavior for QQ poke and group
+recall notices. Configure the `pipelines.notice` stage shown in the example;
+the actor does not register bot callbacks directly.
 
 The actor uses the core `DbManager` service. `db = "main"` selects the
 configured database instance and `db_namespace = "bridge"` isolates the

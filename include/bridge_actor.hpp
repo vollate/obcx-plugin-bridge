@@ -67,6 +67,10 @@ public:
               const obcx::core::MessageEnvelope &message,
               obcx::core::ActorContext &context)
       -> obcx::core::ActorTask<obcx::core::ActorResult>;
+  auto handle(const obcx::core::events::RawNoticeEvent &notice,
+              const obcx::core::MessageEnvelope &message,
+              obcx::core::ActorContext &context)
+      -> obcx::core::ActorTask<obcx::core::ActorResult>;
   auto handle(const commands::RecallCommand &request,
               const obcx::core::MessageEnvelope &message,
               obcx::core::ActorContext &context)

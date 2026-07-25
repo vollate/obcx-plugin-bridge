@@ -33,6 +33,11 @@ public:
       -> boost::asio::awaitable<bool> {
     co_return false;
   }
+
+  virtual auto handle_notice(const obcx::core::MessageEnvelope &)
+      -> boost::asio::awaitable<bool> {
+    co_return false;
+  }
 };
 
 } // namespace bridge

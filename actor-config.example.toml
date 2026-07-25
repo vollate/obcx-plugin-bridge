@@ -25,6 +25,9 @@ type = "http"
 host = "api.telegram.org"
 port = 443
 access_token = "YOUR_BOT_TOKEN"
+# Required to route /command@bot_username without accepting another bot's
+# explicitly targeted commands.
+bot_username = "your_bot_username"
 use_ssl = true
 connect_timeout = 5000
 poll_timeout = 25000
@@ -89,6 +92,15 @@ commands = ["checkalive"]
 platforms = ["qq"]
 bots = ["qq_bot"]
 fallback = "continue"
+
+[pipelines.notice]
+source = "obcx::core::events::RawNoticeEvent"
+
+[[pipelines.notice.stages]]
+name = "observe"
+actor = "bridge"
+input = "obcx::core::events::RawNoticeEvent"
+mode = "await"
 
 [pipelines.message]
 source = "obcx::core::events::RawMessageEvent"

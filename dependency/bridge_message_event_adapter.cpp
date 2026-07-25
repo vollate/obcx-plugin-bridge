@@ -140,4 +140,40 @@ auto message_event_from_message_stored(
   return event;
 }
 
+auto notice_event_from_raw_notice(const obcx::core::MessageEnvelope &message)
+    -> std::optional<obcx::common::NoticeEvent> {
+  if (message.type != "obcx::core::events::RawNoticeEvent" ||
+      !message.payload.is_object()) {
+    return std::nullopt;
+  }
+
+  auto raw =
+      message.raw.is_object() ? message.raw : obcx::common::json::object();
+  const auto notice_payload = payload_object(message);
+  for (const auto &[key, value] : notice_payload.items()) {
+    if (!raw.contains(key)) {
+      raw[key] = value;
+    }
+  }
+
+  if (!raw.contains("time")) {
+    raw["time"] = unix_seconds(message.timestamp);
+  }
+  set_if_missing(raw, "self_id", message.source_bot);
+  set_if_missing(raw, "post_type", "notice");
+  set_if_missing(raw, "notice_type",
+                 json_string(message.payload, "notice_type"));
+  set_if_missing(raw, "user_id", json_string(message.payload, "sender"));
+  set_if_missing(raw, "group_id", json_string(message.payload, "group_id"));
+  if (json_string(raw, "notice_type").empty()) {
+    return std::nullopt;
+  }
+
+  obcx::common::NoticeEvent event;
+  event.from_json(raw);
+  event.type = obcx::common::EventType::notice;
+  event.data = raw;
+  return event;
+}
+
 } // namespace bridge
