@@ -163,12 +163,77 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
   return forwarder_;
 }
 
+auto BridgeActor::handle(const commands::RecallCommand &request,
+                         const obcx::core::MessageEnvelope &message,
+                         obcx::core::ActorContext &context)
+    -> obcx::core::ActorTask<obcx::core::ActorResult> {
+  return handle_command(request.invocation, message, context);
+}
+
+auto BridgeActor::handle(const commands::CheckAliveCommand &request,
+                         const obcx::core::MessageEnvelope &message,
+                         obcx::core::ActorContext &context)
+    -> obcx::core::ActorTask<obcx::core::ActorResult> {
+  return handle_command(request.invocation, message, context);
+}
+
+auto BridgeActor::handle(const commands::PokeCommand &request,
+                         const obcx::core::MessageEnvelope &message,
+                         obcx::core::ActorContext &context)
+    -> obcx::core::ActorTask<obcx::core::ActorResult> {
+  return handle_command(request.invocation, message, context);
+}
+
+auto BridgeActor::handle_command(
+    const obcx::command::CommandInvocation &invocation,
+    const obcx::core::MessageEnvelope &message,
+    obcx::core::ActorContext &context)
+    -> obcx::core::ActorTask<obcx::core::ActorResult> {
+  try {
+    auto executor = context.get_service<asio::any_io_executor>();
+    if (!executor) {
+      co_return obcx::core::ActorResult::failed(
+          "bridge_command_executor_missing",
+          "bridge command handling requires an Asio executor", true);
+    }
+    auto forwarder = resolve_forwarder(context, *executor);
+    if (!forwarder) {
+      co_return obcx::core::ActorResult::failed(
+          "bridge_command_runtime_unavailable",
+          "bridge command runtime is unavailable", true);
+    }
+    const auto handled = co_await context.await_asio(
+        *executor, [forwarder, invocation]() -> asio::awaitable<bool> {
+          co_return co_await forwarder->handle_command(invocation);
+        });
+    if (!handled) {
+      co_return obcx::core::ActorResult::failed(
+          "bridge_command_unsupported",
+          "bridge command is unsupported for the source platform", false);
+    }
+    auto result = obcx::core::ActorResult::success();
+    result.emit(
+        obcx::command::CommandCompleted{
+            .transaction_id = invocation.transaction_id,
+            .propagation = obcx::command::Propagation::Continue,
+        },
+        message);
+    co_return result;
+  } catch (const std::exception &error) {
+    co_return obcx::core::ActorResult::failed("bridge_command_failed",
+                                              error.what(), true);
+  }
+}
+
 auto BridgeActor::handle(
     const obcx::message_store::events::MessageStored &stored,
     const obcx::core::MessageEnvelope &message,
     obcx::core::ActorContext &context)
     -> obcx::core::ActorTask<obcx::core::ActorResult> {
   (void)stored;
+  if (message.headers.contains(std::string{obcx::command::processed_header})) {
+    co_return obcx::core::ActorResult::success();
+  }
   try {
     auto executor = context.get_service<asio::any_io_executor>();
     auto repository = resolve_repository(context);

@@ -54,9 +54,20 @@ share/obcx/actors/vollate.bridge/actor.toml
 The supported pipeline is:
 
 ```text
+RawMessageEvent -> command coordinator -> typed bridge command -> Continue
 obcx::core::events::RawMessageEvent -> message_store ->
 obcx::message_store::events::MessageStored -> bridge
 ```
+
+The actor declares typed observations for Telegram `recall`, `checkalive`, and
+`poke`, plus QQ `checkalive`. Activate them explicitly with
+`[[command_runtime.routes]]`, as shown in
+[`actor-config.example.toml`](actor-config.example.toml). Platform parsing and
+Telegram menu replacement belong to the runtime adapter. The actor returns
+`CommandCompleted(Continue)`, allowing message-store to persist the source
+event; the inherited `obcx.command.processed` header makes the later
+`MessageStored` bridge stage a no-op so the command is neither executed nor
+forwarded twice.
 
 The actor uses the core `DbManager` service. `db = "main"` selects the
 configured database instance and `db_namespace = "bridge"` isolates the

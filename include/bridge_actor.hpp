@@ -3,6 +3,7 @@
 #include "bridge_forwarder.hpp"
 #include "bridge_state_repository.hpp"
 
+#include <core/actor_commands.hpp>
 #include <core/actor_messages.hpp>
 #include <core/reflected_actor.hpp>
 
@@ -21,10 +22,27 @@ struct BridgeConfig;
 
 namespace bridge {
 
+namespace commands {
+struct RecallCommand final : obcx::command::RequestMessage<RecallCommand> {};
+struct CheckAliveCommand final
+    : obcx::command::RequestMessage<CheckAliveCommand> {};
+struct PokeCommand final : obcx::command::RequestMessage<PokeCommand> {};
+} // namespace commands
+
 class BridgeActor final : public obcx::core::ReflectedActor<BridgeActor> {
 public:
   static constexpr std::string_view actor_name = "bridge";
   static constexpr std::string_view actor_version = "0.1.0";
+
+  static constexpr auto command_contract() {
+    return obcx::command::catalog(
+        obcx::command::observe<commands::RecallCommand>(
+            "recall", "Recall the replied bridged message"),
+        obcx::command::observe<commands::CheckAliveCommand>(
+            "checkalive", "Check the bridge platform connection"),
+        obcx::command::observe<commands::PokeCommand>(
+            "poke", "Poke the replied QQ user"));
+  }
 
   [[nodiscard]] static auto configuration_contract() -> obcx::common::json {
     return {
@@ -49,8 +67,24 @@ public:
               const obcx::core::MessageEnvelope &message,
               obcx::core::ActorContext &context)
       -> obcx::core::ActorTask<obcx::core::ActorResult>;
+  auto handle(const commands::RecallCommand &request,
+              const obcx::core::MessageEnvelope &message,
+              obcx::core::ActorContext &context)
+      -> obcx::core::ActorTask<obcx::core::ActorResult>;
+  auto handle(const commands::CheckAliveCommand &request,
+              const obcx::core::MessageEnvelope &message,
+              obcx::core::ActorContext &context)
+      -> obcx::core::ActorTask<obcx::core::ActorResult>;
+  auto handle(const commands::PokeCommand &request,
+              const obcx::core::MessageEnvelope &message,
+              obcx::core::ActorContext &context)
+      -> obcx::core::ActorTask<obcx::core::ActorResult>;
 
 private:
+  auto handle_command(const obcx::command::CommandInvocation &invocation,
+                      const obcx::core::MessageEnvelope &message,
+                      obcx::core::ActorContext &context)
+      -> obcx::core::ActorTask<obcx::core::ActorResult>;
   auto resolve_repository(obcx::core::ActorContext &context)
       -> std::shared_ptr<BridgeStateRepository>;
   auto resolve_forwarder(obcx::core::ActorContext &context,

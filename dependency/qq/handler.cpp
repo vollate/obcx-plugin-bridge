@@ -81,15 +81,8 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     }
   }
 
-  // /checkalive 是唯一会被转发逻辑短路成回应的命令；其它 /
-  // 开头的消息一律不转发。
-  if (event.raw_message.starts_with("/checkalive")) {
-    OBCX_INFO("检测到 /checkalive 命令，处理存活检查请求");
-    co_await command_handler_->handle_checkalive_command(
-        telegram_bot, qq_bot, event, telegram_group_id);
-    co_return;
-  }
-
+  // Slash commands are handled by the generation command coordinator before
+  // stored messages reach this forwarding path.
   if (event.raw_message.starts_with("/")) {
     OBCX_DEBUG("忽略未处理的命令消息，不转发: {}",
                event.raw_message.substr(0, 20));

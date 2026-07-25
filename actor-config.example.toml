@@ -73,6 +73,23 @@ gif_max_fps = 0
 gif_max_width = 0
 gif_max_colors = 256
 
+[command_runtime]
+timeout_ms = 5000
+
+[[command_runtime.routes]]
+actor = "bridge"
+commands = ["recall", "checkalive", "poke"]
+platforms = ["telegram"]
+bots = ["telegram_bot"]
+fallback = "continue"
+
+[[command_runtime.routes]]
+actor = "bridge"
+commands = ["checkalive"]
+platforms = ["qq"]
+bots = ["qq_bot"]
+fallback = "continue"
+
 [pipelines.message]
 source = "obcx::core::events::RawMessageEvent"
 

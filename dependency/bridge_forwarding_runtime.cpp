@@ -60,6 +60,36 @@ auto require_bot(const std::shared_ptr<obcx::core::BotRegistry> &registry,
   return bot.value();
 }
 
+auto require_source_bot(
+    const std::shared_ptr<obcx::core::BotRegistry> &registry,
+    const obcx::command::CommandInvocation &invocation)
+    -> obcx::core::RegisteredBot {
+  if (registry && !invocation.source_bot.empty()) {
+    if (auto bot = registry->find_bot(invocation.source_platform,
+                                      invocation.source_bot)) {
+      return *bot;
+    }
+  }
+  return require_bot(registry, invocation.source_platform);
+}
+
+auto command_message(const obcx::command::CommandInvocation &invocation)
+    -> obcx::core::MessageEnvelope {
+  obcx::core::MessageEnvelope message;
+  message.id = invocation.source_message_id;
+  message.type = "obcx::message_store::events::MessageStored";
+  message.source_platform = invocation.source_platform;
+  message.source_bot = invocation.source_bot;
+  message.conversation_id = invocation.conversation_id;
+  message.payload = invocation.source_event;
+  if (invocation.source_event.is_object() &&
+      invocation.source_event.contains("payload") &&
+      invocation.source_event.at("payload").is_object()) {
+    message.raw = invocation.source_event.at("payload");
+  }
+  return message;
+}
+
 auto is_telegram_edit(const obcx::common::MessageEvent &event) -> bool {
   return event.sub_type == "edited" || (event.data.contains("is_edited") &&
                                         event.data["is_edited"].is_boolean() &&
@@ -352,6 +382,70 @@ auto BridgeForwardingRuntime::forward_message(
                                 .target_platform = to_platform,
                                 .target_bot = target_bot.bot_id,
                                 .target_message_id = target_message_id.value()};
+}
+
+auto BridgeForwardingRuntime::handle_command(
+    const obcx::command::CommandInvocation &invocation)
+    -> boost::asio::awaitable<bool> {
+  if (shutting_down_.load(std::memory_order_acquire)) {
+    throw std::runtime_error("bridge forwarding runtime is shutting down");
+  }
+  const auto event =
+      message_event_from_message_stored(command_message(invocation));
+  if (!event || event->message_type != "group" ||
+      !event->group_id.has_value()) {
+    co_return false;
+  }
+
+  const auto source = require_source_bot(bot_registry_, invocation);
+  if (invocation.source_platform == "telegram") {
+    if (invocation.name != "recall" && invocation.name != "checkalive" &&
+        invocation.name != "poke") {
+      co_return false;
+    }
+    const auto target = require_bot(bot_registry_, "qq");
+    const auto telegram_group_id = *event->group_id;
+    const auto *mapping = config_->bridge_config(telegram_group_id);
+    if (mapping == nullptr) {
+      co_return false;
+    }
+    std::string qq_group_id;
+    if (mapping->mode == BridgeMode::GROUP_TO_GROUP) {
+      qq_group_id = mapping->qq_group_id;
+    } else {
+      const auto topic_id =
+          event->data.value("message_thread_id", std::int64_t{-1});
+      qq_group_id = config_->qq_group_id_for_topic(telegram_group_id, topic_id);
+    }
+    if (qq_group_id.empty()) {
+      co_return false;
+    }
+    if (invocation.name == "recall") {
+      co_await telegram_handler_->handle_recall_command(
+          *source.bot, *target.bot, *event, qq_group_id);
+    } else if (invocation.name == "checkalive") {
+      co_await telegram_handler_->handle_checkalive_command(
+          *source.bot, *target.bot, *event, qq_group_id);
+    } else {
+      co_await telegram_handler_->handle_poke_command(*source.bot, *target.bot,
+                                                      *event, qq_group_id);
+    }
+    co_return true;
+  }
+
+  if (invocation.source_platform == "qq" && invocation.name == "checkalive") {
+    const auto target = require_bot(bot_registry_, "telegram");
+    const auto [telegram_group_id, topic_id] =
+        config_->tg_group_and_topic_id(*event->group_id);
+    (void)topic_id;
+    if (telegram_group_id.empty()) {
+      co_return false;
+    }
+    co_await qq_handler_->handle_checkalive_command(*target.bot, *source.bot,
+                                                    *event, telegram_group_id);
+    co_return true;
+  }
+  co_return false;
 }
 
 } // namespace bridge

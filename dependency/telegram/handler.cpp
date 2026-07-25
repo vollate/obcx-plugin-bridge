@@ -168,39 +168,6 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
     }
   }
 
-  if (event.raw_message.starts_with("/recall")) {
-    OBCX_INFO("检测到 /recall 命令，处理撤回请求");
-    co_await command_handler_->handle_recall_command(telegram_bot, qq_bot,
-                                                     event, qq_group_id);
-    co_return;
-  }
-
-  if (event.raw_message.starts_with("/checkalive")) {
-    if (config_->bridge_config(telegram_group_id) == nullptr) {
-      OBCX_DEBUG("Telegram群 {} 不在配置中，忽略 /checkalive 命令",
-                 telegram_group_id);
-      co_return;
-    }
-
-    OBCX_INFO("检测到 /checkalive 命令，处理存活检查请求");
-    co_await command_handler_->handle_checkalive_command(telegram_bot, qq_bot,
-                                                         event, qq_group_id);
-    co_return;
-  }
-
-  if (event.raw_message.starts_with("/poke")) {
-    if (config_->bridge_config(telegram_group_id) == nullptr) {
-      OBCX_DEBUG("Telegram群 {} 不在配置中，忽略 /poke 命令",
-                 telegram_group_id);
-      co_return;
-    }
-
-    OBCX_INFO("检测到 /poke 命令，处理戳一戳请求");
-    co_await command_handler_->handle_poke_command(telegram_bot, qq_bot, event,
-                                                   qq_group_id);
-    co_return;
-  }
-
   // 忽略其他所有 / 开头的命令，不转发
   if (event.raw_message.starts_with("/")) {
     OBCX_DEBUG("忽略未处理的命令消息，不转发: {}",
@@ -407,6 +374,23 @@ auto TelegramHandler::handle_recall_command(obcx::core::IBot &telegram_bot,
     -> boost::asio::awaitable<void> {
   co_await command_handler_->handle_recall_command(telegram_bot, qq_bot, event,
                                                    qq_group_id);
+}
+
+auto TelegramHandler::handle_checkalive_command(
+    obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
+    obcx::common::MessageEvent event, std::string_view qq_group_id)
+    -> boost::asio::awaitable<void> {
+  co_await command_handler_->handle_checkalive_command(
+      telegram_bot, qq_bot, std::move(event), qq_group_id);
+}
+
+auto TelegramHandler::handle_poke_command(obcx::core::IBot &telegram_bot,
+                                          obcx::core::IBot &qq_bot,
+                                          obcx::common::MessageEvent event,
+                                          std::string_view qq_group_id)
+    -> boost::asio::awaitable<void> {
+  co_await command_handler_->handle_poke_command(telegram_bot, qq_bot,
+                                                 std::move(event), qq_group_id);
 }
 
 void TelegramHandler::flush_pending_media_groups() {

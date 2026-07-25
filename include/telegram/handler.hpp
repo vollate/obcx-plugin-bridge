@@ -89,6 +89,16 @@ public:
                              obcx::common::MessageEvent event,
                              std::string_view qq_group_id)
       -> boost::asio::awaitable<void>;
+  auto handle_checkalive_command(obcx::core::IBot &telegram_bot,
+                                 obcx::core::IBot &qq_bot,
+                                 obcx::common::MessageEvent event,
+                                 std::string_view qq_group_id)
+      -> boost::asio::awaitable<void>;
+  auto handle_poke_command(obcx::core::IBot &telegram_bot,
+                           obcx::core::IBot &qq_bot,
+                           obcx::common::MessageEvent event,
+                           std::string_view qq_group_id)
+      -> boost::asio::awaitable<void>;
 
   /**
    * @brief Synchronously flush any buffered Telegram media-groups.

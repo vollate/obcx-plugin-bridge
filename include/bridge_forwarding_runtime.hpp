@@ -36,6 +36,8 @@ public:
 
   auto forward_message(const obcx::core::MessageEnvelope &message)
       -> boost::asio::awaitable<BridgeForwardResult> override;
+  auto handle_command(const obcx::command::CommandInvocation &invocation)
+      -> boost::asio::awaitable<bool> override;
 
   void shutdown() noexcept;
 

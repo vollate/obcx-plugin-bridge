@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/actor.hpp>
+#include <core/actor_commands.hpp>
 
 #include <boost/asio/awaitable.hpp>
 
@@ -27,6 +28,11 @@ public:
 
   virtual auto forward_message(const obcx::core::MessageEnvelope &message)
       -> boost::asio::awaitable<BridgeForwardResult> = 0;
+
+  virtual auto handle_command(const obcx::command::CommandInvocation &)
+      -> boost::asio::awaitable<bool> {
+    co_return false;
+  }
 };
 
 } // namespace bridge

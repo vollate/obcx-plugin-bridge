@@ -109,6 +109,44 @@ auto message_stored(const std::string &source_message_id,
   return envelope;
 }
 
+template <typename Command>
+auto command_message(std::string name, std::string platform = "telegram")
+    -> obcx::core::MessageEnvelope {
+  Command request;
+  request.invocation = {
+      .transaction_id = "command-1",
+      .name = std::move(name),
+      .arguments = {},
+      .source_message_id = "source-command-1",
+      .source_platform = std::move(platform),
+      .source_bot = "primary",
+      .conversation_id = "group:42",
+      .sender = "7",
+      .source_event =
+          {
+              {"message_id", "source-command-1"},
+              {"sender", "7"},
+              {"group_id", "42"},
+              {"message_type", "group"},
+              {"payload", {{"raw_message", "/checkalive"}}},
+          },
+  };
+  obcx::core::MessageEnvelope envelope;
+  envelope.id = "command-request-1";
+  envelope.type = obcx::core::canonical_message_type_name<Command>();
+  envelope.source_platform = request.invocation.source_platform;
+  envelope.source_bot = request.invocation.source_bot;
+  envelope.conversation_id = request.invocation.conversation_id;
+  envelope.payload = request;
+  envelope.headers = {
+      {std::string{obcx::command::transaction_header}, "command-1"},
+      {std::string{obcx::command::actor_header}, "bridge"},
+      {std::string{obcx::command::generation_header}, "1"},
+      {std::string{obcx::command::reply_header}, "coordinator"},
+  };
+  return envelope;
+}
+
 #if OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS
 auto bridge_message_stored(std::string source_platform,
                            std::string source_message_id, std::string group_id)
@@ -376,7 +414,14 @@ public:
     co_return result_;
   }
 
+  auto handle_command(const obcx::command::CommandInvocation &invocation)
+      -> asio::awaitable<bool> override {
+    seen_commands.push_back(invocation);
+    co_return true;
+  }
+
   std::vector<obcx::core::MessageEnvelope> seen_messages;
+  std::vector<obcx::command::CommandInvocation> seen_commands;
 
 private:
   bridge::BridgeForwardResult result_;
@@ -430,6 +475,85 @@ public:
 private:
   std::promise<void> started_;
 };
+
+TEST(BridgeActorTest, DeclaresTypedCommandsWithoutHandlerMetadata) {
+  const auto contract =
+      obcx::common::json::parse(bridge::BridgeActor::input_contract_json());
+  ASSERT_TRUE(contract.contains("commands"));
+  ASSERT_EQ(contract["commands"].size(), 3U);
+  EXPECT_EQ(contract["commands"][0]["name"], "checkalive");
+  EXPECT_EQ(contract["commands"][1]["name"], "poke");
+  EXPECT_EQ(contract["commands"][2]["name"], "recall");
+  EXPECT_FALSE(contract["commands"][0].contains("handler"));
+  EXPECT_FALSE(contract["commands"][0].contains("callable"));
+}
+
+TEST(BridgeActorTest, HandlesTypedCommandAndReturnsContinueCompletion) {
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  auto forwarder =
+      std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{});
+  services->register_service<bridge::IBridgeForwarder>(forwarder);
+
+  const auto result = run_actor(
+      services,
+      command_message<bridge::commands::CheckAliveCommand>("checkalive"));
+
+  ASSERT_TRUE(result.ok());
+  ASSERT_EQ(forwarder->seen_commands.size(), 1U);
+  EXPECT_EQ(forwarder->seen_commands.front().name, "checkalive");
+  ASSERT_EQ(result.emitted.size(), 1U);
+  EXPECT_EQ(result.emitted.front().type,
+            obcx::core::canonical_message_type_name<
+                obcx::command::CommandCompleted>());
+  const auto completion =
+      result.emitted.front().payload.get<obcx::command::CommandCompleted>();
+  EXPECT_EQ(completion.transaction_id, "command-1");
+  EXPECT_EQ(completion.propagation, obcx::command::Propagation::Continue);
+}
+
+TEST(BridgeActorTest, HandlesEveryConfiguredPlatformCommandAsTypedMessage) {
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  auto forwarder =
+      std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{});
+  services->register_service<bridge::IBridgeForwarder>(forwarder);
+
+  EXPECT_TRUE(
+      run_actor(services,
+                command_message<bridge::commands::RecallCommand>("recall"))
+          .ok());
+  EXPECT_TRUE(run_actor(services,
+                        command_message<bridge::commands::PokeCommand>("poke"))
+                  .ok());
+  EXPECT_TRUE(
+      run_actor(services, command_message<bridge::commands::CheckAliveCommand>(
+                              "checkalive", "qq"))
+          .ok());
+
+  ASSERT_EQ(forwarder->seen_commands.size(), 3U);
+  EXPECT_EQ(forwarder->seen_commands[0].source_platform, "telegram");
+  EXPECT_EQ(forwarder->seen_commands[0].name, "recall");
+  EXPECT_EQ(forwarder->seen_commands[1].source_platform, "telegram");
+  EXPECT_EQ(forwarder->seen_commands[1].name, "poke");
+  EXPECT_EQ(forwarder->seen_commands[2].source_platform, "qq");
+  EXPECT_EQ(forwarder->seen_commands[2].name, "checkalive");
+}
+
+TEST(BridgeActorTest, ProcessedStoredCommandIsNotForwardedOrMappedAgain) {
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  auto forwarder =
+      std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{});
+  services->register_service<bridge::IBridgeForwarder>(forwarder);
+  auto stored = message_stored("command-source", "");
+  stored.payload.erase("target_platform");
+  stored.payload.erase("target_message_id");
+  stored.headers.emplace(std::string{obcx::command::processed_header}, "true");
+
+  const auto result = run_actor(services, std::move(stored));
+
+  EXPECT_TRUE(result.ok());
+  EXPECT_TRUE(result.emitted.empty());
+  EXPECT_TRUE(forwarder->seen_messages.empty());
+}
 
 TEST(BridgeActorTest, PersistsMappingAndEmitsMessageForwarded) {
   const auto db_path = temp_db_path("forwarded");
