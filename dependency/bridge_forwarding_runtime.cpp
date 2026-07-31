@@ -302,12 +302,18 @@ BridgeForwardingRuntime::BridgeForwardingRuntime(
     std::shared_ptr<const BridgeConfig> config,
     std::shared_ptr<BridgeStateRepository> state_repository,
     std::shared_ptr<ReceivedMessageRepository> received_message_repository,
-    boost::asio::any_io_executor buffer_executor)
+    boost::asio::any_io_executor buffer_executor,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
     : bot_registry_(std::move(bot_registry)), config_(std::move(config)),
       state_repository_(std::move(state_repository)),
-      received_message_repository_(std::move(received_message_repository)) {
+      received_message_repository_(std::move(received_message_repository)),
+      blocking_executor_(std::move(blocking_executor)) {
   if (!config_) {
     throw std::invalid_argument("bridge forwarding requires configuration");
+  }
+  if (!blocking_executor_) {
+    throw std::invalid_argument(
+        "bridge forwarding requires BlockingExecutor service");
   }
 
   std::shared_ptr<RetryQueueManager> retry_manager;
@@ -324,10 +330,11 @@ BridgeForwardingRuntime::BridgeForwardingRuntime(
   }
 
   qq_handler_ = std::make_shared<QQHandler>(
-      config_, retry_manager, state_repository_, received_message_repository_);
+      config_, retry_manager, state_repository_, received_message_repository_,
+      blocking_executor_);
   telegram_handler_ = std::make_shared<TelegramHandler>(
       config_, std::move(retry_manager), std::move(buffer_executor),
-      state_repository_, received_message_repository_);
+      state_repository_, received_message_repository_, blocking_executor_);
 }
 
 BridgeForwardingRuntime::~BridgeForwardingRuntime() { shutdown(); }
@@ -382,8 +389,12 @@ auto BridgeForwardingRuntime::forward_message(
                                               event.value());
   }
 
-  auto target_message_id = state_repository_->get_target_message_id(
-      from_platform, event->message_id, to_platform);
+  auto target_message_id = co_await blocking_executor_->run(
+      [repository = state_repository_, from_platform,
+       source_message_id = event->message_id, to_platform] {
+        return repository->get_target_message_id(
+            from_platform, source_message_id, to_platform);
+      });
   if (!target_message_id.has_value()) {
     throw std::runtime_error(
         "bridge forwarding completed without persisted mapping");

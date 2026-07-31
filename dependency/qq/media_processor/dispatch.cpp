@@ -6,9 +6,11 @@ namespace bridge::qq {
 
 QQMediaProcessor::QQMediaProcessor(
     std::shared_ptr<const bridge::BridgeConfig> config,
-    std::shared_ptr<bridge::BridgeStateRepository> state_repository)
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
     : config_(std::move(config)),
-      state_repository_(std::move(state_repository)) {}
+      state_repository_(std::move(state_repository)),
+      blocking_executor_(std::move(blocking_executor)) {}
 
 auto QQMediaProcessor::process_qq_media_segment(
     obcx::core::IBot &qq_bot, obcx::core::IBot &telegram_bot,

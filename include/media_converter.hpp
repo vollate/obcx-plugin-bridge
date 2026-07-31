@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <future>
 #include <string>
 #include <string_view>
 
@@ -36,16 +35,6 @@ public:
                                   int max_duration = 5, int max_width = 0,
                                   int max_fps = 0, int max_colors = 256)
       -> bool;
-
-  /**
-   * @brief Async version of convert_webm_to_gif
-   */
-  static auto convert_webm_to_gif_async(std::string ffmpeg_path,
-                                        const std::string &webm_path,
-                                        const std::string &output_path,
-                                        int max_duration = 5, int max_width = 0,
-                                        int max_fps = 0, int max_colors = 256)
-      -> std::future<bool>;
 
   /**
    * @brief Convert WebM to GIF with multi-tier fallback and size constraint

@@ -20,18 +20,21 @@ QQHandler::QQHandler(
     std::shared_ptr<const BridgeConfig> config,
     std::shared_ptr<RetryQueueManager> retry_manager,
     std::shared_ptr<BridgeStateRepository> state_repository,
-    std::shared_ptr<ReceivedMessageRepository> received_message_repository)
+    std::shared_ptr<ReceivedMessageRepository> received_message_repository,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
     : config_(std::move(config)), retry_manager_(std::move(retry_manager)),
       state_repository_(std::move(state_repository)),
       received_message_repository_(std::move(received_message_repository)),
-      media_processor_(
-          std::make_unique<qq::QQMediaProcessor>(config_, state_repository_)),
-      command_handler_(
-          std::make_unique<qq::QQCommandHandler>(state_repository_)),
+      blocking_executor_(std::move(blocking_executor)),
+      media_processor_(std::make_unique<qq::QQMediaProcessor>(
+          config_, state_repository_, blocking_executor_)),
+      command_handler_(std::make_unique<qq::QQCommandHandler>(
+          state_repository_, blocking_executor_)),
       event_handler_(std::make_unique<qq::QQEventHandler>(
-          config_, state_repository_, received_message_repository_)),
+          config_, state_repository_, received_message_repository_,
+          blocking_executor_)),
       message_formatter_(std::make_unique<qq::QQMessageFormatter>(
-          config_, state_repository_)) {}
+          config_, state_repository_, blocking_executor_)) {}
 
 // 析构函数需要在这里定义，以确保所有子模块类的完整定义都可见
 QQHandler::~QQHandler() = default;
@@ -87,10 +90,14 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     co_return;
   }
 
-  const auto existing_target_message_id =
-      state_repository_ ? state_repository_->get_target_message_id(
-                              "qq", event.message_id, "telegram")
-                        : std::optional<std::string>{};
+  std::optional<std::string> existing_target_message_id;
+  if (state_repository_) {
+    existing_target_message_id = co_await blocking_executor_->run(
+        [repository = state_repository_, message_id = event.message_id] {
+          return repository->get_target_message_id("qq", message_id,
+                                                   "telegram");
+        });
+  }
   if (existing_target_message_id.has_value()) {
     OBCX_DEBUG("QQ消息 {} 已转发到Telegram，跳过重复处理", event.message_id);
     co_return;
@@ -204,7 +211,10 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
           mapping.target_message_id = telegram_message_id.value();
           mapping.created_at = std::chrono::system_clock::now();
           if (state_repository_) {
-            state_repository_->add_message_mapping(mapping);
+            (void)co_await blocking_executor_->run(
+                [repository = state_repository_, mapping] {
+                  return repository->add_message_mapping(mapping);
+                });
           }
 
           OBCX_INFO("QQ消息 {} 成功转发到Telegram，Telegram消息ID: {}",
@@ -226,10 +236,14 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
         config_->enable_retry_queue) {
       OBCX_INFO("消息发送失败，添加到重试队列: {} -> {}", event.message_id,
                 telegram_group_id);
-      retry_manager_->add_message_retry(
-          "qq", "telegram", event.message_id, message_to_send,
-          telegram_group_id, qq_group_id, topic_id,
-          config_->message_retry_max_attempts, failure_reason);
+      co_await blocking_executor_->run(
+          [retry_manager = retry_manager_, message_id = event.message_id,
+           message = message_to_send, telegram_group_id, qq_group_id, topic_id,
+           max_attempts = config_->message_retry_max_attempts, failure_reason] {
+            retry_manager->add_message_retry(
+                "qq", "telegram", message_id, message, telegram_group_id,
+                qq_group_id, topic_id, max_attempts, failure_reason);
+          });
     } else if (!telegram_message_id.has_value() &&
                config_->enable_retry_queue) {
       OBCX_ERROR("消息发送失败且重试队列不可用: {}", failure_reason);
@@ -237,8 +251,13 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
       OBCX_ERROR("消息发送失败且未启用重试: {}", failure_reason);
     }
 
-    for (const std::string &temp_file : temp_files_to_cleanup) {
-      MediaProcessor::cleanup_media_file(temp_file);
+    if (!temp_files_to_cleanup.empty()) {
+      co_await blocking_executor_->run(
+          [files = std::move(temp_files_to_cleanup)] {
+            for (const auto &file : files) {
+              MediaProcessor::cleanup_media_file(file);
+            }
+          });
     }
 
   } catch (const std::exception &e) {

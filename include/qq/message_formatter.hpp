@@ -4,6 +4,7 @@
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
+#include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
 #include <string>
@@ -29,7 +30,8 @@ public:
    */
   explicit QQMessageFormatter(
       std::shared_ptr<const bridge::BridgeConfig> config,
-      std::shared_ptr<bridge::BridgeStateRepository> state_repository =
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository = nullptr,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor =
           nullptr);
 
   /**
@@ -113,12 +115,14 @@ public:
 
   static auto fetch_and_save_user_info(
       std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor,
       obcx::core::IBot &qq_bot, const std::string &user_id,
       const std::string &group_id) -> boost::asio::awaitable<void>;
 
 private:
   std::shared_ptr<const bridge::BridgeConfig> config_;
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
 
   /**
    * @brief 获取用户显示名称，如果数据库没有则异步获取

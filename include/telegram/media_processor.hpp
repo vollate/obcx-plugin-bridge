@@ -5,6 +5,7 @@
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
+#include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <interfaces/telegram_bot.hpp>
 #include <memory>
@@ -29,7 +30,8 @@ public:
    */
   explicit TelegramMediaProcessor(
       std::shared_ptr<const bridge::BridgeConfig> config,
-      std::shared_ptr<bridge::BridgeStateRepository> state_repository);
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor);
 
   /**
    * @brief 处理Telegram媒体文件并转换为QQ消息段
@@ -77,6 +79,7 @@ private:
   std::shared_ptr<const bridge::BridgeConfig> config_;
   PathManager path_manager_;
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
 
   /**
    * @brief 处理图片文件

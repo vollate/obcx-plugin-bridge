@@ -4,6 +4,7 @@
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
+#include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
 #include <optional>
@@ -41,7 +42,8 @@ public:
    */
   explicit QQMediaProcessor(
       std::shared_ptr<const bridge::BridgeConfig> config,
-      std::shared_ptr<bridge::BridgeStateRepository> state_repository);
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor);
 
   /**
    * @brief 处理QQ消息段并转换为Telegram格式
@@ -170,6 +172,7 @@ public:
 private:
   std::shared_ptr<const bridge::BridgeConfig> config_;
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
 
   /**
    * @brief 检测图片是否为GIF格式

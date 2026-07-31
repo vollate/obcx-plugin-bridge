@@ -20,14 +20,17 @@ auto TelegramMediaProcessor::process_photo(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, path_manager_, file_url, "photo", filename);
+        &telegram_capability, blocking_executor_, path_manager_, file_url,
+        "photo", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      std::string container_path =
-          path_manager_.host_to_container_absolute(local_file_path);
+      auto container_path = co_await blocking_executor_->run(
+          [path_manager = path_manager_, local_file_path] {
+            return path_manager.host_to_container_absolute(local_file_path);
+          });
 
       file_segment.type = "image";
       file_segment.data["file"] = "file:///" + container_path;
@@ -61,14 +64,17 @@ auto TelegramMediaProcessor::process_video(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, path_manager_, file_url, "video", filename);
+        &telegram_capability, blocking_executor_, path_manager_, file_url,
+        "video", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      std::string container_path =
-          path_manager_.host_to_container_absolute(local_file_path);
+      auto container_path = co_await blocking_executor_->run(
+          [path_manager = path_manager_, local_file_path] {
+            return path_manager.host_to_container_absolute(local_file_path);
+          });
 
       file_segment.type = "video";
       file_segment.data["file"] = "file:///" + container_path;
@@ -101,14 +107,17 @@ auto TelegramMediaProcessor::process_audio(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, path_manager_, file_url, "audio", filename);
+        &telegram_capability, blocking_executor_, path_manager_, file_url,
+        "audio", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      std::string container_path =
-          path_manager_.host_to_container_absolute(local_file_path);
+      auto container_path = co_await blocking_executor_->run(
+          [path_manager = path_manager_, local_file_path] {
+            return path_manager.host_to_container_absolute(local_file_path);
+          });
 
       file_segment.type = "record";
       file_segment.data["file"] = "file:///" + container_path;
@@ -141,14 +150,17 @@ auto TelegramMediaProcessor::process_document(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, path_manager_, file_url, "document", filename);
+        &telegram_capability, blocking_executor_, path_manager_, file_url,
+        "document", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      std::string container_path =
-          path_manager_.host_to_container_absolute(local_file_path);
+      auto container_path = co_await blocking_executor_->run(
+          [path_manager = path_manager_, local_file_path] {
+            return path_manager.host_to_container_absolute(local_file_path);
+          });
 
       file_segment.type = "file";
       file_segment.data["file"] = "file:///" + container_path;
@@ -184,14 +196,17 @@ auto TelegramMediaProcessor::process_video_note(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, path_manager_, file_url, "video_note", filename);
+        &telegram_capability, blocking_executor_, path_manager_, file_url,
+        "video_note", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      std::string container_path =
-          path_manager_.host_to_container_absolute(local_file_path);
+      auto container_path = co_await blocking_executor_->run(
+          [path_manager = path_manager_, local_file_path] {
+            return path_manager.host_to_container_absolute(local_file_path);
+          });
 
       file_segment.type = "video";
       file_segment.data["file"] = "file:///" + container_path;
@@ -225,14 +240,17 @@ auto TelegramMediaProcessor::process_other_file(
         dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
 
     auto local_path_opt = co_await MediaProcessor::download_media_file(
-        &telegram_capability, path_manager_, file_url, "file", filename);
+        &telegram_capability, blocking_executor_, path_manager_, file_url,
+        "file", filename);
 
     if (local_path_opt.has_value()) {
       std::string local_file_path = local_path_opt.value();
       temp_files_to_cleanup.push_back(local_file_path);
 
-      std::string container_path =
-          path_manager_.host_to_container_absolute(local_file_path);
+      auto container_path = co_await blocking_executor_->run(
+          [path_manager = path_manager_, local_file_path] {
+            return path_manager.host_to_container_absolute(local_file_path);
+          });
 
       file_segment.type = "file";
       file_segment.data["file"] = "file:///" + container_path;

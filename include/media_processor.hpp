@@ -4,6 +4,7 @@
 
 #include <boost/asio.hpp>
 #include <chrono>
+#include <core/blocking_executor.hpp>
 #include <fstream>
 #include <string>
 #include <utility>
@@ -35,11 +36,11 @@ public:
    * @return 下载后的本地文件路径的awaitable，失败时返回nullopt
    */
   template <typename ConnectionManager>
-  static auto download_media_file(ConnectionManager *conn_manager,
-                                  const PathManager &path_manager,
-                                  const std::string &file_url,
-                                  const std::string &file_type,
-                                  const std::string &filename = "")
+  static auto download_media_file(
+      ConnectionManager *conn_manager,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor,
+      const PathManager &path_manager, const std::string &file_url,
+      const std::string &file_type, const std::string &filename = "")
       -> boost::asio::awaitable<std::optional<std::string>>;
 
   /**
@@ -73,11 +74,11 @@ public:
 
 // 模板实现
 template <typename ConnectionManager>
-inline auto MediaProcessor::download_media_file(ConnectionManager *conn_manager,
-                                                const PathManager &path_manager,
-                                                const std::string &file_url,
-                                                const std::string &file_type,
-                                                const std::string &filename)
+inline auto MediaProcessor::download_media_file(
+    ConnectionManager *conn_manager,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor,
+    const PathManager &path_manager, const std::string &file_url,
+    const std::string &file_type, const std::string &filename)
     -> boost::asio::awaitable<std::optional<std::string>> {
   try {
     // 确定文件名
@@ -102,31 +103,29 @@ inline auto MediaProcessor::download_media_file(ConnectionManager *conn_manager,
       target_filename += "_" + std::to_string(timestamp);
     }
 
-    // 构建完整的本地文件路径
-    std::string relative_path = "temp/" + target_filename;
-    std::string local_file_path = path_manager.to_host_path(relative_path);
-
-    // 创建临时目录（如果不存在）
-    path_manager.ensure_directory("temp");
-
     // 使用ConnectionManager下载文件
     std::string file_content =
         co_await conn_manager->download_file_content(file_url);
 
-    // 写入到本地文件
-    std::ofstream output_file(local_file_path, std::ios::binary);
-    if (!output_file) {
-      throw std::runtime_error("无法创建本地文件: " + local_file_path);
-    }
+    co_return co_await blocking_executor->run(
+        [path_manager, relative_path = "temp/" + target_filename,
+         file_content = std::move(file_content)] {
+          const auto local_file_path = path_manager.to_host_path(relative_path);
+          if (!path_manager.ensure_directory("temp")) {
+            throw std::runtime_error("无法创建临时媒体目录");
+          }
 
-    output_file.write(file_content.data(), file_content.size());
-    output_file.close();
-
-    if (!output_file) {
-      throw std::runtime_error("写入文件失败: " + local_file_path);
-    }
-
-    co_return local_file_path;
+          std::ofstream output_file(local_file_path, std::ios::binary);
+          if (!output_file) {
+            throw std::runtime_error("无法创建本地文件: " + local_file_path);
+          }
+          output_file.write(file_content.data(), file_content.size());
+          output_file.close();
+          if (!output_file) {
+            throw std::runtime_error("写入文件失败: " + local_file_path);
+          }
+          return local_file_path;
+        });
 
   } catch (const std::exception &e) {
     throw; // 重新抛出异常，让调用者处理

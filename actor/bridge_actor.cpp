@@ -103,6 +103,7 @@ auto source_message_id(const obcx::core::MessageEnvelope &message)
 
 auto BridgeActor::resolve_repository(obcx::core::ActorContext &context)
     -> std::shared_ptr<BridgeStateRepository> {
+  std::scoped_lock lock(runtime_mutex_);
   if (repository_) {
     return repository_;
   }
@@ -124,6 +125,7 @@ auto BridgeActor::resolve_repository(obcx::core::ActorContext &context)
 
 auto BridgeActor::resolve_config(obcx::core::ActorContext &context)
     -> std::shared_ptr<const BridgeConfig> {
+  std::scoped_lock lock(runtime_mutex_);
   if (!config_) {
     config_ = load_bridge_config(context.config());
   }
@@ -136,6 +138,7 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
   if (auto injected = context.get_service<IBridgeForwarder>()) {
     return injected;
   }
+  std::scoped_lock lock(runtime_mutex_);
   if (forwarder_) {
     return forwarder_;
   }
@@ -149,6 +152,11 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
   if (!db_manager) {
     throw std::runtime_error("bridge forwarding requires DbManager service");
   }
+  auto blocking_executor = context.get_service<obcx::core::BlockingExecutor>();
+  if (!blocking_executor) {
+    throw std::runtime_error(
+        "bridge forwarding requires BlockingExecutor service");
+  }
 
   const auto db_instance = context.db_instance().empty()
                                ? std::string{"main"}
@@ -159,7 +167,7 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
   forwarder_ = std::make_shared<BridgeForwardingRuntime>(
       std::move(bot_registry), resolve_config(context),
       resolve_repository(context), received_message_repository_,
-      std::move(executor));
+      std::move(executor), std::move(blocking_executor));
   return forwarder_;
 }
 
@@ -196,7 +204,10 @@ auto BridgeActor::handle_command(
           "bridge_command_executor_missing",
           "bridge command handling requires an Asio executor", true);
     }
-    auto forwarder = resolve_forwarder(context, *executor);
+    auto forwarder =
+        co_await context.run_blocking([this, &context, executor = *executor] {
+          return resolve_forwarder(context, executor);
+        });
     if (!forwarder) {
       co_return obcx::core::ActorResult::failed(
           "bridge_command_runtime_unavailable",
@@ -236,13 +247,16 @@ auto BridgeActor::handle(
   }
   try {
     auto executor = context.get_service<asio::any_io_executor>();
-    auto repository = resolve_repository(context);
-    if (auto forwarder = resolve_forwarder(
-            context, executor ? *executor : asio::any_io_executor{})) {
-      if (!executor) {
-        throw std::runtime_error(
-            "bridge forwarding requires an Asio executor service");
-      }
+    if (!executor) {
+      throw std::runtime_error(
+          "bridge forwarding requires an Asio executor service");
+    }
+    auto [repository, forwarder] =
+        co_await context.run_blocking([this, &context, executor = *executor] {
+          return std::pair{resolve_repository(context),
+                           resolve_forwarder(context, executor)};
+        });
+    if (forwarder) {
       auto forward_result = co_await context.await_asio(
           *executor,
           [forwarder, forwarded = message]() mutable
@@ -263,7 +277,9 @@ auto BridgeActor::handle(
         co_return result;
       }
 
-      repository->add_message_mapping(mapping);
+      (void)co_await context.run_blocking([repository, mapping] {
+        return repository->add_message_mapping(mapping);
+      });
       auto result = obcx::core::ActorResult::success();
       result.emit(
           build_forwarded_event(message, mapping, forward_result.target_bot));
@@ -294,7 +310,9 @@ auto BridgeActor::handle(
         .target_message_id = target_message_id,
         .created_at = std::chrono::system_clock::now(),
     };
-    repository->add_message_mapping(mapping);
+    (void)co_await context.run_blocking([repository, mapping] {
+      return repository->add_message_mapping(mapping);
+    });
 
     auto result = obcx::core::ActorResult::success();
     result.emit(build_forwarded_event(
@@ -327,7 +345,10 @@ auto BridgeActor::handle(const obcx::core::events::RawNoticeEvent &notice,
           "bridge_notice_executor_missing",
           "bridge notice handling requires an Asio executor", true);
     }
-    auto forwarder = resolve_forwarder(context, *executor);
+    auto forwarder =
+        co_await context.run_blocking([this, &context, executor = *executor] {
+          return resolve_forwarder(context, executor);
+        });
     if (!forwarder) {
       co_return obcx::core::ActorResult::failed(
           "bridge_notice_runtime_unavailable",

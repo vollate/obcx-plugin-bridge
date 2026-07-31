@@ -68,42 +68,35 @@ auto TelegramMediaProcessor::download_animation_with_cache(
       std::string cache_key = media_info.file_unique_id;
       OBCX_DEBUG("动画缓存查找，使用file_unique_id: {}", cache_key);
 
-      auto cache_info = state_repository_
-                            ? state_repository_->get_sticker_cache(
-                                  "telegram_animation", cache_key)
-                            : std::optional<storage::StickerCacheInfo>{};
-      if (cache_info.has_value()) {
-        // 缓存命中也要校验文件实际存在，否则视为失效需重新下载
-        bool file_exists = false;
-
-        if (cache_info->conversion_status == "success" &&
-            cache_info->converted_file_path.has_value()) {
-          // 转换成功时优先用 gif，否则回退到原始文件
-          std::string host_path = cache_info->converted_file_path.value();
-          if (std::filesystem::exists(host_path)) {
-            file_exists = true;
-          }
-        } else if (!cache_info->original_file_path.empty()) {
-          std::string host_path = cache_info->original_file_path;
-          if (std::filesystem::exists(host_path)) {
-            file_exists = true;
-          }
-        }
-
-        if (file_exists && !cache_info->container_path.empty()) {
-          storage::StickerCacheInfo update_info = *cache_info;
-          update_info.last_used_at = std::chrono::system_clock::now();
-          if (state_repository_) {
-            state_repository_->save_sticker_cache(update_info);
-          }
-
-          OBCX_DEBUG("动画缓存命中: {} -> {}", cache_key,
-                     cache_info->container_path);
-          co_return cache_info->container_path;
-        } else {
-          OBCX_WARN("动画缓存项存在但文件丢失，将重新下载: {}", cache_key);
-        }
+      auto cached_path = co_await blocking_executor_->run(
+          [repository = state_repository_,
+           cache_key] -> std::optional<std::string> {
+            if (!repository) {
+              return std::nullopt;
+            }
+            auto cache_info =
+                repository->get_sticker_cache("telegram_animation", cache_key);
+            if (!cache_info.has_value()) {
+              return std::nullopt;
+            }
+            const auto host_path =
+                cache_info->conversion_status == "success" &&
+                        cache_info->converted_file_path.has_value()
+                    ? *cache_info->converted_file_path
+                    : cache_info->original_file_path;
+            if (host_path.empty() || !std::filesystem::exists(host_path) ||
+                cache_info->container_path.empty()) {
+              return std::nullopt;
+            }
+            cache_info->last_used_at = std::chrono::system_clock::now();
+            (void)repository->save_sticker_cache(*cache_info);
+            return cache_info->container_path;
+          });
+      if (cached_path.has_value()) {
+        OBCX_DEBUG("动画缓存命中: {} -> {}", cache_key, *cached_path);
+        co_return cached_path;
       }
+      OBCX_WARN("动画缓存未命中或文件丢失，将重新下载: {}", cache_key);
     }
 
     OBCX_INFO("动画缓存未命中，开始下载: {}", media_info.file_id);
@@ -121,8 +114,6 @@ auto TelegramMediaProcessor::download_animation_with_cache(
     const std::string &host_bridge_files_dir = config_->bridge_files_dir;
     std::string original_dir = host_bridge_files_dir + "/animations/original";
     std::string converted_dir = host_bridge_files_dir + "/animations/converted";
-    std::filesystem::create_directories(original_dir);
-    std::filesystem::create_directories(converted_dir);
 
     std::string file_extension = ".mp4";
     std::string mime_type = "video/mp4";
@@ -165,15 +156,25 @@ auto TelegramMediaProcessor::download_animation_with_cache(
       co_return std::nullopt;
     }
 
-    std::ofstream file(original_file_path, std::ios::binary);
-    if (!file) {
-      throw std::runtime_error("无法创建文件: " + original_file_path);
-    }
-    file.write(file_content.data(), file_content.size());
-    file.close();
+    const auto downloaded_size = file_content.size();
+    co_await blocking_executor_->run([original_dir, converted_dir,
+                                      original_file_path,
+                                      file_content = std::move(file_content)] {
+      std::filesystem::create_directories(original_dir);
+      std::filesystem::create_directories(converted_dir);
+      std::ofstream file(original_file_path, std::ios::binary);
+      if (!file) {
+        throw std::runtime_error("无法创建文件: " + original_file_path);
+      }
+      file.write(file_content.data(), file_content.size());
+      file.close();
+      if (!file) {
+        throw std::runtime_error("写入文件失败: " + original_file_path);
+      }
+    });
 
     OBCX_INFO("动画原始文件已下载: {} -> {} ({}字节)", media_info.file_id,
-              original_file_path, file_content.size());
+              original_file_path, downloaded_size);
 
     std::string final_file_path = original_file_path;
     std::string final_container_path;
@@ -187,18 +188,19 @@ auto TelegramMediaProcessor::download_animation_with_cache(
       std::string converted_filename = filename_prefix + ".gif";
       std::string converted_file_path =
           converted_dir + "/" + converted_filename;
-      if (!std::filesystem::exists(converted_dir)) {
-        std::filesystem::create_directories(converted_dir);
-      }
+      const auto config = config_;
+      const bool conversion_success = co_await blocking_executor_->run(
+          [config, original_file_path, converted_dir, converted_file_path] {
+            std::filesystem::create_directories(converted_dir);
+            return bridge::MediaConverter::convert_webm_to_gif_with_fallback(
+                       config->ffmpeg_path, original_file_path,
+                       converted_file_path, config->gif_max_duration,
+                       config->gif_max_file_size, config->gif_max_width,
+                       config->gif_max_fps, config->gif_max_colors) &&
+                   std::filesystem::exists(converted_file_path);
+          });
 
-      bool conversion_success =
-          bridge::MediaConverter::convert_webm_to_gif_with_fallback(
-              config_->ffmpeg_path, original_file_path, converted_file_path,
-              config_->gif_max_duration, config_->gif_max_file_size,
-              config_->gif_max_width, config_->gif_max_fps,
-              config_->gif_max_colors);
-
-      if (conversion_success && std::filesystem::exists(converted_file_path)) {
+      if (conversion_success) {
         OBCX_INFO("webm到gif转换成功: {} -> {}", original_file_path,
                   converted_file_path);
         final_file_path = converted_file_path;
@@ -227,7 +229,7 @@ auto TelegramMediaProcessor::download_animation_with_cache(
       new_cache_info.sticker_id = media_info.file_id;
       new_cache_info.sticker_hash = media_info.file_unique_id;
       new_cache_info.original_file_path = original_file_path;
-      new_cache_info.file_size = file_content.size();
+      new_cache_info.file_size = downloaded_size;
       new_cache_info.mime_type = mime_type;
       new_cache_info.conversion_status = conversion_status;
       new_cache_info.created_at = std::chrono::system_clock::now();
@@ -238,8 +240,13 @@ auto TelegramMediaProcessor::download_animation_with_cache(
         new_cache_info.converted_file_path = final_file_path;
       }
 
-      if (state_repository_ &&
-          !state_repository_->save_sticker_cache(new_cache_info)) {
+      const auto saved =
+          !state_repository_ ||
+          co_await blocking_executor_->run(
+              [repository = state_repository_, new_cache_info] {
+                return repository->save_sticker_cache(new_cache_info);
+              });
+      if (!saved) {
         OBCX_WARN("保存动画缓存失败，但文件已下载: {}", final_file_path);
       }
     } else {

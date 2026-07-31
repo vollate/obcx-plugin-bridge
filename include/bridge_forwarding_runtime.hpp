@@ -4,6 +4,7 @@
 #include "bridge_state_repository.hpp"
 #include "received_message_repository.hpp"
 
+#include <core/blocking_executor.hpp>
 #include <core/bot_registry.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -31,7 +32,8 @@ public:
       std::shared_ptr<const BridgeConfig> config,
       std::shared_ptr<BridgeStateRepository> state_repository,
       std::shared_ptr<ReceivedMessageRepository> received_message_repository,
-      boost::asio::any_io_executor buffer_executor);
+      boost::asio::any_io_executor buffer_executor,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor);
   ~BridgeForwardingRuntime() override;
 
   auto forward_message(const obcx::core::MessageEnvelope &message)
@@ -48,6 +50,7 @@ private:
   std::shared_ptr<const BridgeConfig> config_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
   std::unique_ptr<RetryQueueWorker> retry_worker_;
   std::shared_ptr<QQHandler> qq_handler_;
   std::shared_ptr<TelegramHandler> telegram_handler_;

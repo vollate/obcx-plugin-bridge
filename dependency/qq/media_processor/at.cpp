@@ -20,19 +20,28 @@ auto QQMediaProcessor::process_at_segment(
   std::string qq_user_id = segment.data.value("qq", "unknown");
   converted_segment.data.clear();
 
-  auto at_display_name =
-      state_repository_ ? state_repository_->query_user_display_name(
-                              "qq", qq_user_id, event.group_id.value_or(""))
-                        : std::optional<std::string>{};
+  const auto group_id = event.group_id.value_or("");
+  std::optional<std::string> at_display_name;
+  if (state_repository_) {
+    at_display_name = co_await blocking_executor_->run(
+        [repository = state_repository_, qq_user_id, group_id] {
+          return repository->query_user_display_name("qq", qq_user_id,
+                                                     group_id);
+        });
+  }
 
   if (!at_display_name.has_value()) {
     co_await QQMessageFormatter::fetch_and_save_user_info(
-        state_repository_, qq_bot, qq_user_id, event.group_id.value());
+        state_repository_, blocking_executor_, qq_bot, qq_user_id,
+        event.group_id.value());
 
-    at_display_name = state_repository_
-                          ? state_repository_->query_user_display_name(
-                                "qq", qq_user_id, event.group_id.value_or(""))
-                          : std::optional<std::string>{};
+    if (state_repository_) {
+      at_display_name = co_await blocking_executor_->run(
+          [repository = state_repository_, qq_user_id, group_id] {
+            return repository->query_user_display_name("qq", qq_user_id,
+                                                       group_id);
+          });
+    }
   }
 
   bool show_sender = false;

@@ -2,6 +2,7 @@
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
+#include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
 
@@ -36,6 +37,8 @@ public:
       std::shared_ptr<RetryQueueManager> retry_manager = nullptr,
       std::shared_ptr<BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<ReceivedMessageRepository> received_message_repository =
+          nullptr,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor =
           nullptr);
 
   /**
@@ -100,6 +103,7 @@ private:
   std::shared_ptr<RetryQueueManager> retry_manager_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
 
   // 子模块处理器
   std::unique_ptr<qq::QQMediaProcessor> media_processor_;

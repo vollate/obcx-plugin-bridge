@@ -14,9 +14,11 @@ namespace bridge::qq {
 
 QQMessageFormatter::QQMessageFormatter(
     std::shared_ptr<const bridge::BridgeConfig> config,
-    std::shared_ptr<bridge::BridgeStateRepository> state_repository)
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
     : config_(std::move(config)),
-      state_repository_(std::move(state_repository)) {}
+      state_repository_(std::move(state_repository)),
+      blocking_executor_(std::move(blocking_executor)) {}
 
 auto QQMessageFormatter::format_sender_info(
     obcx::core::IBot &qq_bot, const obcx::common::MessageEvent &event,
@@ -72,16 +74,16 @@ auto QQMessageFormatter::format_reply_message(
 
     // 被回复的 QQ 消息可能有两种来源：原生 QQ 消息（之前转发到 TG 过），
     // 或本身是从 TG 转发来的。先查 qq->tg 映射，没命中再查 tg 原始消息。
-    target_telegram_message_id =
-        state_repository_ ? state_repository_->get_target_message_id(
-                                "qq", reply_message_id.value(), "telegram")
-                          : std::optional<std::string>{};
-
-    if (!target_telegram_message_id.has_value()) {
-      target_telegram_message_id =
-          state_repository_ ? state_repository_->get_source_message_id(
-                                  "qq", reply_message_id.value(), "telegram")
-                            : std::optional<std::string>{};
+    if (state_repository_) {
+      target_telegram_message_id = co_await blocking_executor_->run(
+          [repository = state_repository_,
+           reply_message_id = *reply_message_id] {
+            auto target = repository->get_target_message_id(
+                "qq", reply_message_id, "telegram");
+            return target.has_value() ? target
+                                      : repository->get_source_message_id(
+                                            "qq", reply_message_id, "telegram");
+          });
     }
 
     OBCX_DEBUG("QQ回复消息映射查找: QQ消息ID {} -> TG消息ID {}",
@@ -564,7 +566,10 @@ auto QQMessageFormatter::send_media_group(
                 mapping.target_message_id = tg_msg_id;
                 mapping.created_at = std::chrono::system_clock::now();
                 if (state_repository_) {
-                  state_repository_->add_message_mapping(mapping);
+                  (void)co_await blocking_executor_->run(
+                      [repository = state_repository_, mapping] {
+                        return repository->add_message_mapping(mapping);
+                      });
                 }
                 OBCX_DEBUG("记录MediaGroup消息映射: QQ {} -> TG {}",
                            event.message_id, tg_msg_id);
@@ -590,17 +595,22 @@ auto QQMessageFormatter::get_user_display_name(obcx::core::IBot &qq_bot,
                                                const std::string &group_id)
     -> boost::asio::awaitable<std::string> {
 
-  auto display_name =
-      state_repository_
-          ? state_repository_->query_user_display_name("qq", user_id, group_id)
-          : std::optional<std::string>{};
+  std::optional<std::string> display_name;
+  if (state_repository_) {
+    display_name = co_await blocking_executor_->run(
+        [repository = state_repository_, user_id, group_id] {
+          return repository->query_user_display_name("qq", user_id, group_id);
+        });
+  }
 
   if (!display_name.has_value()) {
     co_await fetch_user_info(qq_bot, user_id, group_id);
-    display_name = state_repository_
-                       ? state_repository_->query_user_display_name(
-                             "qq", user_id, group_id)
-                       : std::optional<std::string>{};
+    if (state_repository_) {
+      display_name = co_await blocking_executor_->run(
+          [repository = state_repository_, user_id, group_id] {
+            return repository->query_user_display_name("qq", user_id, group_id);
+          });
+    }
   }
 
   co_return display_name.value_or(user_id);
@@ -610,12 +620,13 @@ auto QQMessageFormatter::fetch_user_info(obcx::core::IBot &qq_bot,
                                          const std::string &user_id,
                                          const std::string &group_id)
     -> boost::asio::awaitable<void> {
-  co_await fetch_and_save_user_info(state_repository_, qq_bot, user_id,
-                                    group_id);
+  co_await fetch_and_save_user_info(state_repository_, blocking_executor_,
+                                    qq_bot, user_id, group_id);
 }
 
 auto QQMessageFormatter::fetch_and_save_user_info(
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor,
     obcx::core::IBot &qq_bot, const std::string &user_id,
     const std::string &group_id) -> boost::asio::awaitable<void> {
   try {
@@ -670,7 +681,9 @@ auto QQMessageFormatter::fetch_and_save_user_info(
       }
 
       if (state_repository) {
-        state_repository->save_or_update_user(user_info, true);
+        (void)co_await blocking_executor->run([state_repository, user_info] {
+          return state_repository->save_or_update_user(user_info, true);
+        });
       }
       OBCX_DEBUG("获取QQ用户信息成功：{} -> {}", user_id, user_info.nickname);
     }

@@ -12,11 +12,13 @@ namespace bridge::telegram {
 
 TelegramMediaProcessor::TelegramMediaProcessor(
     std::shared_ptr<const bridge::BridgeConfig> config,
-    std::shared_ptr<bridge::BridgeStateRepository> state_repository)
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
     : config_(std::move(config)),
       path_manager_(config_->bridge_files_dir,
                     config_->bridge_files_container_dir),
-      state_repository_(std::move(state_repository)) {}
+      state_repository_(std::move(state_repository)),
+      blocking_executor_(std::move(blocking_executor)) {}
 
 auto TelegramMediaProcessor::process_media_file(
     obcx::core::IBot &telegram_bot, const std::string &file_type,

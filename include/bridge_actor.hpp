@@ -11,6 +11,7 @@
 #include <boost/asio/awaitable.hpp>
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace bridge {
@@ -101,6 +102,7 @@ private:
   std::shared_ptr<BridgeStateRepository> repository_;
   std::shared_ptr<IBridgeForwarder> forwarder_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;
+  std::recursive_mutex runtime_mutex_;
 };
 
 } // namespace bridge

@@ -2,6 +2,7 @@
 #include "bridge_storage_models.hpp"
 #include "common/config_loader.hpp"
 #include "config.hpp"
+#include "core/blocking_executor.hpp"
 #include "core/db_manager.hpp"
 #include "qq/message_formatter.hpp"
 
@@ -202,8 +203,10 @@ TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
   };
   ASSERT_TRUE(repository->add_message_mapping(mapping));
 
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   bridge::qq::QQMessageFormatter formatter(
-      std::make_shared<const bridge::BridgeConfig>(), repository);
+      std::make_shared<const bridge::BridgeConfig>(), repository,
+      blocking_executor);
 
   obcx::common::MessageEvent event;
   event.message_id = "qq-current";
@@ -222,6 +225,7 @@ TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
   ioc.run();
 
   EXPECT_TRUE(future.get());
+  blocking_executor->shutdown();
   ASSERT_EQ(message_to_send.size(), 1);
   EXPECT_EQ(message_to_send.front().type, "reply");
   EXPECT_EQ(message_to_send.front().data.at("id").get<std::string>(),

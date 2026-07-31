@@ -119,6 +119,22 @@ The forwarding runtime currently resolves bots by platform, not by bot id.
 Configure exactly one live QQ bot and exactly one live Telegram bot. Multiple
 live accounts on either platform make lookup ambiguous and forwarding fails.
 
+### Execution domains and partitions
+
+Configure bridge with `partition = "source_platform:conversation_id"` so
+independent conversations remain independently schedulable. A suspended
+handler still owns its partition mailbox: later messages for the same
+conversation remain FIFO, while another conversation can use a different actor
+worker.
+
+Bridge resolves the process-owned `obcx::core::BlockingExecutor` from
+`ActorContext`; it never obtains worker capacity from a bot. Repository calls,
+filesystem operations, and media conversion run through
+`BlockingExecutor::run()` inside the actor-tracked Asio graph. Bot sends,
+downloads, timers, and other asynchronous transport operations remain on their
+Asio executor. Do not add `std::async`, detached threads, or actor-local thread
+pools for synchronous work.
+
 `ffmpeg_path` may be an absolute executable path; its default, `ffmpeg`, uses
 the process `PATH`. `action_timeout` should remain above the upstream
 first-media-send latency; 30 seconds is the example default. Telegram

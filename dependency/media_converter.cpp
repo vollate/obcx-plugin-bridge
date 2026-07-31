@@ -75,18 +75,6 @@ auto MediaConverter::convert_webm_to_gif(std::string_view ffmpeg_path,
   }
 }
 
-auto MediaConverter::convert_webm_to_gif_async(std::string ffmpeg_path,
-                                               const std::string &webm_path,
-                                               const std::string &output_path,
-                                               int max_duration, int max_width,
-                                               int max_fps, int max_colors)
-    -> std::future<bool> {
-  return std::async(std::launch::async, [=]() -> bool {
-    return convert_webm_to_gif(ffmpeg_path, webm_path, output_path,
-                               max_duration, max_width, max_fps, max_colors);
-  });
-}
-
 auto MediaConverter::convert_webm_to_gif_with_fallback(
     std::string_view ffmpeg_path, const std::string &webm_path,
     const std::string &output_path, int max_duration, size_t max_file_size,

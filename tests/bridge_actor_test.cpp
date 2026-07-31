@@ -2,6 +2,7 @@
 #include "bridge_forwarder.hpp"
 #include "common/config_loader.hpp"
 #include "config.hpp"
+#include "core/blocking_executor.hpp"
 #include "core/bot_registry.hpp"
 #include "core/db_manager.hpp"
 #include "core/native_actor_scheduler.hpp"
@@ -43,6 +44,8 @@ auto run_actor(std::shared_ptr<obcx::core::ActorServices> services,
   using namespace std::chrono_literals;
 
   asio::io_context ioc;
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(2);
+  services->register_service<obcx::core::BlockingExecutor>(blocking_executor);
   services->register_service<asio::any_io_executor>(
       std::make_shared<asio::any_io_executor>(ioc.get_executor()));
   auto work = asio::make_work_guard(ioc);
@@ -70,6 +73,7 @@ auto run_actor(std::shared_ptr<obcx::core::ActorServices> services,
   }
   auto result = future.get();
   scheduler.shutdown();
+  blocking_executor->shutdown();
   work.reset();
   ioc.stop();
   return result;
@@ -364,6 +368,8 @@ auto run_actor_until_retry(
   using namespace std::chrono_literals;
 
   asio::io_context ioc;
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(2);
+  services->register_service<obcx::core::BlockingExecutor>(blocking_executor);
   services->register_service<asio::any_io_executor>(
       std::make_shared<asio::any_io_executor>(ioc.get_executor()));
   auto work = asio::make_work_guard(ioc);
@@ -405,6 +411,7 @@ auto run_actor_until_retry(
     scheduler.shutdown();
   }
 
+  blocking_executor->shutdown();
   work.reset();
   ioc.stop();
   return result;
@@ -996,7 +1003,9 @@ TEST(BridgeActorTest, ShutdownCancelsSuspendedForwardingWithoutLateResume) {
   std::jthread io_thread([&ioc] { ioc.run(); });
 
   auto services = std::make_shared<obcx::core::ActorServices>();
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   services->register_service<obcx::core::DbManager>(db_manager);
+  services->register_service<obcx::core::BlockingExecutor>(blocking_executor);
   services->register_service<asio::any_io_executor>(
       std::make_shared<asio::any_io_executor>(ioc.get_executor()));
   auto forwarder = std::make_shared<HangingForwarder>();
@@ -1029,6 +1038,7 @@ TEST(BridgeActorTest, ShutdownCancelsSuspendedForwardingWithoutLateResume) {
 
   std::this_thread::sleep_for(20ms);
   EXPECT_FALSE(forwarder->resumed_after_wait.load(std::memory_order_acquire));
+  blocking_executor->shutdown();
   work.reset();
   ioc.stop();
   std::filesystem::remove(db_path);

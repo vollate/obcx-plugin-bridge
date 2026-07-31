@@ -2,6 +2,7 @@
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
+#include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
 
@@ -27,7 +28,9 @@ public:
       std::shared_ptr<const bridge::BridgeConfig> config,
       std::shared_ptr<bridge::BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<bridge::ReceivedMessageRepository>
-          received_message_repository = nullptr);
+          received_message_repository = nullptr,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor =
+          nullptr);
 
   /**
    * @brief 处理QQ撤回事件
@@ -57,6 +60,7 @@ private:
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
   std::shared_ptr<bridge::ReceivedMessageRepository>
       received_message_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
 
   /**
    * @brief 根据 type 和 id 获取戳一戳动作名称（基于 Mirai PokeMessage 定义）

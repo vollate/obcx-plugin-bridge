@@ -46,10 +46,13 @@ auto QQMediaProcessor::process_image_segment(
       !url.empty()) {
     try {
       std::string qq_sticker_hash = bridge::calculate_hash(url);
-      auto cached_mapping =
-          state_repository_
-              ? state_repository_->get_qq_sticker_mapping(qq_sticker_hash)
-              : std::optional<storage::QQStickerMapping>{};
+      std::optional<storage::QQStickerMapping> cached_mapping;
+      if (state_repository_) {
+        cached_mapping = co_await blocking_executor_->run(
+            [repository = state_repository_, qq_sticker_hash] {
+              return repository->get_qq_sticker_mapping(qq_sticker_hash);
+            });
+      }
 
       if (cached_mapping && cached_mapping->is_gif.has_value()) {
         is_gif = cached_mapping->is_gif.value();
@@ -119,15 +122,18 @@ auto QQMediaProcessor::handle_sticker_cache(
     std::string qq_sticker_hash = bridge::calculate_hash(
         segment.data.value("file", "") + "_" + segment.data.value("url", ""));
 
-    auto cached_mapping =
-        state_repository_
-            ? state_repository_->get_qq_sticker_mapping(qq_sticker_hash)
-            : std::optional<storage::QQStickerMapping>{};
+    std::optional<storage::QQStickerMapping> cached_mapping;
+    if (state_repository_) {
+      cached_mapping = co_await blocking_executor_->run(
+          [repository = state_repository_, qq_sticker_hash] {
+            auto cached = repository->get_qq_sticker_mapping(qq_sticker_hash);
+            if (cached.has_value()) {
+              (void)repository->update_qq_sticker_last_used(qq_sticker_hash);
+            }
+            return cached;
+          });
+    }
     if (cached_mapping.has_value()) {
-      if (state_repository_) {
-        state_repository_->update_qq_sticker_last_used(qq_sticker_hash);
-      }
-
       bool show_sender_for_sticker = false;
       if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
         show_sender_for_sticker = bridge_config->show_qq_to_tg_sender;
@@ -256,7 +262,10 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
         new_mapping.last_used_at = std::chrono::system_clock::now();
         new_mapping.last_checked_at = std::chrono::system_clock::now();
         if (state_repository_) {
-          state_repository_->save_qq_sticker_mapping(new_mapping);
+          (void)co_await blocking_executor_->run(
+              [repository = state_repository_, new_mapping] {
+                return repository->save_qq_sticker_mapping(new_mapping);
+              });
           OBCX_DEBUG("[图片类型检测] 缓存记录已保存");
         }
 

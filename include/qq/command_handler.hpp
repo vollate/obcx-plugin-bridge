@@ -2,6 +2,7 @@
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
+#include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
 
@@ -22,7 +23,8 @@ public:
    * @brief 构造函数
    */
   explicit QQCommandHandler(
-      std::shared_ptr<bridge::BridgeStateRepository> state_repository);
+      std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor);
 
   /**
    * @brief 处理 /checkalive 命令
@@ -40,6 +42,7 @@ public:
 
 private:
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
 
   /**
    * @brief 发送回复消息

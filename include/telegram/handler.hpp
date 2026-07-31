@@ -6,6 +6,7 @@
 #include "telegram/media_processor.hpp"
 
 #include <boost/asio.hpp>
+#include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
 
@@ -39,6 +40,8 @@ public:
       boost::asio::any_io_executor buffer_executor,
       std::shared_ptr<BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<ReceivedMessageRepository> received_message_repository =
+          nullptr,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor =
           nullptr);
 
   /**
@@ -125,6 +128,7 @@ private:
   std::shared_ptr<RetryQueueManager> retry_manager_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
   std::unique_ptr<telegram::TelegramMediaProcessor> media_processor_;
   std::unique_ptr<telegram::TelegramCommandHandler> command_handler_;
   std::unique_ptr<telegram::TelegramEventHandler> event_handler_;

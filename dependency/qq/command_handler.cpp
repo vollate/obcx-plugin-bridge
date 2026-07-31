@@ -8,8 +8,10 @@
 namespace bridge::qq {
 
 QQCommandHandler::QQCommandHandler(
-    std::shared_ptr<bridge::BridgeStateRepository> state_repository)
-    : state_repository_(std::move(state_repository)) {}
+    std::shared_ptr<bridge::BridgeStateRepository> state_repository,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
+    : state_repository_(std::move(state_repository)),
+      blocking_executor_(std::move(blocking_executor)) {}
 
 auto QQCommandHandler::handle_checkalive_command(
     obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
@@ -19,13 +21,15 @@ auto QQCommandHandler::handle_checkalive_command(
   try {
     const std::string qq_group_id = event.group_id.value();
 
-    auto qq_heartbeat = state_repository_
-                            ? state_repository_->get_platform_heartbeat("qq")
-                            : std::optional<storage::PlatformHeartbeatInfo>{};
-    auto telegram_heartbeat =
-        state_repository_
-            ? state_repository_->get_platform_heartbeat("telegram")
-            : std::optional<storage::PlatformHeartbeatInfo>{};
+    std::optional<storage::PlatformHeartbeatInfo> qq_heartbeat;
+    std::optional<storage::PlatformHeartbeatInfo> telegram_heartbeat;
+    if (state_repository_) {
+      std::tie(qq_heartbeat, telegram_heartbeat) =
+          co_await blocking_executor_->run([repository = state_repository_] {
+            return std::pair{repository->get_platform_heartbeat("qq"),
+                             repository->get_platform_heartbeat("telegram")};
+          });
+    }
 
     std::string response_text;
 

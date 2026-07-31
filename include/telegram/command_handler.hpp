@@ -2,6 +2,7 @@
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
+#include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
 #include <string_view>
@@ -26,7 +27,9 @@ public:
   explicit TelegramCommandHandler(
       std::shared_ptr<bridge::BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<bridge::ReceivedMessageRepository>
-          received_message_repository = nullptr);
+          received_message_repository = nullptr,
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor =
+          nullptr);
 
   /**
    * @brief 处理 /recall 命令
@@ -74,6 +77,7 @@ private:
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
   std::shared_ptr<bridge::ReceivedMessageRepository>
       received_message_repository_;
+  std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
 
   /**
    * @brief 发送回复消息

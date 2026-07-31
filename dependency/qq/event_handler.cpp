@@ -42,10 +42,12 @@ QQEventHandler::QQEventHandler(
     std::shared_ptr<const bridge::BridgeConfig> config,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::shared_ptr<bridge::ReceivedMessageRepository>
-        received_message_repository)
+        received_message_repository,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
     : config_(std::move(config)),
       state_repository_(std::move(state_repository)),
-      received_message_repository_(std::move(received_message_repository)) {}
+      received_message_repository_(std::move(received_message_repository)),
+      blocking_executor_(std::move(blocking_executor)) {}
 
 auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
                                          obcx::core::IBot &qq_bot,
@@ -111,20 +113,27 @@ auto QQEventHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
       co_return;
     }
 
-    auto target_message_id = state_repository_
-                                 ? state_repository_->get_target_message_id(
-                                       "qq", recalled_message_id, "telegram")
-                                 : std::optional<std::string>{};
+    std::optional<std::string> target_message_id;
+    std::optional<storage::MessageInfo> original_message;
+    if (state_repository_ || received_message_repository_) {
+      std::tie(target_message_id, original_message) =
+          co_await blocking_executor_->run(
+              [state = state_repository_,
+               received = received_message_repository_, recalled_message_id] {
+                return std::pair{
+                    state ? state->get_target_message_id(
+                                "qq", recalled_message_id, "telegram")
+                          : std::optional<std::string>{},
+                    received ? received->get_message("qq", recalled_message_id)
+                             : std::optional<storage::MessageInfo>{}};
+              });
+    }
 
     if (!target_message_id.has_value()) {
       OBCX_DEBUG("未找到QQ消息 {} 对应的Telegram消息映射", recalled_message_id);
       co_return;
     }
 
-    auto original_message = received_message_repository_
-                                ? received_message_repository_->get_message(
-                                      "qq", recalled_message_id)
-                                : std::optional<storage::MessageInfo>{};
     const bool should_delete_tg_message =
         original_message.has_value() && is_picture_message(*original_message);
 
@@ -430,19 +439,24 @@ auto QQEventHandler::fetch_user_display_name(obcx::core::IBot &qq_bot,
                                              const std::string &group_id)
     -> boost::asio::awaitable<std::string> {
 
-  auto display_name =
-      state_repository_
-          ? state_repository_->query_user_display_name("qq", user_id, group_id)
-          : std::optional<std::string>{};
+  std::optional<std::string> display_name;
+  if (state_repository_) {
+    display_name = co_await blocking_executor_->run(
+        [repository = state_repository_, user_id, group_id] {
+          return repository->query_user_display_name("qq", user_id, group_id);
+        });
+  }
 
   if (!display_name.has_value()) {
     OBCX_DEBUG("Fetch userinfo for platform: qq, group: {}, id: {}", group_id,
                user_id);
     co_await fetch_user_info(qq_bot, user_id, group_id);
-    display_name = state_repository_
-                       ? state_repository_->query_user_display_name(
-                             "qq", user_id, group_id)
-                       : std::optional<std::string>{};
+    if (state_repository_) {
+      display_name = co_await blocking_executor_->run(
+          [repository = state_repository_, user_id, group_id] {
+            return repository->query_user_display_name("qq", user_id, group_id);
+          });
+    }
   }
 
   co_return display_name.value_or(user_id);
@@ -501,8 +515,13 @@ auto QQEventHandler::fetch_user_info(obcx::core::IBot &qq_bot,
         user_info.title = title;
       }
 
-      if (state_repository_ &&
-          state_repository_->save_or_update_user(user_info, true)) {
+      const auto saved =
+          state_repository_ &&
+          co_await blocking_executor_->run(
+              [repository = state_repository_, user_info] {
+                return repository->save_or_update_user(user_info, true);
+              });
+      if (saved) {
         OBCX_DEBUG("获取QQ用户信息成功：{} -> {}", user_id, user_info.nickname);
       } else {
         OBCX_WARN("保存QQ用户信息失败：{} -> {}", user_id, user_info.nickname);

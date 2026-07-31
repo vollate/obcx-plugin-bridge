@@ -13,9 +13,11 @@ namespace bridge::telegram {
 TelegramCommandHandler::TelegramCommandHandler(
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::shared_ptr<bridge::ReceivedMessageRepository>
-        received_message_repository)
+        received_message_repository,
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
     : state_repository_(std::move(state_repository)),
-      received_message_repository_(std::move(received_message_repository)) {}
+      received_message_repository_(std::move(received_message_repository)),
+      blocking_executor_(std::move(blocking_executor)) {}
 
 auto TelegramCommandHandler::handle_recall_command(
     obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
@@ -46,16 +48,16 @@ auto TelegramCommandHandler::handle_recall_command(
     // 查找被回复消息对应的QQ消息ID：先看是否曾转发到QQ，再看是否来源于QQ
     std::optional<std::string> target_qq_message_id;
 
-    target_qq_message_id = state_repository_
-                               ? state_repository_->get_target_message_id(
-                                     "telegram", replied_message_id, "qq")
-                               : std::optional<std::string>{};
-
-    if (!target_qq_message_id.has_value()) {
-      target_qq_message_id = state_repository_
-                                 ? state_repository_->get_source_message_id(
-                                       "telegram", replied_message_id, "qq")
-                                 : std::optional<std::string>{};
+    if (state_repository_) {
+      target_qq_message_id = co_await blocking_executor_->run(
+          [repository = state_repository_, replied_message_id] {
+            auto target = repository->get_target_message_id(
+                "telegram", replied_message_id, "qq");
+            return target.has_value()
+                       ? target
+                       : repository->get_source_message_id(
+                             "telegram", replied_message_id, "qq");
+          });
     }
 
     if (!target_qq_message_id.has_value()) {
@@ -81,8 +83,11 @@ auto TelegramCommandHandler::handle_recall_command(
                   target_qq_message_id.value());
 
         if (state_repository_) {
-          state_repository_->delete_message_mapping("telegram",
-                                                    replied_message_id, "qq");
+          (void)co_await blocking_executor_->run(
+              [repository = state_repository_, replied_message_id] {
+                return repository->delete_message_mapping(
+                    "telegram", replied_message_id, "qq");
+              });
         }
         OBCX_DEBUG("已删除消息映射: telegram:{} -> qq:{}", replied_message_id,
                    target_qq_message_id.value());
@@ -154,13 +159,15 @@ auto TelegramCommandHandler::handle_checkalive_command(
   try {
     const std::string telegram_group_id = event.group_id.value();
 
-    auto qq_heartbeat = state_repository_
-                            ? state_repository_->get_platform_heartbeat("qq")
-                            : std::optional<storage::PlatformHeartbeatInfo>{};
-    auto telegram_heartbeat =
-        state_repository_
-            ? state_repository_->get_platform_heartbeat("telegram")
-            : std::optional<storage::PlatformHeartbeatInfo>{};
+    std::optional<storage::PlatformHeartbeatInfo> qq_heartbeat;
+    std::optional<storage::PlatformHeartbeatInfo> telegram_heartbeat;
+    if (state_repository_) {
+      std::tie(qq_heartbeat, telegram_heartbeat) =
+          co_await blocking_executor_->run([repository = state_repository_] {
+            return std::pair{repository->get_platform_heartbeat("qq"),
+                             repository->get_platform_heartbeat("telegram")};
+          });
+    }
 
     std::string response_text;
 
@@ -254,52 +261,36 @@ auto TelegramCommandHandler::handle_poke_command(
     // 查找被回复消息对应的QQ用户ID：
     // 1. 该TG消息记录在DB（来源于QQ），直接拿其发送者
     // 2. 否则查 target/source 映射，再去取对应QQ消息的发送者
-    auto source_message = received_message_repository_
-                              ? received_message_repository_->get_message(
-                                    "telegram", replied_message_id)
-                              : std::optional<storage::MessageInfo>{};
-
     std::string target_qq_user_id;
-
-    if (source_message.has_value()) {
-      target_qq_user_id = source_message->user_id;
-      OBCX_INFO("/poke 命令：从消息记录找到QQ用户ID: {}", target_qq_user_id);
-    } else {
-      auto target_qq_message_id =
-          state_repository_ ? state_repository_->get_target_message_id(
-                                  "telegram", replied_message_id, "qq")
-                            : std::optional<std::string>{};
-
-      if (target_qq_message_id.has_value()) {
-        auto qq_message = received_message_repository_
-                              ? received_message_repository_->get_message(
-                                    "qq", target_qq_message_id.value())
-                              : std::optional<storage::MessageInfo>{};
-        if (qq_message.has_value()) {
-          target_qq_user_id = qq_message->user_id;
-          OBCX_INFO("/poke 命令：从转发的QQ消息记录找到QQ用户ID: {}",
-                    target_qq_user_id);
-        }
-      }
-
-      if (target_qq_user_id.empty()) {
-        auto source_qq_message_id =
-            state_repository_ ? state_repository_->get_source_message_id(
-                                    "telegram", replied_message_id, "qq")
-                              : std::optional<std::string>{};
-
-        if (source_qq_message_id.has_value()) {
-          auto qq_message = received_message_repository_
-                                ? received_message_repository_->get_message(
-                                      "qq", source_qq_message_id.value())
-                                : std::optional<storage::MessageInfo>{};
-          if (qq_message.has_value()) {
-            target_qq_user_id = qq_message->user_id;
-            OBCX_INFO("/poke 命令：从源QQ消息记录找到QQ用户ID: {}",
-                      target_qq_user_id);
-          }
-        }
-      }
+    if (state_repository_ || received_message_repository_) {
+      target_qq_user_id = co_await blocking_executor_->run(
+          [state = state_repository_, received = received_message_repository_,
+           replied_message_id] {
+            if (received) {
+              if (auto source =
+                      received->get_message("telegram", replied_message_id)) {
+                return source->user_id;
+              }
+            }
+            if (!state || !received) {
+              return std::string{};
+            }
+            auto message_id = state->get_target_message_id(
+                "telegram", replied_message_id, "qq");
+            if (message_id.has_value()) {
+              if (auto message = received->get_message("qq", *message_id)) {
+                return message->user_id;
+              }
+            }
+            message_id = state->get_source_message_id("telegram",
+                                                      replied_message_id, "qq");
+            if (message_id.has_value()) {
+              if (auto message = received->get_message("qq", *message_id)) {
+                return message->user_id;
+              }
+            }
+            return std::string{};
+          });
     }
 
     if (target_qq_user_id.empty()) {
