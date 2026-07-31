@@ -168,13 +168,6 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
     }
   }
 
-  // 忽略其他所有 / 开头的命令，不转发
-  if (event.raw_message.starts_with("/")) {
-    OBCX_DEBUG("忽略未处理的命令消息，不转发: {}",
-               event.raw_message.substr(0, 20));
-    co_return;
-  }
-
   // 检查是否是回环消息（从QQ转发过来的）
   if (event.raw_message.starts_with("[QQ] ")) {
     OBCX_DEBUG("检测到可能是回环的QQ消息，跳过转发");

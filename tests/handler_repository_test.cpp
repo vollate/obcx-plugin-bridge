@@ -274,4 +274,8 @@ TEST(BridgeHandlerRepositoryTest,
   EXPECT_NE(tg_source.find("消息发送失败且未启用重试"), std::string::npos);
   EXPECT_EQ(qq_source.find("API响应: {}"), std::string::npos);
   EXPECT_EQ(tg_source.find("API响应: {}"), std::string::npos);
+  EXPECT_EQ(qq_source.find("raw_message.starts_with(\"/\")"),
+            std::string::npos);
+  EXPECT_EQ(tg_source.find("raw_message.starts_with(\"/\")"),
+            std::string::npos);
 }

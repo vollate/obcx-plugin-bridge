@@ -81,14 +81,6 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     }
   }
 
-  // Slash commands are handled by the generation command coordinator before
-  // stored messages reach this forwarding path.
-  if (event.raw_message.starts_with("/")) {
-    OBCX_DEBUG("忽略未处理的命令消息，不转发: {}",
-               event.raw_message.substr(0, 20));
-    co_return;
-  }
-
   // 跳过从 Telegram 转发回来的回环消息
   if (event.raw_message.starts_with("[Telegram] ")) {
     OBCX_DEBUG("检测到可能是回环的Telegram消息，跳过转发");

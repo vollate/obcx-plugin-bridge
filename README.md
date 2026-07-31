@@ -64,11 +64,17 @@ The actor declares typed observations for Telegram `recall`, `checkalive`, and
 `poke`, plus QQ `checkalive`. Activate them explicitly with
 `[[command_runtime.routes]]`, as shown in
 [`actor-config.example.toml`](actor-config.example.toml). Platform parsing and
-Telegram menu replacement belong to the runtime adapter. The actor returns
-`CommandCompleted(Continue)`, allowing message-store to persist the source
-event; the inherited `obcx.command.processed` header makes the later
-`MessageStored` bridge stage a no-op so the command is neither executed nor
-forwarded twice.
+Telegram menu replacement belong to the runtime adapter. Only an active
+`command_runtime.routes` match intercepts slash-prefixed traffic. If a message
+such as `/tp 2072 ~ 1080` has no scoped route, the command coordinator submits
+the original event to the ordinary message-store and bridge pipeline; bridge
+handlers do not reclassify it from its leading `/`.
+
+For a matched bridge command, the actor returns `CommandCompleted(Continue)`,
+allowing message-store to persist the source event; the inherited
+`obcx.command.processed` header makes the later `MessageStored` bridge stage a
+no-op so the command is neither executed nor forwarded twice. A command actor
+that returns `Consume` prevents the ordinary pipeline from running at all.
 
 QQ notices use a separate actor pipeline. The runtime converts platform
 `NoticeEvent` values into `obcx::core::events::RawNoticeEvent`; bridge consumes
