@@ -188,9 +188,12 @@ auto ImageUrlValidator::validate(
         asio::detached);
   }
 
-  // 等所有探测完成。barrier 设置在「无穷远」未来，仅靠 cancel() 唤醒。
-  boost::system::error_code ec;
-  co_await barrier->async_wait(asio::redirect_error(asio::use_awaitable, ec));
+  // 等所有探测完成。无效 URL 可能在 co_spawn 启动时同步完成并先于
+  // async_wait 调用 cancel()；此时不能再挂一个永不到期的等待。
+  if (remaining->load(std::memory_order_acquire) != 0) {
+    boost::system::error_code ec;
+    co_await barrier->async_wait(asio::redirect_error(asio::use_awaitable, ec));
+  }
 
   const std::string &configured = config.image_placeholder_url;
   // 即使用户在配置里把占位图清空，也要保证有一个内置兜底，否则替换语义会变成
