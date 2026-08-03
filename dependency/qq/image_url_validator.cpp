@@ -1,6 +1,7 @@
 #include "qq/image_url_validator.hpp"
 
 #include "config.hpp"
+#include "media_processor.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -17,6 +18,8 @@
 #include <map>
 #include <memory>
 #include <network/http_client.hpp>
+#include <optional>
+#include <stdexcept>
 
 namespace bridge::qq {
 
@@ -96,6 +99,78 @@ auto probe_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
   // 部分服务器忽略 Range 直接返回 200 也接受。
   co_return resp.status_code == kHttpStatusOk ||
       resp.status_code == kHttpStatusPartialContent;
+}
+
+auto normalized_mime_type(const obcx::network::HttpResponse &response)
+    -> std::string {
+  const auto detected =
+      bridge::MediaProcessor::detect_mime_type_from_content(response.body);
+  if (!detected.empty()) {
+    return detected;
+  }
+
+  const auto content_type =
+      response.raw_response[boost::beast::http::field::content_type];
+  std::string mime{content_type.data(), content_type.size()};
+  if (const auto separator = mime.find(';'); separator != std::string::npos) {
+    mime.resize(separator);
+  }
+  while (!mime.empty() && mime.back() == ' ') {
+    mime.pop_back();
+  }
+  const auto first = mime.find_first_not_of(' ');
+  if (first != std::string::npos) {
+    mime.erase(0, first);
+  }
+  return mime.starts_with("image/") ? mime : "application/octet-stream";
+}
+
+auto extension_for_mime(std::string_view mime) -> std::string_view {
+  if (mime == "image/jpeg") {
+    return ".jpg";
+  }
+  if (mime == "image/png") {
+    return ".png";
+  }
+  if (mime == "image/gif") {
+    return ".gif";
+  }
+  if (mime == "image/webp") {
+    return ".webp";
+  }
+  if (mime == "image/bmp") {
+    return ".bmp";
+  }
+  return ".bin";
+}
+
+auto download_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
+    -> asio::awaitable<std::pair<std::string, std::string>> {
+  asio::io_context temp_ioc;
+
+  obcx::common::ConnectionConfig cfg;
+  cfg.host = url.host;
+  cfg.port = url.use_ssl ? kHttpsPort : kHttpPort;
+  cfg.use_ssl = url.use_ssl;
+  cfg.access_token.clear();
+  cfg.proxy_host.clear();
+  cfg.proxy_port = 0;
+  cfg.proxy_type.clear();
+  cfg.proxy_username.clear();
+  cfg.proxy_password.clear();
+
+  auto client = std::make_unique<obcx::network::HttpClient>(temp_ioc, cfg);
+  client->set_timeout(timeout);
+  auto response = co_await client->get(url.path);
+  if (!response.is_success()) {
+    throw std::runtime_error("download returned HTTP " +
+                             std::to_string(response.status_code));
+  }
+  if (response.body.empty()) {
+    throw std::runtime_error("download returned an empty body");
+  }
+  auto mime = normalized_mime_type(response);
+  co_return std::pair{std::move(response.body), std::move(mime)};
 }
 
 // 单 URL 的指数退避探测：base, base*2, base*4 … 最多 max_attempts 次。
@@ -234,6 +309,72 @@ auto ImageUrlValidator::sanitize(
     }
   }
   co_return out;
+}
+
+auto ImageUrlValidator::download(
+    const BridgeConfig &config,
+    const std::vector<std::pair<std::string, std::string>> &media)
+    -> asio::awaitable<std::vector<DownloadedImage>> {
+  if (media.empty()) {
+    co_return std::vector<DownloadedImage>{};
+  }
+
+  auto executor = co_await asio::this_coro::executor;
+  auto remaining = std::make_shared<std::atomic<std::size_t>>(media.size());
+  auto barrier = std::make_shared<asio::steady_timer>(
+      executor, std::chrono::steady_clock::time_point::max());
+  auto results = std::make_shared<std::vector<std::optional<DownloadedImage>>>(
+      media.size());
+  auto errors = std::make_shared<std::vector<std::string>>(media.size());
+  const auto timeout = std::chrono::milliseconds(
+      std::max(30000, config.image_url_probe_timeout_ms));
+
+  for (std::size_t i = 0; i < media.size(); ++i) {
+    asio::co_spawn(
+        executor,
+        [i, item = media[i], timeout, remaining, barrier, results,
+         errors]() -> asio::awaitable<void> {
+          try {
+            const auto parsed = parse_url(item.second);
+            if (!parsed.valid) {
+              throw std::runtime_error("invalid url scheme/host");
+            }
+            auto [data, mime] = co_await download_once(parsed, timeout);
+            (*results)[i] = DownloadedImage{
+                .type = item.first.empty() ? "photo" : std::move(item.first),
+                .original_url = std::move(item.second),
+                .filename = "qq-media-" + std::to_string(i) +
+                            std::string{extension_for_mime(mime)},
+                .mime_type = std::move(mime),
+                .data = std::move(data),
+            };
+          } catch (const std::exception &e) {
+            (*errors)[i] = e.what();
+          }
+          if (remaining->fetch_sub(1) == 1) {
+            barrier->cancel();
+          }
+          co_return;
+        },
+        asio::detached);
+  }
+
+  if (remaining->load(std::memory_order_acquire) != 0) {
+    boost::system::error_code ec;
+    co_await barrier->async_wait(asio::redirect_error(asio::use_awaitable, ec));
+  }
+
+  std::vector<DownloadedImage> downloaded;
+  downloaded.reserve(media.size());
+  for (std::size_t i = 0; i < media.size(); ++i) {
+    if (!(*results)[i].has_value()) {
+      throw std::runtime_error(
+          "failed to download media " + std::to_string(i + 1) + "/" +
+          std::to_string(media.size()) + ": " + (*errors)[i]);
+    }
+    downloaded.push_back(std::move(*(*results)[i]));
+  }
+  co_return downloaded;
 }
 
 } // namespace bridge::qq

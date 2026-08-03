@@ -28,6 +28,14 @@ struct ImageUrlValidation {
   std::string failure_reason; // 仅在失败时填充，便于日志/提示
 };
 
+struct DownloadedImage {
+  std::string type;
+  std::string original_url;
+  std::string filename;
+  std::string mime_type;
+  std::string data;
+};
+
 /**
  * @brief QQ 图片 URL 预校验器
  *
@@ -67,6 +75,12 @@ public:
       std::vector<std::string> &replaced_urls)
       -> boost::asio::awaitable<
           std::vector<std::pair<std::string, std::string>>>;
+
+  /** Download every effective media URL for multipart upload fallback. */
+  static auto download(
+      const bridge::BridgeConfig &config,
+      const std::vector<std::pair<std::string, std::string>> &media)
+      -> boost::asio::awaitable<std::vector<DownloadedImage>>;
 };
 
 } // namespace bridge::qq

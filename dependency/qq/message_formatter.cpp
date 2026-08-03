@@ -10,15 +10,203 @@
 #include <interfaces/telegram_bot.hpp>
 #include <nlohmann/json.hpp>
 
+#include <boost/uuid/random_generator.hpp>
+#include <boost/uuid/uuid_io.hpp>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <stdexcept>
+
 namespace bridge::qq {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+class TemporaryMediaUploads {
+public:
+  TemporaryMediaUploads() = default;
+  TemporaryMediaUploads(const TemporaryMediaUploads &) = delete;
+  auto operator=(const TemporaryMediaUploads &)
+      -> TemporaryMediaUploads & = delete;
+
+  TemporaryMediaUploads(TemporaryMediaUploads &&other) noexcept
+      : root_(std::move(other.root_)), uploads_(std::move(other.uploads_)) {
+    other.root_.clear();
+  }
+
+  auto operator=(TemporaryMediaUploads &&other) noexcept
+      -> TemporaryMediaUploads & {
+    if (this != &other) {
+      cleanup();
+      root_ = std::move(other.root_);
+      uploads_ = std::move(other.uploads_);
+      other.root_.clear();
+    }
+    return *this;
+  }
+
+  ~TemporaryMediaUploads() { cleanup(); }
+
+  static auto materialize(std::vector<DownloadedImage> downloaded)
+      -> TemporaryMediaUploads {
+    TemporaryMediaUploads result;
+    result.root_ = fs::temp_directory_path() /
+                   ("obcx-qq-media-" + boost::uuids::to_string(
+                                           boost::uuids::random_generator{}()));
+    std::error_code error;
+    const bool created = fs::create_directory(result.root_, error);
+    if (error || !created) {
+      throw std::runtime_error("cannot create QQ media temporary directory");
+    }
+
+    result.uploads_.reserve(downloaded.size());
+    for (auto &image : downloaded) {
+      auto filename = fs::path{image.filename}.filename().string();
+      if (filename.empty()) {
+        throw std::runtime_error("QQ media temporary filename is empty");
+      }
+      const auto path = result.root_ / filename;
+      {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(image.data.data(),
+                     static_cast<std::streamsize>(image.data.size()));
+        if (!output) {
+          throw std::runtime_error("cannot write QQ media temporary file");
+        }
+      }
+
+      std::ifstream input(path, std::ios::binary);
+      std::string file_data{std::istreambuf_iterator<char>{input},
+                            std::istreambuf_iterator<char>{}};
+      if (input.bad() || file_data.size() != image.data.size()) {
+        throw std::runtime_error("cannot read QQ media temporary file");
+      }
+      result.uploads_.push_back(obcx::core::TelegramMediaUpload{
+          .type = std::move(image.type),
+          .filename = std::move(filename),
+          .mime_type = std::move(image.mime_type),
+          .data = std::move(file_data),
+      });
+    }
+    return result;
+  }
+
+  [[nodiscard]] auto uploads() const
+      -> const std::vector<obcx::core::TelegramMediaUpload> & {
+    return uploads_;
+  }
+
+  [[nodiscard]] auto root() const -> const fs::path & { return root_; }
+
+  void mark_cleaned() noexcept { root_.clear(); }
+
+private:
+  void cleanup() noexcept {
+    if (root_.empty()) {
+      return;
+    }
+    std::error_code ignored;
+    fs::remove_all(root_, ignored);
+    root_.clear();
+  }
+
+  fs::path root_;
+  std::vector<obcx::core::TelegramMediaUpload> uploads_;
+};
+
+auto is_telegram_bad_request(std::string_view error) -> bool {
+  return error.find("HTTP request failed: 400") != std::string_view::npos;
+}
+
+} // namespace
 
 QQMessageFormatter::QQMessageFormatter(
     std::shared_ptr<const bridge::BridgeConfig> config,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
-    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
+    std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor,
+    ImageDownloader image_downloader)
     : config_(std::move(config)),
       state_repository_(std::move(state_repository)),
-      blocking_executor_(std::move(blocking_executor)) {}
+      blocking_executor_(std::move(blocking_executor)),
+      image_downloader_(std::move(image_downloader)) {
+  if (!image_downloader_) {
+    image_downloader_ =
+        [](const bridge::BridgeConfig &config,
+           const std::vector<std::pair<std::string, std::string>> &media) {
+          return ImageUrlValidator::download(config, media);
+        };
+  }
+}
+
+auto QQMessageFormatter::send_media_group_with_fallback(
+    obcx::core::IBot &telegram_bot, std::string_view telegram_group_id,
+    const std::vector<std::pair<std::string, std::string>> &media,
+    std::string_view caption, std::optional<int64_t> topic_id,
+    std::optional<std::string> reply_to_message_id, bool &used_multipart)
+    -> boost::asio::awaitable<std::string> {
+  used_multipart = false;
+  auto &telegram = dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
+  try {
+    co_return co_await telegram.send_media_group(
+        telegram_group_id, media, caption, topic_id, reply_to_message_id);
+  } catch (const std::exception &error) {
+    if (!is_telegram_bad_request(error.what())) {
+      throw;
+    }
+    OBCX_WARN("MediaGroup URL 发送被 Telegram 拒绝 ({})，"
+              "下载媒体并改用 multipart 上传",
+              error.what());
+  }
+
+  if (!blocking_executor_) {
+    throw std::runtime_error(
+        "multipart media fallback requires the runtime blocking executor");
+  }
+  auto *uploader =
+      dynamic_cast<obcx::core::ITelegramMediaGroupUploader *>(&telegram_bot);
+  if (uploader == nullptr) {
+    throw std::runtime_error(
+        "Telegram bot does not support multipart media group uploads");
+  }
+
+  auto downloaded = co_await image_downloader_(*config_, media);
+  auto temporary = co_await blocking_executor_->run(
+      [downloaded = std::move(downloaded)]() mutable {
+        return TemporaryMediaUploads::materialize(std::move(downloaded));
+      });
+  const auto temporary_root = temporary.root();
+
+  std::string response;
+  std::exception_ptr upload_error;
+  try {
+    response = co_await uploader->send_media_group_uploads(
+        telegram_group_id, temporary.uploads(), caption, topic_id,
+        reply_to_message_id);
+    used_multipart = true;
+  } catch (...) {
+    upload_error = std::current_exception();
+  }
+
+  const auto cleanup_error = co_await blocking_executor_->run([temporary_root] {
+    std::error_code error;
+    fs::remove_all(temporary_root, error);
+    return error ? error.message() : std::string{};
+  });
+  if (cleanup_error.empty()) {
+    temporary.mark_cleaned();
+    OBCX_TRACE("已删除 QQ MediaGroup 临时目录: {}", temporary_root.string());
+  } else {
+    OBCX_WARN("删除 QQ MediaGroup 临时目录失败，将在析构时重试: {} ({})",
+              temporary_root.string(), cleanup_error);
+  }
+
+  if (upload_error) {
+    std::rethrow_exception(upload_error);
+  }
+  co_return response;
+}
 
 auto QQMessageFormatter::format_sender_info(
     obcx::core::IBot &qq_bot, const obcx::common::MessageEvent &event,
@@ -239,10 +427,14 @@ auto QQMessageFormatter::process_forward_message(
           size_t sent_count = 0;
           size_t total_replaced_count = 0;
 
+          size_t batch_start = 0;
           for (size_t batch = 0; batch < total_batches; ++batch) {
-            size_t batch_start = batch * 10;
-            size_t batch_size = std::min(static_cast<size_t>(10),
-                                         all_media.size() - batch_start);
+            const size_t remaining = all_media.size() - batch_start;
+            // Telegram media groups require at least two items. When eleven
+            // remain, send 9 + 2 instead of 10 + 1.
+            const size_t batch_size =
+                remaining == 11 ? 9
+                                : std::min(static_cast<size_t>(10), remaining);
 
             std::vector<std::pair<std::string, std::string>> batch_media(
                 all_media.begin() + batch_start,
@@ -264,48 +456,19 @@ auto QQMessageFormatter::process_forward_message(
                                 replaced.size());
               }
 
-              std::string media_response;
-              bool first_send_failed = false;
-              std::string first_send_error;
-              try {
-                media_response =
-                    co_await dynamic_cast<obcx::core::ITelegramBot &>(
-                        telegram_bot)
-                        .send_media_group(telegram_group_id, batch_media,
-                                          caption, opt_topic_id, std::nullopt);
-              } catch (const std::exception &e) {
-                first_send_failed = true;
-                first_send_error = e.what();
-              }
-
-              if (first_send_failed) {
-                OBCX_WARN("合并转发 MediaGroup 第 {}/{} 批失败 ({})，"
-                          "重新校验各 URL 后重试",
-                          batch + 1, total_batches, first_send_error);
-
-                std::vector<std::string> resurgical;
-                batch_media = co_await ImageUrlValidator::sanitize(
-                    *config_, batch_media, resurgical);
-                total_replaced_count += resurgical.size();
-                if (!resurgical.empty()) {
-                  caption += fmt::format(
-                      "\n（重试时新增 {} 张占位替换，无法获取原图）",
-                      resurgical.size());
-                }
-                media_response =
-                    co_await dynamic_cast<obcx::core::ITelegramBot &>(
-                        telegram_bot)
-                        .send_media_group(telegram_group_id, batch_media,
-                                          caption, opt_topic_id, std::nullopt);
-              }
+              bool used_multipart = false;
+              const auto media_response =
+                  co_await send_media_group_with_fallback(
+                      telegram_bot, telegram_group_id, batch_media, caption,
+                      opt_topic_id, std::nullopt, used_multipart);
 
               OBCX_INFO("成功通过MediaGroup发送第 {}/{} 批 {} 张图片{}",
                         batch + 1, total_batches, batch_media.size(),
-                        first_send_failed ? "（占位图重试）" : "");
+                        used_multipart ? "（multipart兜底）" : "");
               sent_count += batch_media.size();
             } catch (const std::exception &e) {
-              OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批占位图重试仍失败: {}，"
-                         "本批放弃",
+              OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批 URL 与 multipart "
+                         "发送均失败: {}，本批放弃",
                          batch + 1, total_batches, e.what());
               obcx::common::MessageSegment error_segment;
               error_segment.type = "text";
@@ -314,6 +477,7 @@ auto QQMessageFormatter::process_forward_message(
                               total_batches, batch_media.size(), e.what());
               message_to_send.push_back(error_segment);
             }
+            batch_start += batch_size;
           }
 
           if (sent_count > 0) {
@@ -423,10 +587,11 @@ auto QQMessageFormatter::send_media_group(
   // 累积所有批次中被占位图替换掉的 URL，仅在最后一批的 caption 末尾追加一次
   // 提示，避免每批都重复一遍。
   std::vector<std::string> total_replaced;
-  for (size_t sent_count = 0; sent_count < image_segments.size();
-       sent_count += 10) {
-    size_t batch_size =
-        std::min(static_cast<size_t>(10), image_segments.size() - sent_count);
+  for (size_t sent_count = 0; sent_count < image_segments.size();) {
+    const size_t remaining = image_segments.size() - sent_count;
+    // Keep a trailing item paired: 11 becomes 9 + 2, never 10 + 1.
+    const size_t batch_size =
+        remaining == 11 ? 9 : std::min(static_cast<size_t>(10), remaining);
     OBCX_DEBUG("准备发送MediaGroup图片，起始索引: {}, 本批次数量: {}",
                sent_count, batch_size);
     std::vector<std::pair<std::string, std::string>> media_list;
@@ -501,53 +666,13 @@ auto QQMessageFormatter::send_media_group(
           }
         }
 
-        std::string media_response;
-        bool first_send_failed = false;
-        std::string first_send_error;
-        try {
-          media_response =
-              co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
-                  .send_media_group(telegram_group_id, media_list, caption,
-                                    opt_topic_id, opt_reply_id);
-        } catch (const std::exception &e) {
-          first_send_failed = true;
-          first_send_error = e.what();
-        }
-
-        bool used_placeholder_retry = false;
-        if (first_send_failed) {
-          OBCX_WARN("MediaGroup 首次发送失败 ({})，重新校验各 URL 后重试",
-                    first_send_error);
-
-          // 让 ImageUrlValidator 再做一次每 URL 的指数退避探测，只把这次新失
-          // 败的 URL 替换成占位图——精准定位真正断的那张，不动其它能正常拉到
-          // 的图。如果再次校验仍然全部 OK 但 Telegram 还是失败，那是 TG 出口
-          // 端的事，让外层重试队列处理。
-          std::vector<std::string> resurgical;
-          media_list = co_await ImageUrlValidator::sanitize(
-              *config_, media_list, resurgical);
-          const size_t resurgical_count = resurgical.size();
-          for (auto &u : resurgical) {
-            total_replaced.push_back(std::move(u));
-          }
-          used_placeholder_retry = resurgical_count > 0;
-
-          if (is_last_batch && used_placeholder_retry) {
-            if (!caption.empty() && caption.back() != '\n') {
-              caption += "\n";
-            }
-            caption += fmt::format("（重试时新增 {} 张占位替换，无法获取原图）",
-                                   resurgical_count);
-          }
-
-          media_response =
-              co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
-                  .send_media_group(telegram_group_id, media_list, caption,
-                                    opt_topic_id, opt_reply_id);
-        }
+        bool used_multipart = false;
+        const auto media_response = co_await send_media_group_with_fallback(
+            telegram_bot, telegram_group_id, media_list, caption, opt_topic_id,
+            opt_reply_id, used_multipart);
 
         OBCX_INFO("成功通过MediaGroup发送 {} 张图片{}", media_list.size(),
-                  used_placeholder_retry ? "（占位图重试）" : "");
+                  used_multipart ? "（multipart兜底）" : "");
 
         if (!media_response.empty()) {
           try {
@@ -575,10 +700,11 @@ auto QQMessageFormatter::send_media_group(
 
         result.sent = true;
       } catch (const std::exception &e) {
-        // 占位图重试还失败：问题不在 URL 而在 Telegram 端，单图重试同样无效。
-        OBCX_ERROR("MediaGroup 占位图重试仍失败: {}，本批放弃", e.what());
+        OBCX_ERROR("MediaGroup URL 与 multipart 发送均失败: {}，本批放弃",
+                   e.what());
       }
     }
+    sent_count += batch_size;
   }
   co_return result;
 }
