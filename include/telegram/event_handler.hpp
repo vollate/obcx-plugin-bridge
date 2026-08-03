@@ -1,5 +1,7 @@
 #pragma once
 
+#include "bridge_forwarder.hpp"
+
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <core/blocking_executor.hpp>
@@ -26,7 +28,7 @@ public:
    */
   explicit TelegramEventHandler(
       std::shared_ptr<bridge::BridgeStateRepository> state_repository,
-      std::function<boost::asio::awaitable<void>(
+      std::function<boost::asio::awaitable<DirectForwardOutcome>(
           obcx::core::IBot &, obcx::core::IBot &, obcx::common::MessageEvent)>
           forward_function,
       std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor);
@@ -53,12 +55,12 @@ public:
   auto handle_message_edited(obcx::core::IBot &telegram_bot,
                              obcx::core::IBot &qq_bot,
                              obcx::common::MessageEvent event)
-      -> boost::asio::awaitable<void>;
+      -> boost::asio::awaitable<DirectForwardOutcome>;
 
 private:
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
   std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
-  std::function<boost::asio::awaitable<void>(
+  std::function<boost::asio::awaitable<DirectForwardOutcome>(
       obcx::core::IBot &, obcx::core::IBot &, obcx::common::MessageEvent)>
       forward_function_;
 };

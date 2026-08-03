@@ -135,7 +135,8 @@ auto persist_successful_message_mapping(
     mapping.target_platform = entry.target_platform;
     mapping.target_message_id = target_message_id;
     mapping.created_at = std::chrono::system_clock::now();
-    return repository->add_message_mapping(mapping);
+    return repository->add_message_mapping(
+        mapping, MessageMappingWritePurpose::RetryCompletion);
   } catch (const std::exception &e) {
     OBCX_ERROR("Failed to persist mapping after successful retry: {}",
                e.what());

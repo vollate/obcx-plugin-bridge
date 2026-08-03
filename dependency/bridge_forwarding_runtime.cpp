@@ -378,33 +378,26 @@ auto BridgeForwardingRuntime::forward_message(
   const auto source_bot = require_bot(bot_registry_, from_platform);
   const auto target_bot = require_bot(bot_registry_, to_platform);
 
+  DirectForwardOutcome outcome;
   if (from_platform == "qq") {
-    co_await qq_handler_->forward_to_telegram(*target_bot.bot, *source_bot.bot,
-                                              event.value());
+    outcome = co_await qq_handler_->forward_to_telegram(
+        *target_bot.bot, *source_bot.bot, event.value());
   } else if (is_telegram_edit(event.value())) {
-    co_await telegram_handler_->handle_message_edited(
+    outcome = co_await telegram_handler_->handle_message_edited(
         *source_bot.bot, *target_bot.bot, event.value());
   } else {
-    co_await telegram_handler_->forward_to_qq(*source_bot.bot, *target_bot.bot,
-                                              event.value());
+    outcome = co_await telegram_handler_->forward_to_qq(
+        *source_bot.bot, *target_bot.bot, event.value());
   }
 
-  auto target_message_id = co_await blocking_executor_->run(
-      [repository = state_repository_, from_platform,
-       source_message_id = event->message_id, to_platform] {
-        return repository->get_target_message_id(
-            from_platform, source_message_id, to_platform);
-      });
-  if (!target_message_id.has_value()) {
-    throw std::runtime_error(
-        "bridge forwarding completed without persisted mapping");
-  }
-
-  co_return BridgeForwardResult{.source_platform = from_platform,
-                                .source_message_id = event->message_id,
-                                .target_platform = to_platform,
-                                .target_bot = target_bot.bot_id,
-                                .target_message_id = target_message_id.value()};
+  co_return BridgeForwardResult{
+      .disposition = outcome.disposition,
+      .source_platform = std::move(outcome.source_platform),
+      .source_message_id = std::move(outcome.source_message_id),
+      .target_platform = std::move(outcome.target_platform),
+      .target_bot = target_bot.bot_id,
+      .target_message_id = std::move(outcome.target_message_id),
+  };
 }
 
 auto BridgeForwardingRuntime::handle_command(

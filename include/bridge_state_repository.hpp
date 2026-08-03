@@ -4,12 +4,37 @@
 
 #include <core/db_manager.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace bridge {
+
+enum class MessageMappingReadPurpose {
+  General,
+  PreSendDeduplication,
+  PostSendRecovery,
+};
+
+enum class MessageMappingWritePurpose {
+  General,
+  DirectForward,
+  RetryCompletion,
+  DeferredMediaGroup,
+};
+
+struct MessageMappingOperationCounts {
+  std::uint64_t general_reads = 0;
+  std::uint64_t pre_send_deduplication_reads = 0;
+  std::uint64_t post_send_recovery_reads = 0;
+  std::uint64_t general_writes = 0;
+  std::uint64_t direct_forward_writes = 0;
+  std::uint64_t retry_completion_writes = 0;
+  std::uint64_t deferred_media_group_writes = 0;
+};
 
 struct MediaGroupMapping {
   std::string source_platform;
@@ -29,11 +54,17 @@ public:
 
   void initialize_schema();
 
-  auto add_message_mapping(const storage::MessageMapping &mapping) -> bool;
-  auto get_target_message_id(const std::string &source_platform,
-                             const std::string &source_message_id,
-                             const std::string &target_platform)
+  auto add_message_mapping(const storage::MessageMapping &mapping,
+                           MessageMappingWritePurpose purpose =
+                               MessageMappingWritePurpose::General) -> bool;
+  auto get_target_message_id(
+      const std::string &source_platform, const std::string &source_message_id,
+      const std::string &target_platform,
+      MessageMappingReadPurpose purpose = MessageMappingReadPurpose::General)
       -> std::optional<std::string>;
+  [[nodiscard]] auto message_mapping_operation_counts() const noexcept
+      -> MessageMappingOperationCounts;
+  void reset_message_mapping_operation_counts() noexcept;
   auto get_source_message_id(const std::string &target_platform,
                              const std::string &target_message_id,
                              const std::string &source_platform)
@@ -103,6 +134,13 @@ private:
   obcx::core::DbManager &db_manager_;
   std::string db_instance_;
   std::string db_namespace_;
+  std::atomic_uint64_t general_mapping_reads_ = 0;
+  std::atomic_uint64_t pre_send_deduplication_reads_ = 0;
+  std::atomic_uint64_t post_send_recovery_reads_ = 0;
+  std::atomic_uint64_t general_mapping_writes_ = 0;
+  std::atomic_uint64_t direct_forward_writes_ = 0;
+  std::atomic_uint64_t retry_completion_writes_ = 0;
+  std::atomic_uint64_t deferred_media_group_writes_ = 0;
 };
 
 } // namespace bridge

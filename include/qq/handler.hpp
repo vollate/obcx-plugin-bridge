@@ -1,5 +1,7 @@
 #pragma once
 
+#include "bridge_forwarder.hpp"
+
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <core/blocking_executor.hpp>
@@ -59,7 +61,7 @@ public:
   auto forward_to_telegram(obcx::core::IBot &telegram_bot,
                            obcx::core::IBot &qq_bot,
                            obcx::common::MessageEvent event)
-      -> boost::asio::awaitable<void>;
+      -> boost::asio::awaitable<DirectForwardOutcome>;
 
   /**
    * @brief 处理QQ撤回事件

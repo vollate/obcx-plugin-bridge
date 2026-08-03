@@ -237,7 +237,22 @@ void BridgeStateRepository::initialize_schema() {
 }
 
 auto BridgeStateRepository::add_message_mapping(
-    const storage::MessageMapping &mapping) -> bool {
+    const storage::MessageMapping &mapping,
+    const MessageMappingWritePurpose purpose) -> bool {
+  switch (purpose) {
+  case MessageMappingWritePurpose::General:
+    general_mapping_writes_.fetch_add(1, std::memory_order_relaxed);
+    break;
+  case MessageMappingWritePurpose::DirectForward:
+    direct_forward_writes_.fetch_add(1, std::memory_order_relaxed);
+    break;
+  case MessageMappingWritePurpose::RetryCompletion:
+    retry_completion_writes_.fetch_add(1, std::memory_order_relaxed);
+    break;
+  case MessageMappingWritePurpose::DeferredMediaGroup:
+    deferred_media_group_writes_.fetch_add(1, std::memory_order_relaxed);
+    break;
+  }
   return db_manager_.run_write<bool>(
       db_instance_, [&mapping](obcx::core::IDbConnection &connection) {
         connection.execute(R"(
@@ -255,7 +270,19 @@ auto BridgeStateRepository::add_message_mapping(
 
 auto BridgeStateRepository::get_target_message_id(
     const std::string &source_platform, const std::string &source_message_id,
-    const std::string &target_platform) -> std::optional<std::string> {
+    const std::string &target_platform, const MessageMappingReadPurpose purpose)
+    -> std::optional<std::string> {
+  switch (purpose) {
+  case MessageMappingReadPurpose::General:
+    general_mapping_reads_.fetch_add(1, std::memory_order_relaxed);
+    break;
+  case MessageMappingReadPurpose::PreSendDeduplication:
+    pre_send_deduplication_reads_.fetch_add(1, std::memory_order_relaxed);
+    break;
+  case MessageMappingReadPurpose::PostSendRecovery:
+    post_send_recovery_reads_.fetch_add(1, std::memory_order_relaxed);
+    break;
+  }
   if (source_message_id.empty()) {
     return std::nullopt;
   }
@@ -276,6 +303,34 @@ auto BridgeStateRepository::get_target_message_id(
         return std::optional<std::string>{
             std::get<std::string>(rows.front().at("target_message_id"))};
       });
+}
+
+auto BridgeStateRepository::message_mapping_operation_counts() const noexcept
+    -> MessageMappingOperationCounts {
+  return {
+      .general_reads = general_mapping_reads_.load(std::memory_order_relaxed),
+      .pre_send_deduplication_reads =
+          pre_send_deduplication_reads_.load(std::memory_order_relaxed),
+      .post_send_recovery_reads =
+          post_send_recovery_reads_.load(std::memory_order_relaxed),
+      .general_writes = general_mapping_writes_.load(std::memory_order_relaxed),
+      .direct_forward_writes =
+          direct_forward_writes_.load(std::memory_order_relaxed),
+      .retry_completion_writes =
+          retry_completion_writes_.load(std::memory_order_relaxed),
+      .deferred_media_group_writes =
+          deferred_media_group_writes_.load(std::memory_order_relaxed),
+  };
+}
+
+void BridgeStateRepository::reset_message_mapping_operation_counts() noexcept {
+  general_mapping_reads_.store(0, std::memory_order_relaxed);
+  pre_send_deduplication_reads_.store(0, std::memory_order_relaxed);
+  post_send_recovery_reads_.store(0, std::memory_order_relaxed);
+  general_mapping_writes_.store(0, std::memory_order_relaxed);
+  direct_forward_writes_.store(0, std::memory_order_relaxed);
+  retry_completion_writes_.store(0, std::memory_order_relaxed);
+  deferred_media_group_writes_.store(0, std::memory_order_relaxed);
 }
 
 auto BridgeStateRepository::add_message_retry(

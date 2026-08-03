@@ -9,7 +9,7 @@ namespace bridge::telegram {
 
 TelegramEventHandler::TelegramEventHandler(
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
-    std::function<boost::asio::awaitable<void>(
+    std::function<boost::asio::awaitable<DirectForwardOutcome>(
         obcx::core::IBot &, obcx::core::IBot &, obcx::common::MessageEvent)>
         forward_function,
     std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
@@ -34,11 +34,14 @@ auto TelegramEventHandler::handle_message_deleted(
 
 auto TelegramEventHandler::handle_message_edited(
     obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
-    obcx::common::MessageEvent event) -> boost::asio::awaitable<void> {
+    obcx::common::MessageEvent event)
+    -> boost::asio::awaitable<DirectForwardOutcome> {
+
+  DirectForwardOutcome outcome;
 
   try {
     if (event.message_type != "group" || !event.group_id.has_value()) {
-      co_return;
+      co_return outcome;
     }
 
     const std::string telegram_group_id = event.group_id.value();
@@ -56,7 +59,7 @@ auto TelegramEventHandler::handle_message_edited(
 
     if (!target_message_id.has_value()) {
       OBCX_DEBUG("未找到Telegram消息 {} 对应的QQ消息映射", event.message_id);
-      co_return;
+      co_return outcome;
     }
 
     bool recall_success = false;
@@ -89,7 +92,10 @@ auto TelegramEventHandler::handle_message_edited(
       // 标记此消息为编辑消息，让 forward_function_ 走"更新映射"分支而非新建
       const_cast<nlohmann::json &>(event.data)["is_edited_resend"] = true;
 
-      co_await forward_function_(telegram_bot, qq_bot, event);
+      outcome = co_await forward_function_(telegram_bot, qq_bot, event);
+      if (outcome.disposition == DirectForwardDisposition::NotForwarded) {
+        resend_failed = true;
+      }
 
       OBCX_INFO("成功重发编辑后的消息");
     } catch (const std::exception &e) {
@@ -111,12 +117,13 @@ auto TelegramEventHandler::handle_message_edited(
         }
         OBCX_WARN("撤回和重发都失败，已删除消息映射");
       }
-      co_return;
+      co_return outcome;
     }
 
   } catch (const std::exception &e) {
     OBCX_ERROR("处理Telegram编辑事件时出错: {}", e.what());
   }
+  co_return outcome;
 }
 
 } // namespace bridge::telegram

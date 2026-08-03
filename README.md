@@ -140,6 +140,28 @@ the process `PATH`. `action_timeout` should remain above the upstream
 first-media-send latency; 30 seconds is the example default. Telegram
 `poll_force_close` must be larger than `poll_timeout`.
 
+### Direct mapping persistence
+
+Immediate forwarding has one explicit durability owner. QQ and Telegram
+handlers return a typed outcome containing the complete mapping and one of
+`NewDelivery`, `AlreadyPersisted`, or `NotForwarded`. The forwarding runtime
+passes that value through without querying the mapping table after the bot
+send.
+
+For `NewDelivery`, `BridgeActor` performs the only primary mapping upsert and
+publishes `MessageForwarded` only after that write succeeds. For
+`AlreadyPersisted`, the pre-send de-duplication read supplies the durable
+target id, so the actor emits the existing completion without another bot send
+or mapping write. An incomplete result or failed upsert emits
+`MessageForwardFailed`; it does not blindly repeat a bot send whose remote side
+effect may already have succeeded.
+
+Retry completion and deferred Telegram media-group flush remain specialized
+persistence owners because they update retry state or fan one target id out to
+multiple source mappings. An inline QQ media-group send is awaited normally
+and returns its primary Telegram message id to the actor for the single direct
+upsert.
+
 ### Message retry operations
 
 When `enable_retry_queue` is `true`, one worker belongs to the active bridge

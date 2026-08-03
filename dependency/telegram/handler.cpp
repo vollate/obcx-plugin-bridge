@@ -63,7 +63,7 @@ TelegramHandler::TelegramHandler(
           state_repository_,
           [this](obcx::core::IBot &tg_bot, obcx::core::IBot &qq_bot,
                  obcx::common::MessageEvent event)
-              -> boost::asio::awaitable<void> {
+              -> boost::asio::awaitable<DirectForwardOutcome> {
             return forward_to_qq(tg_bot, qq_bot, std::move(event));
           },
           blocking_executor_)),
@@ -74,7 +74,9 @@ TelegramHandler::TelegramHandler(
 auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
                                     obcx::core::IBot &qq_bot,
                                     obcx::common::MessageEvent event)
-    -> boost::asio::awaitable<void> {
+    -> boost::asio::awaitable<DirectForwardOutcome> {
+
+  DirectForwardOutcome outcome;
 
   // 更新Telegram平台心跳时间
   if (state_repository_) {
@@ -86,7 +88,7 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
   }
 
   if (event.message_type != "group" || !event.group_id.has_value()) {
-    co_return;
+    co_return outcome;
   }
 
   // Telegram albums (media-groups) arrive as several distinct Update events
@@ -125,7 +127,7 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
               },
               boost::asio::detached);
         });
-    co_return;
+    co_return outcome;
   }
 
   const std::string telegram_group_id = event.group_id.value();
@@ -135,7 +137,7 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
   bridge_config = config_->bridge_config(telegram_group_id);
   if (bridge_config == nullptr) {
     OBCX_DEBUG("Telegram群 {} 没有对应的QQ群配置", telegram_group_id);
-    co_return;
+    co_return outcome;
   }
 
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
@@ -146,7 +148,7 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
     if (!bridge_config->enable_tg_to_qq) {
       OBCX_DEBUG("Telegram群 {} 到QQ群 {} 的转发已禁用，跳过",
                  telegram_group_id, qq_group_id);
-      co_return;
+      co_return outcome;
     }
   } else {
     // Topic 模式：消息携带 message_thread_id 时按 topic 路由到不同 QQ 群
@@ -160,7 +162,7 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
     if (!topic_config) {
       OBCX_DEBUG("Telegram消息来自topic {}，没有对应的QQ群配置，跳过转发",
                  message_thread_id);
-      co_return;
+      co_return outcome;
     }
 
     qq_group_id = topic_config->qq_group_id;
@@ -170,14 +172,14 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
     if (!topic_config->enable_tg_to_qq) {
       OBCX_DEBUG("Telegram topic {} 到QQ群 {} 的转发已禁用，跳过",
                  message_thread_id, qq_group_id);
-      co_return;
+      co_return outcome;
     }
   }
 
   // 检查是否是回环消息（从QQ转发过来的）
   if (event.raw_message.starts_with("[QQ] ")) {
     OBCX_DEBUG("检测到可能是回环的QQ消息，跳过转发");
-    co_return;
+    co_return outcome;
   }
 
   bool is_edited_resend = event.data.contains("is_edited_resend") &&
@@ -187,12 +189,19 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
   if (!is_edited_resend && state_repository_) {
     const auto existing = co_await blocking_executor_->run(
         [repository = state_repository_, message_id = event.message_id] {
-          return repository->get_target_message_id("telegram", message_id,
-                                                   "qq");
+          return repository->get_target_message_id(
+              "telegram", message_id, "qq",
+              MessageMappingReadPurpose::PreSendDeduplication);
         });
     if (existing.has_value()) {
       OBCX_DEBUG("Telegram消息 {} 已转发到QQ，跳过重复处理", event.message_id);
-      co_return;
+      co_return DirectForwardOutcome{
+          .disposition = DirectForwardDisposition::AlreadyPersisted,
+          .source_platform = "telegram",
+          .source_message_id = event.message_id,
+          .target_platform = "qq",
+          .target_message_id = *existing,
+      };
     }
   }
 
@@ -279,43 +288,13 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
             qq_message_id = std::to_string(
                 response_json["data"]["message_id"].get<int64_t>());
 
-            if (is_edited_resend) {
-              // 编辑重发：更新已有映射，不要新建
-              const bool updated =
-                  state_repository_ &&
-                  co_await blocking_executor_->run(
-                      [repository = state_repository_,
-                       message_id = event.message_id,
-                       target_message_id = *qq_message_id] {
-                        return repository->update_message_mapping(
-                            "telegram", message_id, "qq", target_message_id);
-                      });
-              if (!updated) {
-                OBCX_WARN("更新消息映射失败: telegram:{} -> qq:{}",
-                          event.message_id, qq_message_id.value());
-              } else {
-                OBCX_INFO("成功更新消息映射: telegram:{} -> qq:{}",
-                          event.message_id, qq_message_id.value());
-              }
-            } else {
-              storage::MessageMapping mapping;
-              mapping.source_platform = "telegram";
-              mapping.source_message_id = event.message_id;
-              mapping.target_platform = "qq";
-              mapping.target_message_id = qq_message_id.value();
-              mapping.created_at = std::chrono::system_clock::now();
-
-              const bool added =
-                  state_repository_ &&
-                  co_await blocking_executor_->run(
-                      [repository = state_repository_, mapping] {
-                        return repository->add_message_mapping(mapping);
-                      });
-              if (!added) {
-                OBCX_WARN("保存消息映射失败: telegram:{} -> qq:{}",
-                          event.message_id, qq_message_id.value());
-              }
-            }
+            outcome = DirectForwardOutcome{
+                .disposition = DirectForwardDisposition::NewDelivery,
+                .source_platform = "telegram",
+                .source_message_id = event.message_id,
+                .target_platform = "qq",
+                .target_message_id = *qq_message_id,
+            };
 
             OBCX_INFO("成功转发Telegram消息到QQ: {} -> {}", event.message_id,
                       qq_message_id.value());
@@ -364,6 +343,7 @@ auto TelegramHandler::forward_to_qq(obcx::core::IBot &telegram_bot,
           }
         });
   }
+  co_return outcome;
 }
 
 auto TelegramHandler::handle_message_deleted(obcx::core::IBot &telegram_bot,
@@ -376,7 +356,7 @@ auto TelegramHandler::handle_message_deleted(obcx::core::IBot &telegram_bot,
 auto TelegramHandler::handle_message_edited(obcx::core::IBot &telegram_bot,
                                             obcx::core::IBot &qq_bot,
                                             obcx::common::MessageEvent event)
-    -> boost::asio::awaitable<void> {
+    -> boost::asio::awaitable<DirectForwardOutcome> {
   if (state_repository_) {
     const auto now = std::chrono::system_clock::now();
     (void)co_await blocking_executor_->run(
@@ -385,7 +365,8 @@ auto TelegramHandler::handle_message_edited(obcx::core::IBot &telegram_bot,
         });
   }
 
-  co_await event_handler_->handle_message_edited(telegram_bot, qq_bot, event);
+  co_return co_await event_handler_->handle_message_edited(telegram_bot, qq_bot,
+                                                           std::move(event));
 }
 
 auto TelegramHandler::handle_recall_command(obcx::core::IBot &telegram_bot,
@@ -504,7 +485,8 @@ auto TelegramHandler::forward_media_group_to_qq(
                 .target_message_id = *existing,
                 .created_at = std::chrono::system_clock::now(),
             };
-            if (!repository->add_message_mapping(mapping)) {
+            if (!repository->add_message_mapping(
+                    mapping, MessageMappingWritePurpose::DeferredMediaGroup)) {
               OBCX_WARN("修复media-group消息映射失败: telegram:{} -> qq:{}",
                         event.message_id, *existing);
             }
@@ -649,7 +631,9 @@ auto TelegramHandler::forward_media_group_to_qq(
                       .target_message_id = target_message_id,
                       .created_at = std::chrono::system_clock::now(),
                   };
-                  if (!repository->add_message_mapping(mapping)) {
+                  if (!repository->add_message_mapping(
+                          mapping,
+                          MessageMappingWritePurpose::DeferredMediaGroup)) {
                     OBCX_WARN(
                         "保存media-group消息映射失败: telegram:{} -> qq:{}",
                         event.message_id, target_message_id);

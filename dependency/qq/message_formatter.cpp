@@ -409,15 +409,17 @@ auto QQMessageFormatter::send_media_group(
     const std::string &sender_display_name,
     const GroupBridgeConfig *bridge_config,
     const obcx::common::Message &message_to_send,
-    const obcx::common::MessageEvent &event) -> boost::asio::awaitable<bool> {
+    const obcx::common::MessageEvent &event)
+    -> boost::asio::awaitable<MediaGroupSendResult> {
+
+  MediaGroupSendResult result;
 
   if (image_segments.size() <= 1) {
-    co_return false;
+    co_return result;
   }
 
   OBCX_INFO("检测到多张图片({})，使用MediaGroup发送", image_segments.size());
 
-  bool any_batch_sent = false;
   // 累积所有批次中被占位图替换掉的 URL，仅在最后一批的 caption 末尾追加一次
   // 提示，避免每批都重复一遍。
   std::vector<std::string> total_replaced;
@@ -559,20 +561,11 @@ auto QQMessageFormatter::send_media_group(
               if (first_msg.contains("message_id")) {
                 std::string tg_msg_id =
                     std::to_string(first_msg["message_id"].get<int64_t>());
-                storage::MessageMapping mapping;
-                mapping.source_platform = "qq";
-                mapping.source_message_id = event.message_id;
-                mapping.target_platform = "telegram";
-                mapping.target_message_id = tg_msg_id;
-                mapping.created_at = std::chrono::system_clock::now();
-                if (state_repository_) {
-                  (void)co_await blocking_executor_->run(
-                      [repository = state_repository_, mapping] {
-                        return repository->add_message_mapping(mapping);
-                      });
+                if (!result.primary_target_message_id.has_value()) {
+                  result.primary_target_message_id = tg_msg_id;
                 }
-                OBCX_DEBUG("记录MediaGroup消息映射: QQ {} -> TG {}",
-                           event.message_id, tg_msg_id);
+                OBCX_DEBUG("MediaGroup主消息: QQ {} -> TG {}", event.message_id,
+                           tg_msg_id);
               }
             }
           } catch (const std::exception &e) {
@@ -580,14 +573,14 @@ auto QQMessageFormatter::send_media_group(
           }
         }
 
-        any_batch_sent = true;
+        result.sent = true;
       } catch (const std::exception &e) {
         // 占位图重试还失败：问题不在 URL 而在 Telegram 端，单图重试同样无效。
         OBCX_ERROR("MediaGroup 占位图重试仍失败: {}，本批放弃", e.what());
       }
     }
   }
-  co_return any_batch_sent;
+  co_return result;
 }
 
 auto QQMessageFormatter::get_user_display_name(obcx::core::IBot &qq_bot,

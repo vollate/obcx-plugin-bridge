@@ -9,7 +9,22 @@
 
 namespace bridge {
 
+enum class DirectForwardDisposition {
+  NotForwarded,
+  NewDelivery,
+  AlreadyPersisted,
+};
+
+struct DirectForwardOutcome {
+  DirectForwardDisposition disposition = DirectForwardDisposition::NotForwarded;
+  std::string source_platform;
+  std::string source_message_id;
+  std::string target_platform;
+  std::string target_message_id;
+};
+
 struct BridgeForwardResult {
+  DirectForwardDisposition disposition = DirectForwardDisposition::NotForwarded;
   std::string source_platform;
   std::string source_message_id;
   std::string target_platform;

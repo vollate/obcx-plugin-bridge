@@ -107,6 +107,10 @@ auto BridgeActor::resolve_repository(obcx::core::ActorContext &context)
   if (repository_) {
     return repository_;
   }
+  if (auto injected = context.get_service<BridgeStateRepository>()) {
+    repository_ = std::move(injected);
+    return repository_;
+  }
 
   auto db_manager = context.get_service<obcx::core::DbManager>();
   if (!db_manager) {
@@ -264,6 +268,16 @@ auto BridgeActor::handle(
             co_return co_await forwarder->forward_message(forwarded);
           });
       auto mapping = mapping_from_forward_result(forward_result);
+      if (forward_result.disposition ==
+          DirectForwardDisposition::NotForwarded) {
+        auto result = obcx::core::ActorResult::failed(
+            "bridge_not_forwarded",
+            "bridge handler did not produce a direct delivery", true);
+        result.emit(build_failed_event(
+            message, "bridge_not_forwarded",
+            "bridge handler did not produce a direct delivery", true));
+        co_return result;
+      }
       if (mapping.source_platform.empty() ||
           mapping.source_message_id.empty() ||
           mapping.target_platform.empty() ||
@@ -277,9 +291,30 @@ auto BridgeActor::handle(
         co_return result;
       }
 
-      (void)co_await context.run_blocking([repository, mapping] {
-        return repository->add_message_mapping(mapping);
-      });
+      if (forward_result.disposition == DirectForwardDisposition::NewDelivery) {
+        bool persisted = false;
+        try {
+          persisted = co_await context.run_blocking([repository, mapping] {
+            return repository->add_message_mapping(
+                mapping, MessageMappingWritePurpose::DirectForward);
+          });
+        } catch (const std::exception &error) {
+          auto result = obcx::core::ActorResult::failed(
+              "mapping_persistence_failed", error.what(), false);
+          result.emit(build_failed_event(message, "mapping_persistence_failed",
+                                         error.what(), false));
+          co_return result;
+        }
+        if (!persisted) {
+          auto result = obcx::core::ActorResult::failed(
+              "mapping_persistence_failed",
+              "bridge mapping repository rejected the direct mapping", false);
+          result.emit(build_failed_event(
+              message, "mapping_persistence_failed",
+              "bridge mapping repository rejected the direct mapping", false));
+          co_return result;
+        }
+      }
       auto result = obcx::core::ActorResult::success();
       result.emit(
           build_forwarded_event(message, mapping, forward_result.target_bot));
@@ -310,9 +345,28 @@ auto BridgeActor::handle(
         .target_message_id = target_message_id,
         .created_at = std::chrono::system_clock::now(),
     };
-    (void)co_await context.run_blocking([repository, mapping] {
-      return repository->add_message_mapping(mapping);
-    });
+    bool persisted = false;
+    try {
+      persisted = co_await context.run_blocking([repository, mapping] {
+        return repository->add_message_mapping(
+            mapping, MessageMappingWritePurpose::DirectForward);
+      });
+    } catch (const std::exception &error) {
+      auto result = obcx::core::ActorResult::failed(
+          "mapping_persistence_failed", error.what(), false);
+      result.emit(build_failed_event(message, "mapping_persistence_failed",
+                                     error.what(), false));
+      co_return result;
+    }
+    if (!persisted) {
+      auto result = obcx::core::ActorResult::failed(
+          "mapping_persistence_failed",
+          "bridge mapping repository rejected the direct mapping", false);
+      result.emit(build_failed_event(
+          message, "mapping_persistence_failed",
+          "bridge mapping repository rejected the direct mapping", false));
+      co_return result;
+    }
 
     auto result = obcx::core::ActorResult::success();
     result.emit(build_forwarded_event(

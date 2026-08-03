@@ -7,6 +7,7 @@
 #include <core/blocking_executor.hpp>
 #include <interfaces/bot.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,11 @@ struct BridgeConfig;
 } // namespace bridge
 
 namespace bridge::qq {
+
+struct MediaGroupSendResult {
+  bool sent = false;
+  std::optional<std::string> primary_target_message_id;
+};
 
 /**
  * @brief QQ消息格式化器
@@ -101,7 +107,7 @@ public:
    * @param bridge_config 桥接配置
    * @param message_to_send 消息段列表
    * @param event 原始消息事件
-   * @return 是否成功发送MediaGroup
+   * @return 是否发送成功以及第一条目标消息 ID
    */
   auto send_media_group(
       obcx::core::IBot &telegram_bot,
@@ -111,7 +117,8 @@ public:
       const std::string &sender_display_name,
       const GroupBridgeConfig *bridge_config,
       const obcx::common::Message &message_to_send,
-      const obcx::common::MessageEvent &event) -> boost::asio::awaitable<bool>;
+      const obcx::common::MessageEvent &event)
+      -> boost::asio::awaitable<MediaGroupSendResult>;
 
   static auto fetch_and_save_user_info(
       std::shared_ptr<bridge::BridgeStateRepository> state_repository,

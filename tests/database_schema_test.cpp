@@ -82,6 +82,57 @@ TEST(BridgeDatabaseSchemaTest,
   std::filesystem::remove(db_path);
 }
 
+TEST(BridgeDatabaseSchemaTest, CountsEveryMappingOperationPurposeSeparately) {
+  const auto db_path = temp_db_path("mapping_operation_purposes");
+  obcx::core::DbManager db_manager;
+  db_manager.configure({sqlite_config("main", db_path)});
+  bridge::BridgeStateRepository repository(db_manager, "main", "bridge");
+  repository.initialize_schema();
+
+  const storage::MessageMapping mapping{
+      .source_platform = "qq",
+      .source_message_id = "qq-operation-count",
+      .target_platform = "telegram",
+      .target_message_id = "tg-operation-count",
+      .created_at = std::chrono::system_clock::now(),
+  };
+  repository.reset_message_mapping_operation_counts();
+  ASSERT_TRUE(repository.add_message_mapping(
+      mapping, bridge::MessageMappingWritePurpose::General));
+  ASSERT_TRUE(repository.add_message_mapping(
+      mapping, bridge::MessageMappingWritePurpose::DirectForward));
+  ASSERT_TRUE(repository.add_message_mapping(
+      mapping, bridge::MessageMappingWritePurpose::RetryCompletion));
+  ASSERT_TRUE(repository.add_message_mapping(
+      mapping, bridge::MessageMappingWritePurpose::DeferredMediaGroup));
+  EXPECT_TRUE(
+      repository
+          .get_target_message_id("qq", mapping.source_message_id, "telegram",
+                                 bridge::MessageMappingReadPurpose::General)
+          .has_value());
+  EXPECT_TRUE(repository
+                  .get_target_message_id(
+                      "qq", mapping.source_message_id, "telegram",
+                      bridge::MessageMappingReadPurpose::PreSendDeduplication)
+                  .has_value());
+  EXPECT_TRUE(repository
+                  .get_target_message_id(
+                      "qq", mapping.source_message_id, "telegram",
+                      bridge::MessageMappingReadPurpose::PostSendRecovery)
+                  .has_value());
+
+  const auto counts = repository.message_mapping_operation_counts();
+  EXPECT_EQ(counts.general_reads, 1U);
+  EXPECT_EQ(counts.pre_send_deduplication_reads, 1U);
+  EXPECT_EQ(counts.post_send_recovery_reads, 1U);
+  EXPECT_EQ(counts.general_writes, 1U);
+  EXPECT_EQ(counts.direct_forward_writes, 1U);
+  EXPECT_EQ(counts.retry_completion_writes, 1U);
+  EXPECT_EQ(counts.deferred_media_group_writes, 1U);
+
+  std::filesystem::remove(db_path);
+}
+
 TEST(BridgeDatabaseSchemaTest,
      BridgeStateRepositoryPersistsBridgeOwnedCacheState) {
   const auto db_path = temp_db_path("cache_state");
