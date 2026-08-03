@@ -75,7 +75,9 @@ private:
   std::string container_base_;
 
   /**
-   * @brief 规范化路径（移除末尾斜杠，解析 . 和 .. 等）
+   * @brief 纯词法规范化路径（移除末尾斜杠，解析 . 和 .. 等）
+   *
+   * 路径可能属于容器命名空间，因此不能访问宿主机文件系统来规范化。
    */
   auto normalize_path(const std::string &path) const -> std::string;
 };

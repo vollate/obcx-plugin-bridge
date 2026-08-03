@@ -48,6 +48,12 @@ target_include_directories(
 target_link_libraries(message_event_adapter_test PRIVATE bridge_core
                                                          GTest::gtest_main)
 
+add_executable(path_manager_test path_manager_test.cpp)
+target_include_directories(
+  path_manager_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
+                            ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(path_manager_test PRIVATE bridge_core GTest::gtest_main)
+
 add_executable(bridge_db_runtime_test bridge_db_runtime_test.cpp)
 target_include_directories(
   bridge_db_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
@@ -68,6 +74,8 @@ gtest_discover_tests(handler_repository_test DISCOVERY_MODE PRE_TEST
 gtest_discover_tests(received_message_repository_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")
 gtest_discover_tests(message_event_adapter_test DISCOVERY_MODE PRE_TEST
+                     PROPERTIES LABELS "${_bridge_test_labels}")
+gtest_discover_tests(path_manager_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")
 gtest_discover_tests(bridge_db_runtime_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")

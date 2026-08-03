@@ -124,21 +124,14 @@ auto PathManager::normalize_path(const std::string &path) const -> std::string {
     return path;
   }
 
-  try {
-    std::filesystem::path fs_path(path);
-    fs_path = std::filesystem::weakly_canonical(fs_path);
-    std::string result = fs_path.string();
+  auto result = std::filesystem::path{path}.lexically_normal().string();
 
-    // 移除末尾的斜杠（除非是根路径）
-    if (result.length() > 1 && result.back() == '/') {
-      result.pop_back();
-    }
-
-    return result;
-  } catch (const std::exception &e) {
-    OBCX_WARN("Failed to normalize path '{}': {}", path, e.what());
-    return path;
+  // 移除末尾的斜杠（除非是根路径）
+  if (result.length() > 1 && result.back() == '/') {
+    result.pop_back();
   }
+
+  return result;
 }
 
 } // namespace bridge
