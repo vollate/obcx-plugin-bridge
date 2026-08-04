@@ -365,10 +365,11 @@ public:
   auto send_media_group_uploads(
       std::string_view,
       const std::vector<obcx::core::TelegramMediaUpload> &media,
-      std::string_view, std::optional<int64_t>, std::optional<std::string>)
-      -> asio::awaitable<std::string> override {
+      std::string_view caption, std::optional<int64_t>,
+      std::optional<std::string>) -> asio::awaitable<std::string> override {
     multipart_send_calls.fetch_add(1, std::memory_order_relaxed);
     uploaded_media = media;
+    last_caption = caption;
     for (const auto &entry : std::filesystem::directory_iterator(
              std::filesystem::temp_directory_path())) {
       if (!entry.is_directory() ||
@@ -395,6 +396,7 @@ public:
   std::atomic_bool multipart_fails = false;
   std::vector<obcx::core::TelegramMediaUpload> uploaded_media;
   std::filesystem::path observed_temporary_root;
+  std::string last_caption;
 };
 
 class NoticeTestTelegramBot final : public obcx::core::TGBot {
@@ -1207,21 +1209,30 @@ TEST(BridgeActorTest,
       [&download_calls](
           const bridge::BridgeConfig &,
           const std::vector<std::pair<std::string, std::string>> &media)
-          -> asio::awaitable<std::vector<bridge::qq::DownloadedImage>> {
+          -> asio::awaitable<std::vector<bridge::qq::MediaDownloadResult>> {
         download_calls.fetch_add(1, std::memory_order_relaxed);
         EXPECT_EQ(media.size(), 2U);
-        co_return std::vector<bridge::qq::DownloadedImage>{
-            {.type = "photo",
-             .original_url = media[0].second,
-             .filename = "qq-media-0.jpg",
-             .mime_type = "image/jpeg",
-             .data = "download-one"},
-            {.type = "photo",
-             .original_url = media[1].second,
-             .filename = "qq-media-1.png",
-             .mime_type = "image/png",
-             .data = "download-two"},
+        co_return std::vector<bridge::qq::MediaDownloadResult>{
+            {.image =
+                 bridge::qq::DownloadedImage{.type = "photo",
+                                             .original_url = media[0].second,
+                                             .filename = "qq-media-0.jpg",
+                                             .mime_type = "image/jpeg",
+                                             .data = "download-one"}},
+            {.image =
+                 bridge::qq::DownloadedImage{.type = "photo",
+                                             .original_url = media[1].second,
+                                             .filename = "qq-media-1.png",
+                                             .mime_type = "image/png",
+                                             .data = "download-two"}},
         };
+      },
+      [](const bridge::BridgeConfig &,
+         const std::vector<std::pair<std::string, std::string>> &media,
+         std::vector<std::string> &replaced)
+          -> asio::awaitable<std::vector<std::pair<std::string, std::string>>> {
+        replaced.clear();
+        co_return media;
       });
   MultipartFallbackTelegramBot telegram_bot;
   const std::vector<obcx::common::MessageSegment> image_segments = {
@@ -1271,6 +1282,190 @@ TEST(BridgeActorTest,
   EXPECT_EQ(download_calls.load(), 2);
   ASSERT_FALSE(telegram_bot.observed_temporary_root.empty());
   EXPECT_FALSE(std::filesystem::exists(telegram_bot.observed_temporary_root));
+}
+
+TEST(BridgeActorTest, QqMultipartFallbackDownloadsSanitizedPlaceholderOnce) {
+  auto config = std::make_shared<bridge::BridgeConfig>();
+  config->bridge_files_dir = "/tmp/bridge_files";
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
+  std::atomic_int download_calls = 0;
+  bridge::qq::QQMessageFormatter formatter(
+      config, nullptr, blocking_executor,
+      [&download_calls](
+          const bridge::BridgeConfig &,
+          const std::vector<std::pair<std::string, std::string>> &media)
+          -> asio::awaitable<std::vector<bridge::qq::MediaDownloadResult>> {
+        download_calls.fetch_add(1, std::memory_order_relaxed);
+        EXPECT_EQ(media.size(), 1U);
+        co_return std::vector<bridge::qq::MediaDownloadResult>{
+            {.image = bridge::qq::DownloadedImage{.type = "photo",
+                                                  .filename = "placeholder.png",
+                                                  .mime_type = "image/png",
+                                                  .data = "placeholder-once"}}};
+      });
+  MultipartFallbackTelegramBot telegram_bot;
+  const std::vector<obcx::common::MessageSegment> image_segments = {
+      {.type = "image", .data = {{"url", "invalid://one"}}},
+      {.type = "image", .data = {{"url", "invalid://two"}}},
+  };
+  const bridge::GroupBridgeConfig bridge_config("tg-group", "qq-group", false,
+                                                false, true, true);
+  obcx::common::MessageEvent event;
+  event.message_id = "qq-sanitized-placeholder-once";
+
+  asio::io_context ioc;
+  auto future = asio::co_spawn(
+      ioc,
+      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
+                                 -1, "sender", &bridge_config, {}, event),
+      asio::use_future);
+  ioc.run();
+  const auto result = future.get();
+  blocking_executor->shutdown();
+
+  EXPECT_TRUE(result.sent);
+  EXPECT_EQ(download_calls.load(), 1);
+  ASSERT_EQ(telegram_bot.uploaded_media.size(), 2U);
+  EXPECT_EQ(telegram_bot.uploaded_media[0].data, "placeholder-once");
+  EXPECT_EQ(telegram_bot.uploaded_media[1].data, "placeholder-once");
+  EXPECT_NE(telegram_bot.last_caption.find("2 张图片"), std::string::npos);
+}
+
+TEST(BridgeActorTest,
+     QqMultipartFallbackReplacesFailedItemWithoutDroppingValidPeer) {
+  auto config = std::make_shared<bridge::BridgeConfig>();
+  config->bridge_files_dir = "/tmp/bridge_files";
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
+  std::atomic_int batch_downloads = 0;
+  std::atomic_int placeholder_downloads = 0;
+  bridge::qq::QQMessageFormatter formatter(
+      config, nullptr, blocking_executor,
+      [&batch_downloads, &placeholder_downloads](
+          const bridge::BridgeConfig &,
+          const std::vector<std::pair<std::string, std::string>> &media)
+          -> asio::awaitable<std::vector<bridge::qq::MediaDownloadResult>> {
+        if (media.size() == 1) {
+          placeholder_downloads.fetch_add(1, std::memory_order_relaxed);
+          co_return std::vector<bridge::qq::MediaDownloadResult>{
+              {.image =
+                   bridge::qq::DownloadedImage{.type = "photo",
+                                               .filename = "placeholder.png",
+                                               .mime_type = "image/png",
+                                               .data = "placeholder-data"}}};
+        }
+        batch_downloads.fetch_add(1, std::memory_order_relaxed);
+        co_return std::vector<bridge::qq::MediaDownloadResult>{
+            {.image = bridge::qq::DownloadedImage{.type = "photo",
+                                                  .filename = "qq-media-0.jpg",
+                                                  .mime_type = "image/jpeg",
+                                                  .data = "download-one"}},
+            {.failure = bridge::qq::MediaDownloadFailure::OverLimit,
+             .diagnostic = "response exceeds configured media limit"},
+        };
+      },
+      [](const bridge::BridgeConfig &,
+         const std::vector<std::pair<std::string, std::string>> &media,
+         std::vector<std::string> &replaced)
+          -> asio::awaitable<std::vector<std::pair<std::string, std::string>>> {
+        replaced.clear();
+        co_return media;
+      });
+  MultipartFallbackTelegramBot telegram_bot;
+  const std::vector<obcx::common::MessageSegment> image_segments = {
+      {.type = "image", .data = {{"url", "invalid://one"}}},
+      {.type = "image", .data = {{"url", "invalid://two"}}},
+  };
+  const bridge::GroupBridgeConfig bridge_config("tg-group", "qq-group", false,
+                                                false, true, true);
+  obcx::common::MessageEvent event;
+  event.message_id = "qq-partial-multipart-fallback";
+
+  asio::io_context ioc;
+  auto future = asio::co_spawn(
+      ioc,
+      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
+                                 -1, "sender", &bridge_config, {}, event),
+      asio::use_future);
+  ioc.run();
+  const auto result = future.get();
+  blocking_executor->shutdown();
+
+  EXPECT_TRUE(result.sent);
+  EXPECT_EQ(batch_downloads.load(), 1);
+  EXPECT_EQ(placeholder_downloads.load(), 1);
+  ASSERT_EQ(telegram_bot.uploaded_media.size(), 2U);
+  EXPECT_EQ(telegram_bot.uploaded_media[0].data, "download-one");
+  EXPECT_EQ(telegram_bot.uploaded_media[1].data, "placeholder-data");
+  EXPECT_NE(telegram_bot.last_caption.find("1 张图片"), std::string::npos);
+}
+
+TEST(BridgeActorTest,
+     QqMultipartFallbackUsesOneEmbeddedPlaceholderForSeveralFailures) {
+  auto config = std::make_shared<bridge::BridgeConfig>();
+  config->bridge_files_dir = "/tmp/bridge_files";
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
+  std::atomic_int placeholder_downloads = 0;
+  bridge::qq::QQMessageFormatter formatter(
+      config, nullptr, blocking_executor,
+      [&placeholder_downloads](
+          const bridge::BridgeConfig &,
+          const std::vector<std::pair<std::string, std::string>> &media)
+          -> asio::awaitable<std::vector<bridge::qq::MediaDownloadResult>> {
+        if (media.size() == 1) {
+          placeholder_downloads.fetch_add(1, std::memory_order_relaxed);
+          co_return std::vector<bridge::qq::MediaDownloadResult>{
+              {.failure = bridge::qq::MediaDownloadFailure::Transport,
+               .diagnostic = "media transport failed"}};
+        }
+        co_return std::vector<bridge::qq::MediaDownloadResult>{
+            {.failure = bridge::qq::MediaDownloadFailure::OverLimit,
+             .diagnostic = "response exceeds configured media limit"},
+            {.image = bridge::qq::DownloadedImage{.type = "photo",
+                                                  .filename = "qq-media-1.jpg",
+                                                  .mime_type = "image/jpeg",
+                                                  .data = "download-middle"}},
+            {.failure = bridge::qq::MediaDownloadFailure::InvalidImage,
+             .diagnostic = "media response is not a recognized image"},
+        };
+      },
+      [](const bridge::BridgeConfig &,
+         const std::vector<std::pair<std::string, std::string>> &media,
+         std::vector<std::string> &replaced)
+          -> asio::awaitable<std::vector<std::pair<std::string, std::string>>> {
+        replaced.clear();
+        co_return media;
+      });
+  MultipartFallbackTelegramBot telegram_bot;
+  const std::vector<obcx::common::MessageSegment> image_segments = {
+      {.type = "image", .data = {{"url", "invalid://one"}}},
+      {.type = "image", .data = {{"url", "invalid://two"}}},
+      {.type = "image", .data = {{"url", "invalid://three"}}},
+  };
+  const bridge::GroupBridgeConfig bridge_config("tg-group", "qq-group", false,
+                                                false, true, true);
+  obcx::common::MessageEvent event;
+  event.message_id = "qq-embedded-placeholder-fallback";
+
+  asio::io_context ioc;
+  auto future = asio::co_spawn(
+      ioc,
+      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
+                                 -1, "sender", &bridge_config, {}, event),
+      asio::use_future);
+  ioc.run();
+  const auto result = future.get();
+  blocking_executor->shutdown();
+
+  EXPECT_TRUE(result.sent);
+  EXPECT_EQ(placeholder_downloads.load(), 1);
+  ASSERT_EQ(telegram_bot.uploaded_media.size(), 3U);
+  EXPECT_EQ(telegram_bot.uploaded_media[1].data, "download-middle");
+  EXPECT_EQ(telegram_bot.uploaded_media[0].data,
+            telegram_bot.uploaded_media[2].data);
+  ASSERT_GE(telegram_bot.uploaded_media[0].data.size(), 8U);
+  EXPECT_EQ(static_cast<unsigned char>(telegram_bot.uploaded_media[0].data[0]),
+            0x89U);
+  EXPECT_NE(telegram_bot.last_caption.find("2 张图片"), std::string::npos);
 }
 
 TEST(BridgeActorTest, QqMediaGroupKeepsElevenImagesInValidNineAndTwoBatches) {

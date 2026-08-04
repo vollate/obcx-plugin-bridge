@@ -113,7 +113,14 @@ gif_max_duration = 5
 gif_max_fps = 0
 gif_max_width = 0
 gif_max_colors = 256
+qq_media_download_max_bytes = 10485760
 ```
+
+`qq_media_download_max_bytes` bounds each full QQ image downloaded after
+Telegram rejects direct URL delivery. It defaults to and cannot exceed 10 MiB,
+the public Telegram photo limit. A failed, expired, invalid, or oversized item
+is replaced during multipart fallback without discarding valid peers in the
+same media group.
 
 The forwarding runtime currently resolves bots by platform, not by bot id.
 Configure exactly one live QQ bot and exactly one live Telegram bot. Multiple

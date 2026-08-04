@@ -9,6 +9,8 @@
 namespace bridge {
 namespace {
 
+constexpr std::size_t kMaxQqMediaDownloadBytes = 10U * 1024U * 1024U;
+
 template <typename T>
 void assign_if_present(const obcx::common::ActorConfigView &view,
                        std::string_view key, T &target) {
@@ -205,6 +207,13 @@ auto load_bridge_config(const obcx::common::ActorConfigView &view)
   assign_if_present(view, "image_placeholder_url",
                     result->image_placeholder_url);
 
+  if (auto value = view.get_value<int64_t>("qq_media_download_max_bytes")) {
+    if (*value <= 0) {
+      throw std::runtime_error(
+          "bridge qq_media_download_max_bytes must be positive");
+    }
+    result->qq_media_download_max_bytes = static_cast<std::size_t>(*value);
+  }
   if (auto value = view.get_value<int64_t>("gif_max_file_size")) {
     if (*value < 0) {
       throw std::runtime_error("bridge gif_max_file_size cannot be negative");
@@ -246,6 +255,11 @@ void validate_bridge_config(const BridgeConfig &config) {
   if (config.retry_queue_check_interval_sec > config.max_retry_interval_sec) {
     throw std::runtime_error(
         "bridge retry queue check interval cannot exceed the maximum");
+  }
+  if (config.qq_media_download_max_bytes == 0 ||
+      config.qq_media_download_max_bytes > kMaxQqMediaDownloadBytes) {
+    throw std::runtime_error(
+        "bridge qq_media_download_max_bytes must be between 1 and 10485760");
   }
 }
 

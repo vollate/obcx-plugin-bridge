@@ -54,6 +54,13 @@ target_include_directories(
                             ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(path_manager_test PRIVATE bridge_core GTest::gtest_main)
 
+add_executable(image_url_validator_test image_url_validator_test.cpp)
+target_include_directories(
+  image_url_validator_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
+                                   ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(image_url_validator_test PRIVATE bridge_core
+                                                       GTest::gtest_main)
+
 add_executable(bridge_db_runtime_test bridge_db_runtime_test.cpp)
 target_include_directories(
   bridge_db_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
@@ -76,6 +83,8 @@ gtest_discover_tests(received_message_repository_test DISCOVERY_MODE PRE_TEST
 gtest_discover_tests(message_event_adapter_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")
 gtest_discover_tests(path_manager_test DISCOVERY_MODE PRE_TEST
+                     PROPERTIES LABELS "${_bridge_test_labels}")
+gtest_discover_tests(image_url_validator_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")
 gtest_discover_tests(bridge_db_runtime_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")

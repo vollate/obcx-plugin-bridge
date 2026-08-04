@@ -8,11 +8,13 @@
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <charconv>
 #include <chrono>
 #include <common/logger.hpp>
 #include <map>
@@ -36,37 +38,63 @@ struct ParsedUrl {
   bool valid{false};
   bool use_ssl{false};
   std::string host;
-  std::string path; // 始终以 '/' 开头
+  std::uint16_t port{0};
+  std::string path;
 };
 
-// 拆 http(s):// 链接为 host / path。不做 query/fragment 拆分——
-// host 之后所有内容（含 query）一律作为 path 传给 HttpClient。
+class DownloadError : public std::runtime_error {
+public:
+  DownloadError(MediaDownloadFailure failure, std::string message)
+      : std::runtime_error(std::move(message)), failure_(failure) {}
+
+  [[nodiscard]] auto failure() const -> MediaDownloadFailure {
+    return failure_;
+  }
+
+private:
+  MediaDownloadFailure failure_;
+};
+
 auto parse_url(const std::string &url) -> ParsedUrl {
-  ParsedUrl p;
+  ParsedUrl parsed;
   if (url.starts_with("https://")) {
-    p.use_ssl = true;
+    parsed.use_ssl = true;
   } else if (url.starts_with("http://")) {
-    p.use_ssl = false;
+    parsed.use_ssl = false;
   } else {
-    return p;
+    return parsed;
   }
 
-  const std::size_t scheme_end = url.find("://");
-  const std::size_t host_start = scheme_end + 3;
-  const std::size_t path_start = url.find('/', host_start);
+  const std::size_t authority_start = url.find("://") + 3;
+  const std::size_t authority_end = url.find_first_of("/?#", authority_start);
+  std::string authority =
+      url.substr(authority_start, authority_end - authority_start);
+  parsed.path =
+      authority_end == std::string::npos
+          ? "/"
+          : (url[authority_end] == '/' ? url.substr(authority_end)
+                                       : "/" + url.substr(authority_end));
 
-  if (path_start == std::string::npos) {
-    p.host = url.substr(host_start);
-    p.path = "/";
-  } else {
-    p.host = url.substr(host_start, path_start - host_start);
-    p.path = url.substr(path_start);
+  parsed.port = parsed.use_ssl ? kHttpsPort : kHttpPort;
+  const auto port_separator = authority.rfind(':');
+  if (port_separator != std::string::npos &&
+      authority.find(':') == port_separator) {
+    const auto port_text =
+        std::string_view{authority}.substr(port_separator + 1);
+    unsigned int port = 0;
+    const auto [end, error] = std::from_chars(
+        port_text.data(), port_text.data() + port_text.size(), port);
+    if (error != std::errc{} || end != port_text.data() + port_text.size() ||
+        port == 0 || port > 65535) {
+      return parsed;
+    }
+    authority.resize(port_separator);
+    parsed.port = static_cast<std::uint16_t>(port);
   }
-  if (p.host.empty()) {
-    return p;
-  }
-  p.valid = true;
-  return p;
+
+  parsed.host = std::move(authority);
+  parsed.valid = !parsed.host.empty();
+  return parsed;
 }
 
 // 用 Range: bytes=0-0 探测 URL 是否可达：部分 QQ 镜像服务器对 HEAD 返回 405，
@@ -79,7 +107,7 @@ auto probe_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
 
   obcx::common::ConnectionConfig cfg;
   cfg.host = url.host;
-  cfg.port = url.use_ssl ? kHttpsPort : kHttpPort;
+  cfg.port = url.port;
   cfg.use_ssl = url.use_ssl;
   cfg.access_token.clear();
   cfg.proxy_host.clear();
@@ -101,30 +129,6 @@ auto probe_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
       resp.status_code == kHttpStatusPartialContent;
 }
 
-auto normalized_mime_type(const obcx::network::HttpResponse &response)
-    -> std::string {
-  const auto detected =
-      bridge::MediaProcessor::detect_mime_type_from_content(response.body);
-  if (!detected.empty()) {
-    return detected;
-  }
-
-  const auto content_type =
-      response.raw_response[boost::beast::http::field::content_type];
-  std::string mime{content_type.data(), content_type.size()};
-  if (const auto separator = mime.find(';'); separator != std::string::npos) {
-    mime.resize(separator);
-  }
-  while (!mime.empty() && mime.back() == ' ') {
-    mime.pop_back();
-  }
-  const auto first = mime.find_first_not_of(' ');
-  if (first != std::string::npos) {
-    mime.erase(0, first);
-  }
-  return mime.starts_with("image/") ? mime : "application/octet-stream";
-}
-
 auto extension_for_mime(std::string_view mime) -> std::string_view {
   if (mime == "image/jpeg") {
     return ".jpg";
@@ -144,13 +148,14 @@ auto extension_for_mime(std::string_view mime) -> std::string_view {
   return ".bin";
 }
 
-auto download_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
+auto download_once(const ParsedUrl &url, std::chrono::milliseconds timeout,
+                   std::size_t body_limit)
     -> asio::awaitable<std::pair<std::string, std::string>> {
   asio::io_context temp_ioc;
 
   obcx::common::ConnectionConfig cfg;
   cfg.host = url.host;
-  cfg.port = url.use_ssl ? kHttpsPort : kHttpPort;
+  cfg.port = url.port;
   cfg.use_ssl = url.use_ssl;
   cfg.access_token.clear();
   cfg.proxy_host.clear();
@@ -161,15 +166,35 @@ auto download_once(const ParsedUrl &url, std::chrono::milliseconds timeout)
 
   auto client = std::make_unique<obcx::network::HttpClient>(temp_ioc, cfg);
   client->set_timeout(timeout);
-  auto response = co_await client->get(url.path);
+  client->set_response_body_limit(body_limit);
+
+  obcx::network::HttpResponse response;
+  try {
+    response =
+        co_await client->get(url.path, {{"Accept-Encoding", "identity"}});
+  } catch (const obcx::network::HttpClientError &error) {
+    if (std::string_view{error.what()}.find("body limit exceeded") !=
+        std::string_view::npos) {
+      throw DownloadError(MediaDownloadFailure::OverLimit,
+                          "response exceeds configured media limit");
+    }
+    throw DownloadError(MediaDownloadFailure::Transport,
+                        "media transport failed");
+  }
   if (!response.is_success()) {
-    throw std::runtime_error("download returned HTTP " +
-                             std::to_string(response.status_code));
+    throw DownloadError(MediaDownloadFailure::HttpStatus,
+                        "media server returned non-success status");
   }
   if (response.body.empty()) {
-    throw std::runtime_error("download returned an empty body");
+    throw DownloadError(MediaDownloadFailure::EmptyBody,
+                        "media response body is empty");
   }
-  auto mime = normalized_mime_type(response);
+  auto mime =
+      bridge::MediaProcessor::detect_mime_type_from_content(response.body);
+  if (mime.empty()) {
+    throw DownloadError(MediaDownloadFailure::InvalidImage,
+                        "media response is not a recognized image");
+  }
   co_return std::pair{std::move(response.body), std::move(mime)};
 }
 
@@ -285,8 +310,9 @@ auto ImageUrlValidator::validate(
     results[i].failure_reason = (*reasons)[i];
     results[i].effective_url = placeholder;
     results[i].status = ImageUrlStatus::Replaced;
-    OBCX_WARN("[图片URL校验] 探测失败，使用占位图替换: {} (reason: {})",
-              results[i].original_url, results[i].failure_reason);
+    OBCX_WARN("[图片URL校验] 探测失败，使用占位图替换: index={}, "
+              "category=probe_failed",
+              i + 1);
   }
   co_return results;
 }
@@ -314,67 +340,59 @@ auto ImageUrlValidator::sanitize(
 auto ImageUrlValidator::download(
     const BridgeConfig &config,
     const std::vector<std::pair<std::string, std::string>> &media)
-    -> asio::awaitable<std::vector<DownloadedImage>> {
+    -> asio::awaitable<std::vector<MediaDownloadResult>> {
   if (media.empty()) {
-    co_return std::vector<DownloadedImage>{};
+    co_return std::vector<MediaDownloadResult>{};
   }
 
-  auto executor = co_await asio::this_coro::executor;
-  auto remaining = std::make_shared<std::atomic<std::size_t>>(media.size());
-  auto barrier = std::make_shared<asio::steady_timer>(
-      executor, std::chrono::steady_clock::time_point::max());
-  auto results = std::make_shared<std::vector<std::optional<DownloadedImage>>>(
-      media.size());
-  auto errors = std::make_shared<std::vector<std::string>>(media.size());
+  std::vector<MediaDownloadResult> results(media.size());
+  std::atomic<std::size_t> next_index{0};
   const auto timeout = std::chrono::milliseconds(
       std::max(30000, config.image_url_probe_timeout_ms));
+  const auto body_limit = config.qq_media_download_max_bytes;
 
-  for (std::size_t i = 0; i < media.size(); ++i) {
-    asio::co_spawn(
-        executor,
-        [i, item = media[i], timeout, remaining, barrier, results,
-         errors]() -> asio::awaitable<void> {
-          try {
-            const auto parsed = parse_url(item.second);
-            if (!parsed.valid) {
-              throw std::runtime_error("invalid url scheme/host");
-            }
-            auto [data, mime] = co_await download_once(parsed, timeout);
-            (*results)[i] = DownloadedImage{
-                .type = item.first.empty() ? "photo" : std::move(item.first),
-                .original_url = std::move(item.second),
-                .filename = "qq-media-" + std::to_string(i) +
-                            std::string{extension_for_mime(mime)},
-                .mime_type = std::move(mime),
-                .data = std::move(data),
-            };
-          } catch (const std::exception &e) {
-            (*errors)[i] = e.what();
-          }
-          if (remaining->fetch_sub(1) == 1) {
-            barrier->cancel();
-          }
-          co_return;
-        },
-        asio::detached);
-  }
+  auto worker = [&]() -> asio::awaitable<void> {
+    while (true) {
+      const auto index = next_index.fetch_add(1, std::memory_order_relaxed);
+      if (index >= media.size()) {
+        co_return;
+      }
 
-  if (remaining->load(std::memory_order_acquire) != 0) {
-    boost::system::error_code ec;
-    co_await barrier->async_wait(asio::redirect_error(asio::use_awaitable, ec));
-  }
-
-  std::vector<DownloadedImage> downloaded;
-  downloaded.reserve(media.size());
-  for (std::size_t i = 0; i < media.size(); ++i) {
-    if (!(*results)[i].has_value()) {
-      throw std::runtime_error(
-          "failed to download media " + std::to_string(i + 1) + "/" +
-          std::to_string(media.size()) + ": " + (*errors)[i]);
+      const auto &item = media[index];
+      try {
+        const auto parsed = parse_url(item.second);
+        if (!parsed.valid) {
+          throw DownloadError(MediaDownloadFailure::InvalidUrl,
+                              "invalid media URL");
+        }
+        auto [data, mime] = co_await download_once(parsed, timeout, body_limit);
+        results[index].image = DownloadedImage{
+            .type = item.first.empty() ? "photo" : item.first,
+            .original_url = item.second,
+            .filename = "qq-media-" + std::to_string(index) +
+                        std::string{extension_for_mime(mime)},
+            .mime_type = std::move(mime),
+            .data = std::move(data),
+        };
+      } catch (const DownloadError &error) {
+        results[index].failure = error.failure();
+        results[index].diagnostic = error.what();
+      } catch (const boost::system::system_error &error) {
+        if (error.code() == asio::error::operation_aborted) {
+          throw;
+        }
+        results[index].failure = MediaDownloadFailure::Transport;
+        results[index].diagnostic = "media transport failed";
+      } catch (const std::exception &) {
+        results[index].failure = MediaDownloadFailure::Transport;
+        results[index].diagnostic = "media transport failed";
+      }
     }
-    downloaded.push_back(std::move(*(*results)[i]));
-  }
-  co_return downloaded;
+  };
+
+  using namespace asio::experimental::awaitable_operators;
+  co_await (worker() && worker() && worker());
+  co_return results;
 }
 
 } // namespace bridge::qq

@@ -2,6 +2,7 @@
 
 #include <boost/asio.hpp>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +35,24 @@ struct DownloadedImage {
   std::string filename;
   std::string mime_type;
   std::string data;
+};
+
+enum class MediaDownloadFailure : std::uint8_t {
+  None,
+  InvalidUrl,
+  Transport,
+  HttpStatus,
+  OverLimit,
+  EmptyBody,
+  InvalidImage,
+};
+
+struct MediaDownloadResult {
+  std::optional<DownloadedImage> image;
+  MediaDownloadFailure failure{MediaDownloadFailure::None};
+  std::string diagnostic;
+
+  [[nodiscard]] auto succeeded() const -> bool { return image.has_value(); }
 };
 
 /**
@@ -76,11 +95,11 @@ public:
       -> boost::asio::awaitable<
           std::vector<std::pair<std::string, std::string>>>;
 
-  /** Download every effective media URL for multipart upload fallback. */
+  /** Download effective media URLs into order-preserving item outcomes. */
   static auto download(
       const bridge::BridgeConfig &config,
       const std::vector<std::pair<std::string, std::string>> &media)
-      -> boost::asio::awaitable<std::vector<DownloadedImage>>;
+      -> boost::asio::awaitable<std::vector<MediaDownloadResult>>;
 };
 
 } // namespace bridge::qq

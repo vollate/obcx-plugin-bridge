@@ -25,6 +25,19 @@ struct MediaGroupSendResult {
   std::optional<std::string> primary_target_message_id;
 };
 
+struct PreparedMedia {
+  std::string type;
+  std::string url;
+  std::size_t original_index{0};
+  bool replaced{false};
+};
+
+struct MediaGroupFallbackResult {
+  std::string response;
+  bool used_multipart{false};
+  std::size_t replaced_count{0};
+};
+
 /**
  * @brief QQ消息格式化器
  *
@@ -33,9 +46,14 @@ struct MediaGroupSendResult {
 class QQMessageFormatter {
 public:
   using ImageDownloader =
-      std::function<boost::asio::awaitable<std::vector<DownloadedImage>>(
+      std::function<boost::asio::awaitable<std::vector<MediaDownloadResult>>(
           const bridge::BridgeConfig &,
           const std::vector<std::pair<std::string, std::string>> &)>;
+  using ImageSanitizer = std::function<
+      boost::asio::awaitable<std::vector<std::pair<std::string, std::string>>>(
+          const bridge::BridgeConfig &,
+          const std::vector<std::pair<std::string, std::string>> &,
+          std::vector<std::string> &)>;
 
   /**
    * @brief 构造函数
@@ -45,7 +63,8 @@ public:
       std::shared_ptr<const bridge::BridgeConfig> config,
       std::shared_ptr<bridge::BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor = nullptr,
-      ImageDownloader image_downloader = {});
+      ImageDownloader image_downloader = {},
+      ImageSanitizer image_sanitizer = {});
 
   /**
    * @brief 格式化消息发送者信息
@@ -138,13 +157,14 @@ private:
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
   std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
   ImageDownloader image_downloader_;
+  ImageSanitizer image_sanitizer_;
 
   auto send_media_group_with_fallback(
       obcx::core::IBot &telegram_bot, std::string_view telegram_group_id,
-      const std::vector<std::pair<std::string, std::string>> &media,
-      std::string_view caption, std::optional<int64_t> topic_id,
-      std::optional<std::string> reply_to_message_id, bool &used_multipart)
-      -> boost::asio::awaitable<std::string>;
+      const std::vector<PreparedMedia> &media, std::string_view caption,
+      std::optional<int64_t> topic_id,
+      std::optional<std::string> reply_to_message_id)
+      -> boost::asio::awaitable<MediaGroupFallbackResult>;
 
   /**
    * @brief 获取用户显示名称，如果数据库没有则异步获取

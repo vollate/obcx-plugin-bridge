@@ -110,6 +110,58 @@ ffmpeg_path = "/opt/bridge/bin/ffmpeg"
   std::filesystem::remove(config_path);
 }
 
+TEST(BridgeHandlerRepositoryTest, LoadsQqMediaDownloadLimit) {
+  const auto default_path =
+      temp_db_path("actor_default_qq_media_limit").replace_extension(".toml");
+  {
+    std::ofstream config(default_path);
+    config << "[actors.bridge.config]\n"
+              "bridge_files_dir = \"/tmp/bridge_files\"\n";
+  }
+  const auto default_config =
+      bridge::load_bridge_config(bridge_config_view(default_path));
+  EXPECT_EQ(default_config->qq_media_download_max_bytes, 10U * 1024U * 1024U);
+  std::filesystem::remove(default_path);
+
+  const auto configured_path =
+      temp_db_path("actor_qq_media_limit").replace_extension(".toml");
+  {
+    std::ofstream config(configured_path);
+    config << "[actors.bridge.config]\n"
+              "bridge_files_dir = \"/tmp/bridge_files\"\n"
+              "qq_media_download_max_bytes = 5242880\n";
+  }
+  const auto configured =
+      bridge::load_bridge_config(bridge_config_view(configured_path));
+  EXPECT_EQ(configured->qq_media_download_max_bytes, 5U * 1024U * 1024U);
+  std::filesystem::remove(configured_path);
+}
+
+TEST(BridgeHandlerRepositoryTest, RejectsInvalidQqMediaDownloadLimit) {
+  const std::vector<std::string> invalid_values = {
+      "qq_media_download_max_bytes = 0\n",
+      "qq_media_download_max_bytes = -1\n",
+      "qq_media_download_max_bytes = 10485761\n",
+  };
+
+  for (std::size_t index = 0; index < invalid_values.size(); ++index) {
+    const auto config_path =
+        temp_db_path("invalid_qq_media_limit_" + std::to_string(index))
+            .replace_extension(".toml");
+    {
+      std::ofstream config(config_path);
+      config << "[actors.bridge.config]\n"
+                "bridge_files_dir = \"/tmp/bridge_files\"\n"
+             << invalid_values[index];
+    }
+    EXPECT_THROW(
+        (void)bridge::load_bridge_config(bridge_config_view(config_path)),
+        std::runtime_error)
+        << "invalid case " << index;
+    std::filesystem::remove(config_path);
+  }
+}
+
 TEST(BridgeHandlerRepositoryTest, LoadsConfiguredMessageRetryPolicy) {
   const auto config_path =
       temp_db_path("actor_retry_policy").replace_extension(".toml");

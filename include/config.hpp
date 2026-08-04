@@ -99,6 +99,7 @@ struct BridgeConfig final {
   int image_url_probe_max_attempts = 3;
   int image_url_probe_base_delay_ms = 500;
   int image_url_probe_timeout_ms = 5000;
+  std::size_t qq_media_download_max_bytes = 10U * 1024U * 1024U;
   std::string image_placeholder_url =
       "https://placehold.co/512x512/cccccc/666666/png?text=Image+Unavailable";
 
