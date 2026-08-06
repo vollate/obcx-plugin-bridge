@@ -101,7 +101,7 @@ struct BridgeConfig final {
   int image_url_probe_timeout_ms = 5000;
   std::size_t qq_media_download_max_bytes = 10U * 1024U * 1024U;
   std::string image_placeholder_url =
-      "https://placehold.co/512x512/cccccc/666666/png?text=Image+Unavailable";
+      "https://placehold.co/512x512/e9ecef/495057/png?text=NOT+FOUND";
 
   [[nodiscard]] auto qq_group_id_for_topic(std::string_view tg_group_id,
                                            int64_t topic_id) const

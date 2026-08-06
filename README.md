@@ -114,7 +114,12 @@ gif_max_fps = 0
 gif_max_width = 0
 gif_max_colors = 256
 qq_media_download_max_bytes = 10485760
+image_placeholder_url = "https://placehold.co/512x512/e9ecef/495057/png?text=NOT+FOUND"
 ```
+
+`image_placeholder_url` must be a direct image URL. It defaults to a PNG that
+shows `NOT FOUND`; the embedded image is used only if this URL cannot be
+downloaded or validated.
 
 `qq_media_download_max_bytes` bounds each full QQ image downloaded after
 Telegram rejects direct URL delivery. It defaults to and cannot exceed 10 MiB,

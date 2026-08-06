@@ -297,10 +297,16 @@ public:
     co_return R"({"status":"ok"})";
   }
 
+  auto get_forward_msg(std::string_view)
+      -> asio::awaitable<std::string> override {
+    co_return forward_response;
+  }
+
   std::atomic_int send_group_calls = 0;
   std::atomic_int delete_message_calls = 0;
   std::atomic_bool always_succeed = false;
   std::atomic_bool succeed_after_first = false;
+  std::string forward_response = "{}";
 };
 
 class RetryTestTelegramBot final : public obcx::core::TGBot {
@@ -386,7 +392,7 @@ public:
       }
     }
     if (multipart_fails.load(std::memory_order_acquire)) {
-      throw std::runtime_error("multipart upload failed");
+      throw std::runtime_error(multipart_error);
     }
     co_return R"({"result":[{"message_id":8201},{"message_id":8202}]})";
   }
@@ -397,6 +403,7 @@ public:
   std::vector<obcx::core::TelegramMediaUpload> uploaded_media;
   std::filesystem::path observed_temporary_root;
   std::string last_caption;
+  std::string multipart_error = "multipart upload failed";
 };
 
 class NoticeTestTelegramBot final : public obcx::core::TGBot {
@@ -1282,6 +1289,78 @@ TEST(BridgeActorTest,
   EXPECT_EQ(download_calls.load(), 2);
   ASSERT_FALSE(telegram_bot.observed_temporary_root.empty());
   EXPECT_FALSE(std::filesystem::exists(telegram_bot.observed_temporary_root));
+}
+
+TEST(BridgeActorTest, QqForwardMediaFailureShowsStageAndStableReason) {
+  auto config = std::make_shared<bridge::BridgeConfig>();
+  config->bridge_files_dir = "/tmp/bridge_files";
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
+  bridge::qq::QQMessageFormatter formatter(
+      config, nullptr, blocking_executor,
+      [](const bridge::BridgeConfig &,
+         const std::vector<std::pair<std::string, std::string>> &media)
+          -> asio::awaitable<std::vector<bridge::qq::MediaDownloadResult>> {
+        EXPECT_EQ(media.size(), 2U);
+        co_return std::vector<bridge::qq::MediaDownloadResult>{
+            {.image = bridge::qq::DownloadedImage{.type = "photo",
+                                                  .filename = "qq-media-0.png",
+                                                  .mime_type = "image/png",
+                                                  .data = "download-one"}},
+            {.image = bridge::qq::DownloadedImage{.type = "photo",
+                                                  .filename = "qq-media-1.png",
+                                                  .mime_type = "image/png",
+                                                  .data = "download-two"}},
+        };
+      },
+      [](const bridge::BridgeConfig &,
+         const std::vector<std::pair<std::string, std::string>> &media,
+         std::vector<std::string> &replaced)
+          -> asio::awaitable<std::vector<std::pair<std::string, std::string>>> {
+        replaced.clear();
+        co_return media;
+      });
+  RetryTestQQBot qq_bot;
+  qq_bot.forward_response = R"({
+    "status":"ok",
+    "data":{"messages":[{
+      "sender":{"nickname":"sender"},
+      "content":[
+        {"type":"image","data":{"url":"invalid://one"}},
+        {"type":"image","data":{"url":"invalid://two"}}
+      ]
+    }]}
+  })";
+  MultipartFallbackTelegramBot telegram_bot;
+  telegram_bot.multipart_fails.store(true, std::memory_order_release);
+  telegram_bot.multipart_error =
+      R"(HTTP request failed: 400: {"ok":false,"description":"Bad Request: IMAGE_PROCESS_FAILED"})";
+  obcx::common::MessageSegment forward_segment{
+      .type = "forward", .data = {{"id", "forward-with-bad-image"}}};
+  obcx::common::Message output;
+
+  asio::io_context ioc;
+  auto future = asio::co_spawn(
+      ioc,
+      formatter.process_forward_message(qq_bot, telegram_bot, forward_segment,
+                                        "tg-group", -1, output),
+      asio::use_future);
+  ioc.run();
+  future.get();
+  blocking_executor->shutdown();
+
+  EXPECT_EQ(telegram_bot.url_send_calls.load(), 1);
+  EXPECT_EQ(telegram_bot.multipart_send_calls.load(), 1);
+  const auto failure = std::ranges::find_if(output, [](const auto &segment) {
+    return segment.type == "text" &&
+           segment.data.value("text", "").find("整体发送失败") !=
+               std::string::npos;
+  });
+  ASSERT_NE(failure, output.end());
+  const auto text = failure->data.value("text", "");
+  EXPECT_NE(text.find("阶段=multipart_upload"), std::string::npos);
+  EXPECT_NE(text.find("原因=image_process_failed"), std::string::npos);
+  EXPECT_NE(text.find("已替换=0/2"), std::string::npos);
+  EXPECT_EQ(text.find("HTTP request failed"), std::string::npos);
 }
 
 TEST(BridgeActorTest, QqMultipartFallbackDownloadsSanitizedPlaceholderOnce) {

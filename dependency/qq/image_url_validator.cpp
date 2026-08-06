@@ -299,7 +299,7 @@ auto ImageUrlValidator::validate(
   // 即使用户在配置里把占位图清空，也要保证有一个内置兜底，否则替换语义会变成
   // 「丢弃」，那就违反了「失败 == 替换」的约定。
   static constexpr std::string_view kBuiltinPlaceholder =
-      "https://placehold.co/512x512/cccccc/666666/png?text=Image+Unavailable";
+      "https://placehold.co/512x512/e9ecef/495057/png?text=NOT+FOUND";
   const std::string placeholder =
       configured.empty() ? std::string(kBuiltinPlaceholder) : configured;
   for (std::size_t i = 0; i < media.size(); ++i) {

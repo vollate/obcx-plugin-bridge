@@ -123,6 +123,70 @@ auto is_telegram_bad_request(std::string_view error) -> bool {
   return error.find("HTTP request failed: 400") != std::string_view::npos;
 }
 
+auto is_operation_aborted(const std::exception &error) -> bool {
+  const auto *system_error =
+      dynamic_cast<const boost::system::system_error *>(&error);
+  return system_error != nullptr &&
+         system_error->code() == boost::asio::error::operation_aborted;
+}
+
+auto telegram_failure_category(std::string_view error) -> std::string_view {
+  if (error.find("IMAGE_PROCESS_FAILED") != std::string_view::npos) {
+    return "image_process_failed";
+  }
+  if (error.find("PHOTO_INVALID_DIMENSIONS") != std::string_view::npos) {
+    return "invalid_dimensions";
+  }
+  if (error.find("failed to get HTTP URL content") != std::string_view::npos) {
+    return "remote_url_unavailable";
+  }
+  if (error.find("body limit exceeded") != std::string_view::npos) {
+    return "response_limit";
+  }
+  if (error.find("HTTP request failed: 400") != std::string_view::npos) {
+    return "telegram_bad_request";
+  }
+  if (error.find("HTTP request failed: 401") != std::string_view::npos ||
+      error.find("HTTP request failed: 403") != std::string_view::npos) {
+    return "telegram_authorization";
+  }
+  if (error.find("HTTP request failed: 429") != std::string_view::npos) {
+    return "telegram_rate_limited";
+  }
+  if (error.find("HTTP request failed: 5") != std::string_view::npos) {
+    return "telegram_server_error";
+  }
+  if (error.find("timed out") != std::string_view::npos ||
+      error.find("timeout") != std::string_view::npos) {
+    return "timeout";
+  }
+  return "transport_or_runtime";
+}
+
+class MediaFallbackError final : public std::runtime_error {
+public:
+  MediaFallbackError(std::string stage, std::string category,
+                     std::size_t item_count, std::size_t replaced_count)
+      : std::runtime_error(fmt::format("stage={}, category={}, replaced={}/{}",
+                                       stage, category, replaced_count,
+                                       item_count)),
+        stage_(std::move(stage)), category_(std::move(category)),
+        item_count_(item_count), replaced_count_(replaced_count) {}
+
+  [[nodiscard]] auto stage() const -> std::string_view { return stage_; }
+  [[nodiscard]] auto category() const -> std::string_view { return category_; }
+  [[nodiscard]] auto item_count() const -> std::size_t { return item_count_; }
+  [[nodiscard]] auto replaced_count() const -> std::size_t {
+    return replaced_count_;
+  }
+
+private:
+  std::string stage_;
+  std::string category_;
+  std::size_t item_count_;
+  std::size_t replaced_count_;
+};
+
 auto failure_name(MediaDownloadFailure failure) -> std::string_view {
   switch (failure) {
   case MediaDownloadFailure::InvalidUrl:
@@ -219,9 +283,13 @@ auto QQMessageFormatter::send_media_group_with_fallback(
     }
   }
 
-  auto &telegram = dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
+  auto *telegram = dynamic_cast<obcx::core::ITelegramBot *>(&telegram_bot);
+  if (telegram == nullptr) {
+    throw MediaFallbackError("fallback_setup", "telegram_bot_unavailable",
+                             media.size(), replaced_indices.size());
+  }
   try {
-    auto response = co_await telegram.send_media_group(
+    auto response = co_await telegram->send_media_group(
         telegram_group_id, remote_media,
         caption_with_replacements(caption, replaced_indices.size()), topic_id,
         reply_to_message_id);
@@ -230,19 +298,28 @@ auto QQMessageFormatter::send_media_group_with_fallback(
         .replaced_count = replaced_indices.size(),
     };
   } catch (const std::exception &error) {
-    if (!is_telegram_bad_request(error.what())) {
+    if (is_operation_aborted(error)) {
       throw;
     }
-    OBCX_WARN("MediaGroup URL 发送被 Telegram 拒绝，改用 multipart 上传");
+    const auto category = telegram_failure_category(error.what());
+    if (!is_telegram_bad_request(error.what())) {
+      throw MediaFallbackError("direct_url_send", std::string{category},
+                               media.size(), replaced_indices.size());
+    }
+    OBCX_WARN("MediaGroup URL 发送被 Telegram 拒绝，改用 multipart 上传: "
+              "category={}, items={}, pre_replaced={}",
+              category, media.size(), replaced_indices.size());
   }
 
   if (!blocking_executor_) {
-    throw std::runtime_error("multipart fallback is unavailable");
+    throw MediaFallbackError("fallback_setup", "blocking_executor_unavailable",
+                             media.size(), replaced_indices.size());
   }
   auto *uploader =
       dynamic_cast<obcx::core::ITelegramMediaGroupUploader *>(&telegram_bot);
   if (uploader == nullptr) {
-    throw std::runtime_error("multipart fallback is unavailable");
+    throw MediaFallbackError("fallback_setup", "multipart_uploader_unavailable",
+                             media.size(), replaced_indices.size());
   }
 
   std::vector<MediaDownloadResult> outcomes(media.size());
@@ -259,10 +336,21 @@ auto QQMessageFormatter::send_media_group_with_fallback(
   }
 
   if (!source_downloads.empty()) {
-    auto source_outcomes =
-        co_await image_downloader_(*config_, source_downloads);
+    std::vector<MediaDownloadResult> source_outcomes;
+    try {
+      source_outcomes = co_await image_downloader_(*config_, source_downloads);
+    } catch (const std::exception &error) {
+      if (is_operation_aborted(error)) {
+        throw;
+      }
+      throw MediaFallbackError(
+          "media_download",
+          std::string{telegram_failure_category(error.what())}, media.size(),
+          replaced_indices.size());
+    }
     if (source_outcomes.size() != source_downloads.size()) {
-      throw std::runtime_error("media downloader returned incomplete outcomes");
+      throw MediaFallbackError("media_download", "incomplete_outcomes",
+                               media.size(), replaced_indices.size());
     }
     for (std::size_t index = 0; index < source_outcomes.size(); ++index) {
       outcomes[source_indices[index]] = std::move(source_outcomes[index]);
@@ -283,10 +371,18 @@ auto QQMessageFormatter::send_media_group_with_fallback(
           placeholder_outcomes.front().succeeded()) {
         placeholder = std::move(*placeholder_outcomes.front().image);
       } else {
-        OBCX_WARN("配置占位图下载失败，使用内置占位图");
+        const auto category =
+            placeholder_outcomes.size() == 1
+                ? failure_name(placeholder_outcomes.front().failure)
+                : std::string_view{"incomplete_outcomes"};
+        OBCX_WARN("配置占位图下载失败，使用内置占位图: category={}", category);
       }
-    } catch (const std::exception &) {
-      OBCX_WARN("配置占位图下载失败，使用内置占位图");
+    } catch (const std::exception &error) {
+      if (is_operation_aborted(error)) {
+        throw;
+      }
+      OBCX_WARN("配置占位图下载失败，使用内置占位图: category={}",
+                telegram_failure_category(error.what()));
     }
   }
 
@@ -309,28 +405,54 @@ auto QQMessageFormatter::send_media_group_with_fallback(
               config_->qq_media_download_max_bytes);
   }
 
-  auto temporary = co_await blocking_executor_->run(
-      [downloaded = std::move(downloaded)]() mutable {
-        return TemporaryMediaUploads::materialize(std::move(downloaded));
-      });
+  TemporaryMediaUploads temporary;
+  try {
+    temporary = co_await blocking_executor_->run(
+        [downloaded = std::move(downloaded)]() mutable {
+          return TemporaryMediaUploads::materialize(std::move(downloaded));
+        });
+  } catch (const std::exception &error) {
+    if (is_operation_aborted(error)) {
+      throw;
+    }
+    throw MediaFallbackError("temporary_media", "materialize_failed",
+                             media.size(), replaced_indices.size());
+  }
   const auto temporary_root = temporary.root();
 
   std::string response;
-  std::exception_ptr upload_error;
+  std::string upload_failure_category;
+  std::exception_ptr upload_cancellation;
   try {
     response = co_await uploader->send_media_group_uploads(
         telegram_group_id, temporary.uploads(),
         caption_with_replacements(caption, replaced_indices.size()), topic_id,
         reply_to_message_id);
+  } catch (const std::exception &error) {
+    if (is_operation_aborted(error)) {
+      upload_cancellation = std::current_exception();
+    } else {
+      upload_failure_category = telegram_failure_category(error.what());
+    }
   } catch (...) {
-    upload_error = std::current_exception();
+    upload_failure_category = "unknown_exception";
   }
 
-  const auto cleanup_error = co_await blocking_executor_->run([temporary_root] {
-    std::error_code error;
-    fs::remove_all(temporary_root, error);
-    return error ? error.message() : std::string{};
-  });
+  std::string cleanup_error;
+  std::exception_ptr cleanup_cancellation;
+  try {
+    cleanup_error = co_await blocking_executor_->run([temporary_root] {
+      std::error_code error;
+      fs::remove_all(temporary_root, error);
+      return error ? error.message() : std::string{};
+    });
+  } catch (const std::exception &error) {
+    if (is_operation_aborted(error)) {
+      cleanup_cancellation = std::current_exception();
+    } else {
+      cleanup_error = "cleanup_operation_failed";
+    }
+  }
   if (cleanup_error.empty()) {
     temporary.mark_cleaned();
     OBCX_TRACE("已删除 QQ MediaGroup 临时目录: {}", temporary_root.string());
@@ -339,8 +461,15 @@ auto QQMessageFormatter::send_media_group_with_fallback(
               temporary_root.string(), cleanup_error);
   }
 
-  if (upload_error) {
-    std::rethrow_exception(upload_error);
+  if (cleanup_cancellation) {
+    std::rethrow_exception(cleanup_cancellation);
+  }
+  if (upload_cancellation) {
+    std::rethrow_exception(upload_cancellation);
+  }
+  if (!upload_failure_category.empty()) {
+    throw MediaFallbackError("multipart_upload", upload_failure_category,
+                             media.size(), replaced_indices.size());
   }
   co_return MediaGroupFallbackResult{
       .response = std::move(response),
@@ -610,13 +739,29 @@ auto QQMessageFormatter::process_forward_message(
                         send_result.used_multipart ? "（multipart兜底）" : "");
               sent_count += batch_media.size();
               total_replaced_count += send_result.replaced_count;
+            } catch (const MediaFallbackError &error) {
+              OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批整体发送失败: "
+                         "stage={}, category={}, replaced={}/{}",
+                         batch + 1, total_batches, error.stage(),
+                         error.category(), error.replaced_count(),
+                         error.item_count());
+              obcx::common::MessageSegment error_segment;
+              error_segment.type = "text";
+              error_segment.data["text"] = fmt::format(
+                  "\n[第{}/{}批（{}张）整体发送失败：阶段={}，原因={}，"
+                  "已替换={}/{}]",
+                  batch + 1, total_batches, batch_media.size(), error.stage(),
+                  error.category(), error.replaced_count(), error.item_count());
+              message_to_send.push_back(error_segment);
             } catch (const std::exception &) {
-              OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批发送失败，本批放弃",
+              OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批整体发送失败: "
+                         "stage=unexpected, category=unclassified",
                          batch + 1, total_batches);
               obcx::common::MessageSegment error_segment;
               error_segment.type = "text";
               error_segment.data["text"] = fmt::format(
-                  "\n[发送第{}/{}批{}张图片失败: media fallback failed]",
+                  "\n[第{}/{}批（{}张）整体发送失败：阶段=unexpected，"
+                  "原因=unclassified]",
                   batch + 1, total_batches, batch_media.size());
               message_to_send.push_back(error_segment);
             }
@@ -835,8 +980,14 @@ auto QQMessageFormatter::send_media_group(
         }
 
         result.sent = true;
+      } catch (const MediaFallbackError &error) {
+        OBCX_ERROR("MediaGroup 整体发送失败: stage={}, category={}, "
+                   "replaced={}/{}",
+                   error.stage(), error.category(), error.replaced_count(),
+                   error.item_count());
       } catch (const std::exception &) {
-        OBCX_ERROR("MediaGroup URL 与 multipart 发送均失败，本批放弃");
+        OBCX_ERROR("MediaGroup 整体发送失败: stage=unexpected, "
+                   "category=unclassified");
       }
     }
     sent_count += batch_size;
