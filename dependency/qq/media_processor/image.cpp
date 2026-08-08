@@ -144,27 +144,35 @@ auto QQMediaProcessor::handle_sticker_cache(
             topic_config ? topic_config->show_qq_to_tg_sender : false;
       }
 
+      const std::string sender_label = fmt::format("[{}]", sender_display_name);
       std::string caption_info =
-          show_sender_for_sticker ? fmt::format("[{}]\t", sender_display_name)
-                                  : "";
+          show_sender_for_sticker ? fmt::format("{}\t", sender_label) : "";
+      std::vector<obcx::core::TelegramTextEntity> caption_entities;
+      if (show_sender_for_sticker) {
+        caption_entities.push_back(obcx::core::TelegramTextEntity{
+            .type = "italic",
+            .offset = 0,
+            .length = obcx::core::telegram_utf16_code_units(sender_label)});
+      }
 
       std::string response;
       if (topic_id == -1) {
         response =
             co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
-                .send_group_photo(telegram_group_id,
-                                  cached_mapping->telegram_file_id,
-                                  caption_info);
+                .send_group_photo_with_entities(
+                    telegram_group_id, cached_mapping->telegram_file_id,
+                    caption_info, caption_entities);
       } else {
         obcx::common::Message sticker_message;
         obcx::common::MessageSegment img_segment;
         img_segment.type = "image";
         img_segment.data["file"] = cached_mapping->telegram_file_id;
         if (!caption_info.empty()) {
-          obcx::common::MessageSegment caption_segment;
-          caption_segment.type = "text";
-          caption_segment.data["text"] = caption_info;
-          sticker_message.push_back(caption_segment);
+          sticker_message.push_back(obcx::common::MessageSegment{
+              .type = "text",
+              .data = {{"text", sender_label}, {"telegram_style", "italic"}}});
+          sticker_message.push_back(obcx::common::MessageSegment{
+              .type = "text", .data = {{"text", "\t"}}});
         }
         sticker_message.push_back(img_segment);
         response =

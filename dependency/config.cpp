@@ -97,8 +97,8 @@ void load_group_mappings(const obcx::common::ActorConfigView &view,
     }
   }
 
-  OBCX_INFO("Loaded {} bridge mappings for actor generation",
-            result.group_map.size());
+  OBCX_DEBUG("Bridge actor mapping cache initialized: count={}",
+             result.group_map.size());
 }
 
 auto actor_is_enabled(const toml::table &actors, std::string_view actor)

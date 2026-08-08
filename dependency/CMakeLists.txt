@@ -23,6 +23,7 @@ add_library(
   qq/media_processor/simple_segments.cpp
   qq/media_processor/miniapp.cpp
   qq/message_formatter.cpp
+  qq/photo_normalizer.cpp
   # telegram
   telegram/command_handler.cpp
   telegram/event_handler.cpp

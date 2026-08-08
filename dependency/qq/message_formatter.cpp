@@ -166,12 +166,14 @@ auto telegram_failure_category(std::string_view error) -> std::string_view {
 class MediaFallbackError final : public std::runtime_error {
 public:
   MediaFallbackError(std::string stage, std::string category,
-                     std::size_t item_count, std::size_t replaced_count)
-      : std::runtime_error(fmt::format("stage={}, category={}, replaced={}/{}",
-                                       stage, category, replaced_count,
-                                       item_count)),
+                     std::size_t item_count, std::size_t replaced_count,
+                     std::size_t normalized_count = 0)
+      : std::runtime_error(fmt::format(
+            "stage={}, category={}, normalized={}, replaced={}/{}", stage,
+            category, normalized_count, replaced_count, item_count)),
         stage_(std::move(stage)), category_(std::move(category)),
-        item_count_(item_count), replaced_count_(replaced_count) {}
+        item_count_(item_count), replaced_count_(replaced_count),
+        normalized_count_(normalized_count) {}
 
   [[nodiscard]] auto stage() const -> std::string_view { return stage_; }
   [[nodiscard]] auto category() const -> std::string_view { return category_; }
@@ -179,12 +181,16 @@ public:
   [[nodiscard]] auto replaced_count() const -> std::size_t {
     return replaced_count_;
   }
+  [[nodiscard]] auto normalized_count() const -> std::size_t {
+    return normalized_count_;
+  }
 
 private:
   std::string stage_;
   std::string category_;
   std::size_t item_count_;
   std::size_t replaced_count_;
+  std::size_t normalized_count_;
 };
 
 auto failure_name(MediaDownloadFailure failure) -> std::string_view {
@@ -201,40 +207,122 @@ auto failure_name(MediaDownloadFailure failure) -> std::string_view {
     return "empty_body";
   case MediaDownloadFailure::InvalidImage:
     return "invalid_image";
+  case MediaDownloadFailure::InvalidDimensions:
+    return "invalid_dimensions";
+  case MediaDownloadFailure::UnsafeDimensions:
+    return "unsafe_dimensions";
+  case MediaDownloadFailure::NormalizationFailed:
+    return "normalization_failed";
   case MediaDownloadFailure::None:
     break;
   }
   return "unknown";
 }
 
+auto media_failure(PhotoNormalizationFailure failure) -> MediaDownloadFailure {
+  switch (failure) {
+  case PhotoNormalizationFailure::InvalidDimensions:
+    return MediaDownloadFailure::InvalidDimensions;
+  case PhotoNormalizationFailure::UnsafeDimensions:
+    return MediaDownloadFailure::UnsafeDimensions;
+  case PhotoNormalizationFailure::NormalizationFailed:
+    return MediaDownloadFailure::NormalizationFailed;
+  case PhotoNormalizationFailure::None:
+    break;
+  }
+  return MediaDownloadFailure::NormalizationFailed;
+}
+
 auto embedded_placeholder() -> DownloadedImage {
-  static constexpr std::array<unsigned char, 68> kPng = {
-      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-      0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-      0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00,
-      0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00,
-      0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00,
-      0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+  // Final offline fallback for when the configured NOT FOUND image cannot be
+  // downloaded. Keep this useful rather than falling back to a black pixel.
+  static const std::string kPng = [] {
+    static constexpr std::string_view kBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAQAAAABgCAYAAADy8ayIAAAByklEQVR42u3cMQ7CMAxA"
+        "0V6ImWswMXFWjoSE1B1mWBhwXCd+w5ugAUXmD1Hpdj+dX0BPm00AAQAEAGgdgMdzBxYl"
+        "ACAAAgACIAAgAAIAAiAAIAA2CQQAEABAAAABAAQAEABAAAABAAQAEABAAAABAAQAEABAA"
+        "AABAAQAEABAAAABAAQAEABAAIDqAbhcbx9GX//9/l+i1/v386Jlf//R60XPT/b6VeZFA"
+        "ARAAARAAARAAARAAARAAAQgIwDRA5AdmOjrswNQbf3qP9DZ51MABEAABEAABEAABEAABE"
+        "AABKDSIeDo1wVAAI6cPwEQAAEQAAEQAAEQAAEQAAEQAAGIOzQUgLE3AnUPwOzzKQACIA"
+        "ACIAACIAACIAACIAACsNKfgQTAIWDn9QVAAARAAARAAARAAARAAARAAARAAARAAARAAA"
+        "RAAARAAARAAARAAARAADwUNHZDuwcge/9nv5HJU4EFQAAEQAAEQAAEQAAEQAAEYOUAAP"
+        "UIAAiAAIAACAAIgACAAAgACIBNAgEABAAQAEAAAAEABAAQAEAAAAEABAAQAEAAAAEABAA"
+        "QAEAAAAEABAAQAEAAAAEABAAQAGBUAIA+BAAEABAAoJU3yWqRE/JFpjwAAAAASUVORK5C"
+        "YII=";
+    const auto value = [](unsigned char byte) -> unsigned int {
+      if (byte >= 'A' && byte <= 'Z') {
+        return byte - 'A';
+      }
+      if (byte >= 'a' && byte <= 'z') {
+        return byte - 'a' + 26U;
+      }
+      if (byte >= '0' && byte <= '9') {
+        return byte - '0' + 52U;
+      }
+      return byte == '+' ? 62U : 63U;
+    };
+
+    std::string decoded;
+    decoded.reserve(kBase64.size() * 3U / 4U);
+    std::uint32_t buffer = 0;
+    unsigned int bits = 0;
+    for (const unsigned char byte : kBase64) {
+      if (byte == '=') {
+        break;
+      }
+      buffer = (buffer << 6U) | value(byte);
+      bits += 6U;
+      if (bits < 8U) {
+        continue;
+      }
+      bits -= 8U;
+      decoded.push_back(static_cast<char>((buffer >> bits) & 0xffU));
+      buffer &= bits == 0U ? 0U : (1U << bits) - 1U;
+    }
+    return decoded;
+  }();
   return DownloadedImage{
       .type = "photo",
       .filename = "qq-media-placeholder.png",
       .mime_type = "image/png",
-      .data =
-          std::string{reinterpret_cast<const char *>(kPng.data()), kPng.size()},
+      .data = kPng,
   };
 }
 
-auto caption_with_replacements(std::string_view caption,
-                               std::size_t replaced_count) -> std::string {
+void append_italic_telegram_sender(obcx::common::Message &message,
+                                   std::string_view sender) {
+  message.push_back(obcx::common::MessageSegment{
+      .type = "text",
+      .data = {{"text", fmt::format("[{}]", sender)},
+               {"telegram_style", "italic"}}});
+  message.push_back(
+      obcx::common::MessageSegment{.type = "text", .data = {{"text", "\t"}}});
+}
+
+auto italic_entity(std::string_view text)
+    -> std::vector<obcx::core::TelegramTextEntity> {
+  return {{.type = "italic",
+           .offset = 0,
+           .length = obcx::core::telegram_utf16_code_units(text)}};
+}
+
+auto caption_with_media_recovery(std::string_view caption,
+                                 std::size_t replaced_count,
+                                 std::size_t normalized_count) -> std::string {
   std::string result{caption};
-  if (replaced_count == 0) {
-    return result;
+  const auto append_line = [&result](std::string line) {
+    if (!result.empty()) {
+      result += "\n";
+    }
+    result += std::move(line);
+  };
+  if (normalized_count != 0) {
+    append_line(fmt::format("ℹ️ {} 张图片尺寸已自动调整", normalized_count));
   }
-  if (!result.empty()) {
-    result += "\n";
+  if (replaced_count != 0) {
+    append_line(
+        fmt::format("⚠️ {} 张图片暂时无法获取，已用占位图替换", replaced_count));
   }
-  result +=
-      fmt::format("⚠️ {} 张图片暂时无法获取，已用占位图替换", replaced_count);
   return result;
 }
 
@@ -244,12 +332,14 @@ QQMessageFormatter::QQMessageFormatter(
     std::shared_ptr<const bridge::BridgeConfig> config,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor,
-    ImageDownloader image_downloader, ImageSanitizer image_sanitizer)
+    ImageDownloader image_downloader, ImageSanitizer image_sanitizer,
+    ImageNormalizer image_normalizer)
     : config_(std::move(config)),
       state_repository_(std::move(state_repository)),
       blocking_executor_(std::move(blocking_executor)),
       image_downloader_(std::move(image_downloader)),
-      image_sanitizer_(std::move(image_sanitizer)) {
+      image_sanitizer_(std::move(image_sanitizer)),
+      image_normalizer_(std::move(image_normalizer)) {
   if (!image_downloader_) {
     image_downloader_ =
         [](const bridge::BridgeConfig &config,
@@ -265,13 +355,22 @@ QQMessageFormatter::QQMessageFormatter(
           return ImageUrlValidator::sanitize(config, media, replaced);
         };
   }
+  if (!image_normalizer_) {
+    image_normalizer_ = [](const bridge::BridgeConfig &config,
+                           std::vector<DownloadedImage> images) {
+      return PhotoNormalizer(config.ffmpeg_path,
+                             config.qq_media_download_max_bytes)
+          .normalize_batch(std::move(images));
+    };
+  }
 }
 
 auto QQMessageFormatter::send_media_group_with_fallback(
     obcx::core::IBot &telegram_bot, std::string_view telegram_group_id,
     const std::vector<PreparedMedia> &media, std::string_view caption,
     std::optional<int64_t> topic_id,
-    std::optional<std::string> reply_to_message_id)
+    std::optional<std::string> reply_to_message_id,
+    const std::vector<obcx::core::TelegramTextEntity> &caption_entities)
     -> boost::asio::awaitable<MediaGroupFallbackResult> {
   std::vector<std::pair<std::string, std::string>> remote_media;
   remote_media.reserve(media.size());
@@ -289,10 +388,10 @@ auto QQMessageFormatter::send_media_group_with_fallback(
                              media.size(), replaced_indices.size());
   }
   try {
-    auto response = co_await telegram->send_media_group(
+    auto response = co_await telegram->send_media_group_with_entities(
         telegram_group_id, remote_media,
-        caption_with_replacements(caption, replaced_indices.size()), topic_id,
-        reply_to_message_id);
+        caption_with_media_recovery(caption, replaced_indices.size(), 0),
+        topic_id, reply_to_message_id, caption_entities);
     co_return MediaGroupFallbackResult{
         .response = std::move(response),
         .replaced_count = replaced_indices.size(),
@@ -357,6 +456,62 @@ auto QQMessageFormatter::send_media_group_with_fallback(
     }
   }
 
+  std::size_t normalized_count = 0;
+  std::vector<DownloadedImage> normalization_candidates;
+  std::vector<std::size_t> normalization_indices;
+  for (std::size_t index = 0; index < outcomes.size(); ++index) {
+    if (!outcomes[index].succeeded()) {
+      continue;
+    }
+    normalization_candidates.push_back(std::move(*outcomes[index].image));
+    outcomes[index].image.reset();
+    normalization_indices.push_back(index);
+  }
+  if (!normalization_candidates.empty()) {
+    std::vector<PhotoNormalizationResult> normalized;
+    try {
+      normalized = co_await blocking_executor_->run(
+          [normalizer = image_normalizer_, config = config_,
+           candidates = std::move(normalization_candidates)]() mutable {
+            return normalizer(*config, std::move(candidates));
+          });
+    } catch (const std::exception &error) {
+      if (is_operation_aborted(error)) {
+        throw;
+      }
+      normalized.resize(normalization_indices.size());
+      for (auto &result : normalized) {
+        result.failure = PhotoNormalizationFailure::NormalizationFailed;
+      }
+    }
+    if (normalized.size() != normalization_indices.size()) {
+      throw MediaFallbackError("photo_normalization", "incomplete_outcomes",
+                               media.size(), replaced_indices.size(),
+                               normalized_count);
+    }
+    for (std::size_t index = 0; index < normalized.size(); ++index) {
+      const auto outcome_index = normalization_indices[index];
+      if (!normalized[index].succeeded()) {
+        outcomes[outcome_index].failure =
+            media_failure(normalized[index].failure);
+        outcomes[outcome_index].diagnostic =
+            std::string{failure_name(normalized[index].failure)};
+        OBCX_WARN("QQ multipart 图片尺寸处理失败: index={}, category={}",
+                  outcome_index + 1, failure_name(normalized[index].failure));
+        continue;
+      }
+      if (normalized[index].normalized) {
+        ++normalized_count;
+        OBCX_INFO("QQ multipart 图片尺寸已调整: index={}, {}x{} -> {}x{}",
+                  outcome_index + 1, normalized[index].source_dimensions.width,
+                  normalized[index].source_dimensions.height,
+                  normalized[index].output_dimensions.width,
+                  normalized[index].output_dimensions.height);
+      }
+      outcomes[outcome_index].image = std::move(normalized[index].image);
+    }
+  }
+
   const bool needs_placeholder = std::ranges::any_of(
       outcomes, [](const auto &outcome) { return !outcome.succeeded(); });
 
@@ -369,7 +524,21 @@ auto QQMessageFormatter::send_media_group_with_fallback(
           co_await image_downloader_(*config_, placeholder_media);
       if (placeholder_outcomes.size() == 1 &&
           placeholder_outcomes.front().succeeded()) {
-        placeholder = std::move(*placeholder_outcomes.front().image);
+        std::vector<DownloadedImage> placeholder_candidate;
+        placeholder_candidate.push_back(
+            std::move(*placeholder_outcomes.front().image));
+        auto normalized_placeholder = co_await blocking_executor_->run(
+            [normalizer = image_normalizer_, config = config_,
+             candidate = std::move(placeholder_candidate)]() mutable {
+              return normalizer(*config, std::move(candidate));
+            });
+        if (normalized_placeholder.size() == 1 &&
+            normalized_placeholder.front().succeeded()) {
+          placeholder = std::move(*normalized_placeholder.front().image);
+        } else {
+          OBCX_WARN("配置占位图尺寸处理失败，使用内置占位图: "
+                    "category=invalid_placeholder");
+        }
       } else {
         const auto category =
             placeholder_outcomes.size() == 1
@@ -416,7 +585,8 @@ auto QQMessageFormatter::send_media_group_with_fallback(
       throw;
     }
     throw MediaFallbackError("temporary_media", "materialize_failed",
-                             media.size(), replaced_indices.size());
+                             media.size(), replaced_indices.size(),
+                             normalized_count);
   }
   const auto temporary_root = temporary.root();
 
@@ -424,10 +594,11 @@ auto QQMessageFormatter::send_media_group_with_fallback(
   std::string upload_failure_category;
   std::exception_ptr upload_cancellation;
   try {
-    response = co_await uploader->send_media_group_uploads(
+    response = co_await uploader->send_media_group_uploads_with_entities(
         telegram_group_id, temporary.uploads(),
-        caption_with_replacements(caption, replaced_indices.size()), topic_id,
-        reply_to_message_id);
+        caption_with_media_recovery(caption, replaced_indices.size(),
+                                    normalized_count),
+        topic_id, reply_to_message_id, caption_entities);
   } catch (const std::exception &error) {
     if (is_operation_aborted(error)) {
       upload_cancellation = std::current_exception();
@@ -469,12 +640,14 @@ auto QQMessageFormatter::send_media_group_with_fallback(
   }
   if (!upload_failure_category.empty()) {
     throw MediaFallbackError("multipart_upload", upload_failure_category,
-                             media.size(), replaced_indices.size());
+                             media.size(), replaced_indices.size(),
+                             normalized_count);
   }
   co_return MediaGroupFallbackResult{
       .response = std::move(response),
       .used_multipart = true,
       .replaced_count = replaced_indices.size(),
+      .normalized_count = normalized_count,
   };
 }
 
@@ -498,11 +671,7 @@ auto QQMessageFormatter::format_sender_info(
   }
 
   if (show_sender) {
-    std::string sender_info = fmt::format("[{}]\t", sender_display_name);
-    obcx::common::MessageSegment sender_segment;
-    sender_segment.type = "text";
-    sender_segment.data["text"] = sender_info;
-    message_to_send.push_back(sender_segment);
+    append_italic_telegram_sender(message_to_send, sender_display_name);
     OBCX_DEBUG("QQ到Telegram转发显示发送者：{}", sender_display_name);
   } else {
     OBCX_DEBUG("QQ到Telegram转发不显示发送者");
@@ -696,6 +865,7 @@ auto QQMessageFormatter::process_forward_message(
           size_t total_batches = (all_media.size() + 9) / 10;
           size_t sent_count = 0;
           size_t total_replaced_count = 0;
+          size_t total_normalized_count = 0;
 
           size_t batch_start = 0;
           for (size_t batch = 0; batch < total_batches; ++batch) {
@@ -739,19 +909,21 @@ auto QQMessageFormatter::process_forward_message(
                         send_result.used_multipart ? "（multipart兜底）" : "");
               sent_count += batch_media.size();
               total_replaced_count += send_result.replaced_count;
+              total_normalized_count += send_result.normalized_count;
             } catch (const MediaFallbackError &error) {
               OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批整体发送失败: "
-                         "stage={}, category={}, replaced={}/{}",
+                         "stage={}, category={}, normalized={}, replaced={}/{}",
                          batch + 1, total_batches, error.stage(),
-                         error.category(), error.replaced_count(),
-                         error.item_count());
+                         error.category(), error.normalized_count(),
+                         error.replaced_count(), error.item_count());
               obcx::common::MessageSegment error_segment;
               error_segment.type = "text";
               error_segment.data["text"] = fmt::format(
                   "\n[第{}/{}批（{}张）整体发送失败：阶段={}，原因={}，"
-                  "已替换={}/{}]",
+                  "已调整={}，已替换={}/{}]",
                   batch + 1, total_batches, batch_media.size(), error.stage(),
-                  error.category(), error.replaced_count(), error.item_count());
+                  error.category(), error.normalized_count(),
+                  error.replaced_count(), error.item_count());
               message_to_send.push_back(error_segment);
             } catch (const std::exception &) {
               OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批整体发送失败: "
@@ -770,8 +942,9 @@ auto QQMessageFormatter::process_forward_message(
 
           if (sent_count > 0) {
             OBCX_INFO("合并转发消息图片发送完成，共成功发送 {}/{} 张 "
-                      "(其中 {} 张失败已用占位图替换)",
-                      sent_count, all_media.size(), total_replaced_count);
+                      "(已调整 {} 张，已用占位图替换 {} 张)",
+                      sent_count, all_media.size(), total_normalized_count,
+                      total_replaced_count);
           }
         }
       }
@@ -910,6 +1083,7 @@ auto QQMessageFormatter::send_media_group(
     if (!media_list.empty()) {
       try {
         std::string caption;
+        std::vector<obcx::core::TelegramTextEntity> caption_entities;
 
         bool show_sender = false;
         if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
@@ -923,6 +1097,7 @@ auto QQMessageFormatter::send_media_group(
 
         if (show_sender) {
           caption = fmt::format("[{}]", sender_display_name);
+          caption_entities = italic_entity(caption);
         }
 
         for (const auto &seg : other_segments) {
@@ -950,10 +1125,13 @@ auto QQMessageFormatter::send_media_group(
 
         const auto send_result = co_await send_media_group_with_fallback(
             telegram_bot, telegram_group_id, prepared, caption, opt_topic_id,
-            opt_reply_id);
+            opt_reply_id, caption_entities);
 
-        OBCX_INFO("成功通过MediaGroup发送 {} 张图片{}", media_list.size(),
-                  send_result.used_multipart ? "（multipart兜底）" : "");
+        OBCX_INFO("成功通过MediaGroup发送 {} 张图片{}，已调整 {} 张，"
+                  "已替换 {} 张",
+                  media_list.size(),
+                  send_result.used_multipart ? "（multipart兜底）" : "",
+                  send_result.normalized_count, send_result.replaced_count);
 
         if (!send_result.response.empty()) {
           try {
@@ -982,9 +1160,9 @@ auto QQMessageFormatter::send_media_group(
         result.sent = true;
       } catch (const MediaFallbackError &error) {
         OBCX_ERROR("MediaGroup 整体发送失败: stage={}, category={}, "
-                   "replaced={}/{}",
-                   error.stage(), error.category(), error.replaced_count(),
-                   error.item_count());
+                   "normalized={}, replaced={}/{}",
+                   error.stage(), error.category(), error.normalized_count(),
+                   error.replaced_count(), error.item_count());
       } catch (const std::exception &) {
         OBCX_ERROR("MediaGroup 整体发送失败: stage=unexpected, "
                    "category=unclassified");

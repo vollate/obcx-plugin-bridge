@@ -2,12 +2,14 @@
 
 #include "config.hpp"
 #include "qq/image_url_validator.hpp"
+#include "qq/photo_normalizer.hpp"
 
 #include <boost/asio.hpp>
 #include <common/message_type.hpp>
 #include <core/blocking_executor.hpp>
 #include <functional>
 #include <interfaces/bot.hpp>
+#include <interfaces/telegram_bot.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,6 +38,7 @@ struct MediaGroupFallbackResult {
   std::string response;
   bool used_multipart{false};
   std::size_t replaced_count{0};
+  std::size_t normalized_count{0};
 };
 
 /**
@@ -54,6 +57,8 @@ public:
           const bridge::BridgeConfig &,
           const std::vector<std::pair<std::string, std::string>> &,
           std::vector<std::string> &)>;
+  using ImageNormalizer = std::function<std::vector<PhotoNormalizationResult>(
+      const bridge::BridgeConfig &, std::vector<DownloadedImage>)>;
 
   /**
    * @brief 构造函数
@@ -64,7 +69,8 @@ public:
       std::shared_ptr<bridge::BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor = nullptr,
       ImageDownloader image_downloader = {},
-      ImageSanitizer image_sanitizer = {});
+      ImageSanitizer image_sanitizer = {},
+      ImageNormalizer image_normalizer = {});
 
   /**
    * @brief 格式化消息发送者信息
@@ -158,12 +164,14 @@ private:
   std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
   ImageDownloader image_downloader_;
   ImageSanitizer image_sanitizer_;
+  ImageNormalizer image_normalizer_;
 
   auto send_media_group_with_fallback(
       obcx::core::IBot &telegram_bot, std::string_view telegram_group_id,
       const std::vector<PreparedMedia> &media, std::string_view caption,
       std::optional<int64_t> topic_id,
-      std::optional<std::string> reply_to_message_id)
+      std::optional<std::string> reply_to_message_id,
+      const std::vector<obcx::core::TelegramTextEntity> &caption_entities = {})
       -> boost::asio::awaitable<MediaGroupFallbackResult>;
 
   /**

@@ -127,6 +127,22 @@ the public Telegram photo limit. A failed, expired, invalid, or oversized item
 is replaced during multipart fallback without discarding valid peers in the
 same media group.
 
+Before multipart upload, the fallback also checks Telegram's photo-dimension
+rules: width plus height must not exceed 10,000 pixels and the larger-to-smaller
+ratio must not exceed 20. Compliant images retain their original bytes.
+Recoverable overlong images are converted through `ffmpeg_path` without
+upscaling or cropping; extreme ratios are padded before bounded downscaling.
+Successful conversions are reported as `已调整` separately from placeholder
+substitutions reported as `已替换`.
+
+Dimension conversion runs on the process blocking executor, one image at a
+time per media batch, with a 15-second per-image deadline. Images declaring
+more than 64 megapixels are not decoded. `invalid_dimensions`,
+`unsafe_dimensions`, and `normalization_failed` replace only the affected item
+with the configured placeholder. Logs may include item indices and dimensions,
+but never signed QQ URLs, complete decoder output, or complete Telegram
+responses.
+
 The forwarding runtime currently resolves bots by platform, not by bot id.
 Configure exactly one live QQ bot and exactly one live Telegram bot. Multiple
 live accounts on either platform make lookup ambiguous and forwarding fails.

@@ -45,6 +45,9 @@ enum class MediaDownloadFailure : std::uint8_t {
   OverLimit,
   EmptyBody,
   InvalidImage,
+  InvalidDimensions,
+  UnsafeDimensions,
+  NormalizationFailed,
 };
 
 struct MediaDownloadResult {
