@@ -97,3 +97,64 @@ gtest_discover_tests(photo_normalizer_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")
 gtest_discover_tests(bridge_db_runtime_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")
+
+if(OBCX_BRIDGE_CONFORMANCE_TESTS)
+  include(GNUInstallDirs)
+  if(NOT IS_ABSOLUTE "${OBCX_MESSAGE_STORE_ACTOR_PATH}" OR
+     NOT EXISTS "${OBCX_MESSAGE_STORE_ACTOR_PATH}")
+    message(FATAL_ERROR
+            "Bridge conformance requires an installed Message Store actor path")
+  endif()
+  if(NOT IS_ABSOLUTE "${OBCX_BRIDGE_CONFORMANCE_INSTALL_PREFIX}")
+    message(FATAL_ERROR
+            "Bridge conformance requires an absolute shared install prefix")
+  endif()
+  if(NOT IS_ABSOLUTE "${OBCX_CORE_SOURCE_DIR}" OR
+     NOT EXISTS "${OBCX_CORE_SOURCE_DIR}/include/core/orchestrator.hpp")
+    message(FATAL_ERROR
+            "Bridge runtime conformance requires the coordinated OBCX source tree")
+  endif()
+
+  add_executable(standalone_actor_pipeline_smoke
+                 standalone_actor_pipeline_smoke.cpp)
+  target_include_directories(
+    standalone_actor_pipeline_smoke
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${OBCX_CORE_SOURCE_DIR}/include)
+  target_link_libraries(standalone_actor_pipeline_smoke
+                        PRIVATE obcx::obcx_core)
+
+  add_executable(standalone_actor_reload_smoke
+                 standalone_actor_reload_smoke.cpp)
+  target_include_directories(standalone_actor_reload_smoke
+                             PRIVATE ${OBCX_CORE_SOURCE_DIR}/include)
+  target_link_libraries(standalone_actor_reload_smoke
+                        PRIVATE obcx::obcx_core)
+
+  if(APPLE)
+    set_target_properties(
+      standalone_actor_pipeline_smoke standalone_actor_reload_smoke
+      PROPERTIES INSTALL_RPATH "@loader_path/../../${CMAKE_INSTALL_LIBDIR}")
+  elseif(UNIX)
+    set_target_properties(
+      standalone_actor_pipeline_smoke standalone_actor_reload_smoke
+      PROPERTIES INSTALL_RPATH "\$ORIGIN/../../${CMAKE_INSTALL_LIBDIR}")
+  endif()
+  install(TARGETS standalone_actor_pipeline_smoke
+                  standalone_actor_reload_smoke
+          RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/obcx)
+
+  set(_installed_bridge_actor
+      "${OBCX_BRIDGE_CONFORMANCE_INSTALL_PREFIX}/lib/obcx/actors/bridge${CMAKE_SHARED_LIBRARY_SUFFIX}")
+  add_test(
+    NAME BridgeInstalledPipelineSmoke
+    COMMAND standalone_actor_pipeline_smoke
+            "${OBCX_MESSAGE_STORE_ACTOR_PATH}" "${_installed_bridge_actor}")
+  add_test(
+    NAME BridgeInstalledReloadSmoke
+    COMMAND standalone_actor_reload_smoke
+            "${OBCX_MESSAGE_STORE_ACTOR_PATH}" "${_installed_bridge_actor}")
+  set_tests_properties(
+    BridgeInstalledPipelineSmoke BridgeInstalledReloadSmoke
+    PROPERTIES LABELS "integration;conformance;actor-package;bridge"
+               TIMEOUT 90)
+endif()

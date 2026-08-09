@@ -36,11 +36,21 @@ cmake --install /tmp/obcx-build --prefix /tmp/obcx-sdk
 
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_PREFIX_PATH=/tmp/obcx-sdk
+  -DCMAKE_PREFIX_PATH=/tmp/obcx-sdk \
+  -DOBCX_BRIDGE_BUILD_TESTS=ON
 cmake --build build -j2
 ctest --test-dir build --output-on-failure
 cmake --install build --prefix /tmp/bridge-package
 ```
+
+Bridge owns forwarding, mapping, media, retry, installed pipeline, and
+bot-facing reload behavior tests. `OBCX_BRIDGE_BUILD_TESTS` follows
+`BUILD_TESTING` when Bridge is configured as the top-level project and defaults
+to `OFF` when OBCX embeds Bridge as an actor subdirectory; an embedding consumer
+may explicitly override it. The release coordinator additionally enables
+`OBCX_BRIDGE_CONFORMANCE_TESTS` and supplies the installed Message Store actor
+and shared install prefix so Bridge registers, runs, and installs its cross-actor
+pipeline and reload smoke executables from this repository.
 
 The installed package contains:
 
