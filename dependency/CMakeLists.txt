@@ -1,6 +1,7 @@
 add_library(
   bridge_core STATIC
   config.cpp
+  bridge_bot_operations.cpp
 	  bridge_db_runtime.cpp
 	  bridge_forwarding_runtime.cpp
 	  bridge_hash.cpp

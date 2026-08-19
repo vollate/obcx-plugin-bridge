@@ -107,6 +107,41 @@ auto actor_is_enabled(const toml::table &actors, std::string_view actor)
   return table != nullptr && (*table)["enabled"].value_or(true);
 }
 
+void validate_installation(const toml::table &bots,
+                           const std::string &installation,
+                           const std::string_view expected_type,
+                           const std::string_view field) {
+  const auto *configured = bots[installation].as_table();
+  if (configured == nullptr) {
+    throw std::runtime_error(
+        "bridge " + std::string{field} +
+        " does not name a configured bot: " + installation);
+  }
+  if (!(*configured)["enabled"].value_or(true)) {
+    throw std::runtime_error("bridge " + std::string{field} +
+                             " names a disabled bot: " + installation);
+  }
+  const auto actual_type = (*configured)["type"].value_or<std::string>("");
+  if (actual_type != expected_type) {
+    throw std::runtime_error("bridge " + std::string{field} + " requires " +
+                             std::string{expected_type} + " but " +
+                             installation + " has type " + actual_type);
+  }
+}
+
+void validate_installation_pair(const obcx::common::ActorConfigView &view,
+                                const BridgeConfig &config) {
+  const auto bots = view.get_root_section("bots");
+  if (!bots.has_value()) {
+    throw std::runtime_error(
+        "bridge explicit installation pair requires the root bots section");
+  }
+  validate_installation(*bots, config.telegram_installation, "telegram",
+                        "telegram_installation");
+  validate_installation(*bots, config.onebot11_installation, "qq",
+                        "onebot11_installation");
+}
+
 } // namespace
 
 auto BridgeConfig::qq_group_id_for_topic(std::string_view tg_group_id,
@@ -171,6 +206,10 @@ auto load_bridge_config(const obcx::common::ActorConfigView &view)
   auto result = std::make_shared<BridgeConfig>();
   load_group_mappings(view, *result);
 
+  assign_if_present(view, "telegram_installation",
+                    result->telegram_installation);
+  assign_if_present(view, "onebot11_installation",
+                    result->onebot11_installation);
   assign_if_present(view, "enable_miniapp_parsing",
                     result->enable_miniapp_parsing);
   assign_if_present(view, "show_raw_json_on_parse_fail",
@@ -228,11 +267,22 @@ auto load_bridge_config(const obcx::common::ActorConfigView &view)
   }
 
   validate_bridge_config(*result);
+  validate_installation_pair(view, *result);
 
   return result;
 }
 
 void validate_bridge_config(const BridgeConfig &config) {
+  if (config.telegram_installation.empty()) {
+    throw std::runtime_error("bridge config requires telegram_installation");
+  }
+  if (config.onebot11_installation.empty()) {
+    throw std::runtime_error("bridge config requires onebot11_installation");
+  }
+  if (config.telegram_installation == config.onebot11_installation) {
+    throw std::runtime_error(
+        "bridge Telegram and OneBot installations must be different");
+  }
   if (config.message_retry_max_attempts <= 0) {
     throw std::runtime_error(
         "bridge message_retry_max_attempts must be positive");
@@ -260,6 +310,29 @@ void validate_bridge_config(const BridgeConfig &config) {
       config.qq_media_download_max_bytes > kMaxQqMediaDownloadBytes) {
     throw std::runtime_error(
         "bridge qq_media_download_max_bytes must be between 1 and 10485760");
+  }
+}
+
+void validate_bridge_source(const BridgeConfig &config,
+                            const std::string_view source_platform,
+                            const std::string_view source_installation) {
+  if (source_installation.empty()) {
+    throw std::runtime_error(
+        "bridge source_bot is required for exact installation routing");
+  }
+  std::string_view expected;
+  if (source_platform == "telegram") {
+    expected = config.telegram_installation;
+  } else if (source_platform == "qq") {
+    expected = config.onebot11_installation;
+  } else {
+    throw std::runtime_error("unsupported bridge source platform " +
+                             std::string{source_platform});
+  }
+  if (source_installation != expected) {
+    throw std::runtime_error(
+        "bridge source_bot does not match the configured installation for " +
+        std::string{source_platform});
   }
 }
 

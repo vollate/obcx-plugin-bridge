@@ -69,10 +69,13 @@ struct GroupBridgeConfig {
 /**
  * Immutable after construction and owned by one bridge actor generation.
  * Bot endpoints and credentials intentionally do not live here: they remain
- * process-owned through BotRegistry and are restart-required.
+ * process-owned behind BotOperationClient and are restart-required.
  */
 struct BridgeConfig final {
   std::unordered_map<std::string, GroupBridgeConfig> group_map;
+
+  std::string telegram_installation;
+  std::string onebot11_installation;
 
   bool enable_miniapp_parsing = true;
   bool show_raw_json_on_parse_fail = true;
@@ -120,6 +123,9 @@ struct BridgeConfig final {
 
 /** Validate bridge-owned values after loading one immutable generation. */
 void validate_bridge_config(const BridgeConfig &config);
+void validate_bridge_source(const BridgeConfig &config,
+                            std::string_view source_platform,
+                            std::string_view source_installation);
 
 /** Whether the supplied immutable snapshot assigns forwarding to actors. */
 [[nodiscard]] auto actor_pipeline_enabled(

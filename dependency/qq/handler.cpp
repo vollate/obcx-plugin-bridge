@@ -11,37 +11,40 @@
 
 #include <common/logger.hpp>
 #include <fmt/format.h>
-#include <interfaces/telegram_bot.hpp>
 #include <nlohmann/json.hpp>
 
 namespace bridge {
 
 QQHandler::QQHandler(
+    std::shared_ptr<BridgeBotOperations> operations,
     std::shared_ptr<const BridgeConfig> config,
     std::shared_ptr<RetryQueueManager> retry_manager,
     std::shared_ptr<BridgeStateRepository> state_repository,
     std::shared_ptr<ReceivedMessageRepository> received_message_repository,
     std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
-    : config_(std::move(config)), retry_manager_(std::move(retry_manager)),
+    : operations_(std::move(operations)), config_(std::move(config)),
+      retry_manager_(std::move(retry_manager)),
       state_repository_(std::move(state_repository)),
       received_message_repository_(std::move(received_message_repository)),
       blocking_executor_(std::move(blocking_executor)),
       media_processor_(std::make_unique<qq::QQMediaProcessor>(
-          config_, state_repository_, blocking_executor_)),
+          operations_, config_, state_repository_, blocking_executor_)),
       command_handler_(std::make_unique<qq::QQCommandHandler>(
-          state_repository_, blocking_executor_)),
+          operations_, state_repository_, blocking_executor_)),
       event_handler_(std::make_unique<qq::QQEventHandler>(
-          config_, state_repository_, received_message_repository_,
+          operations_, config_, state_repository_, received_message_repository_,
           blocking_executor_)),
       message_formatter_(std::make_unique<qq::QQMessageFormatter>(
-          config_, state_repository_, blocking_executor_)) {}
+          operations_, config_, state_repository_, blocking_executor_)) {
+  if (!operations_) {
+    throw std::invalid_argument("QQHandler requires bot operations");
+  }
+}
 
 // 析构函数需要在这里定义，以确保所有子模块类的完整定义都可见
 QQHandler::~QQHandler() = default;
 
-auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
-                                    obcx::core::IBot &qq_bot,
-                                    obcx::common::MessageEvent event)
+auto QQHandler::forward_to_telegram(obcx::common::MessageEvent event)
     -> boost::asio::awaitable<DirectForwardOutcome> {
   DirectForwardOutcome outcome;
   if (event.message_type != "group" || !event.group_id.has_value()) {
@@ -114,13 +117,14 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
   OBCX_INFO("准备从QQ群 {} 转发消息到Telegram群 {}", qq_group_id,
             telegram_group_id);
 
+  std::string fatal_error;
   try {
     obcx::common::Message message_to_send;
 
     std::string sender_display_name =
         co_await message_formatter_->format_sender_info(
-            qq_bot, event, bridge_config, qq_group_id, telegram_group_id,
-            topic_id, message_to_send);
+            event, bridge_config, qq_group_id, telegram_group_id, topic_id,
+            message_to_send);
 
     co_await message_formatter_->format_reply_message(event, message_to_send);
 
@@ -141,12 +145,18 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
 
     // 多张图片走 sendMediaGroup；单张或失败时退回到逐段发送（下方循环）。
     auto media_group = co_await message_formatter_->send_media_group(
-        telegram_bot, image_segments, other_segments, telegram_group_id,
-        topic_id, sender_display_name, bridge_config, message_to_send, event);
+        image_segments, other_segments, telegram_group_id, topic_id,
+        sender_display_name, bridge_config, message_to_send, event);
 
     if (media_group.sent) {
       if (!media_group.primary_target_message_id.has_value()) {
-        co_return outcome;
+        co_return DirectForwardOutcome{
+            .disposition = DirectForwardDisposition::DeliveryFailed,
+            .source_platform = "qq",
+            .source_message_id = event.message_id,
+            .target_platform = "telegram",
+            .failure_message = "outcome_unknown",
+        };
       }
       co_return DirectForwardOutcome{
           .disposition = DirectForwardDisposition::NewDelivery,
@@ -162,9 +172,8 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     for (const auto &img_segment : image_segments) {
       auto converted_segment =
           co_await media_processor_->process_qq_media_segment(
-              qq_bot, telegram_bot, img_segment, event, telegram_group_id,
-              topic_id, sender_display_name, bridge_config,
-              temp_files_to_cleanup);
+              img_segment, event, telegram_group_id, topic_id,
+              sender_display_name, bridge_config, temp_files_to_cleanup);
 
       if (converted_segment.has_value()) {
         message_to_send.push_back(converted_segment.value());
@@ -174,8 +183,7 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
     for (const auto &segment : other_segments) {
       if (segment.type == "forward") {
         co_await message_formatter_->process_forward_message(
-            qq_bot, telegram_bot, segment, telegram_group_id, topic_id,
-            message_to_send);
+            segment, telegram_group_id, topic_id, message_to_send);
         continue;
       }
 
@@ -187,8 +195,8 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
 
       auto converted_segment =
           co_await media_processor_->process_qq_media_segment(
-              qq_bot, telegram_bot, segment, event, telegram_group_id, topic_id,
-              sender_display_name, bridge_config, temp_files_to_cleanup);
+              segment, event, telegram_group_id, topic_id, sender_display_name,
+              bridge_config, temp_files_to_cleanup);
 
       if (converted_segment.has_value()) {
         message_to_send.push_back(converted_segment.value());
@@ -197,55 +205,42 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
 
     std::optional<std::string> telegram_message_id;
     std::string failure_reason;
+    bool definitely_retryable = false;
+    bool outcome_unknown = false;
 
     try {
-      std::string response;
       if (topic_id == -1) {
-        response = co_await telegram_bot.send_group_message(telegram_group_id,
-                                                            message_to_send);
-        OBCX_DEBUG("群组模式：QQ群 {} 转发到Telegram群 {}", qq_group_id,
-                   telegram_group_id);
+        telegram_message_id = co_await operations_->send_telegram_group(
+            telegram_group_id, message_to_send);
       } else {
-        auto &tg_bot = dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot);
-        response = co_await tg_bot.send_topic_message(
+        telegram_message_id = co_await operations_->send_telegram_topic(
             telegram_group_id, topic_id, message_to_send);
-        OBCX_DEBUG("Topic模式：QQ群 {} 转发到Telegram群 {} 的topic {}",
-                   qq_group_id, telegram_group_id, topic_id);
       }
-
-      if (!response.empty()) {
-        nlohmann::json response_json = nlohmann::json::parse(response);
-        if (response_json.contains("result") &&
-            response_json["result"].is_object() &&
-            response_json["result"].contains("message_id")) {
-          telegram_message_id = std::to_string(
-              response_json["result"]["message_id"].get<int64_t>());
-
-          outcome = DirectForwardOutcome{
-              .disposition = DirectForwardDisposition::NewDelivery,
-              .source_platform = "qq",
-              .source_message_id = event.message_id,
-              .target_platform = "telegram",
-              .target_message_id = *telegram_message_id,
-          };
-
-          OBCX_INFO("QQ消息 {} 成功转发到Telegram，Telegram消息ID: {}",
-                    event.message_id, telegram_message_id.value());
-        } else {
-          failure_reason = "Invalid response format from Telegram API";
-          OBCX_WARN("转发QQ消息后，无法解析Telegram消息ID");
-        }
-      } else {
-        failure_reason = "Empty response from Telegram API";
-        OBCX_WARN("Telegram API返回空响应");
-      }
-    } catch (const std::exception &) {
-      failure_reason = "Telegram API send failed";
-      OBCX_WARN("发送QQ消息到Telegram时出错");
+      outcome = DirectForwardOutcome{
+          .disposition = DirectForwardDisposition::NewDelivery,
+          .source_platform = "qq",
+          .source_message_id = event.message_id,
+          .target_platform = "telegram",
+          .target_message_id = *telegram_message_id,
+      };
+    } catch (const std::exception &error) {
+      const auto disposition = classify_bridge_operation_failure(error);
+      failure_reason = disposition.diagnostic;
+      definitely_retryable = disposition.retryable;
+      outcome_unknown = disposition.outcome_unknown;
+      outcome = DirectForwardOutcome{
+          .disposition = DirectForwardDisposition::DeliveryFailed,
+          .source_platform = "qq",
+          .source_message_id = event.message_id,
+          .target_platform = "telegram",
+          .failure_message = failure_reason,
+          .failure_retryable = definitely_retryable,
+      };
+      OBCX_WARN("发送QQ消息到Telegram时出错: {}", failure_reason);
     }
 
-    if (!telegram_message_id.has_value() && retry_manager_ &&
-        config_->enable_retry_queue) {
+    if (!telegram_message_id.has_value() && definitely_retryable &&
+        retry_manager_ && config_->enable_retry_queue) {
       OBCX_INFO("消息发送失败，添加到重试队列: {} -> {}", event.message_id,
                 telegram_group_id);
       co_await blocking_executor_->run(
@@ -256,7 +251,9 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
                 "qq", "telegram", message_id, message, telegram_group_id,
                 qq_group_id, topic_id, max_attempts, failure_reason);
           });
-    } else if (!telegram_message_id.has_value() &&
+    } else if (!telegram_message_id.has_value() && outcome_unknown) {
+      OBCX_ERROR("消息发送结果不确定，禁止自动重试: {}", failure_reason);
+    } else if (!telegram_message_id.has_value() && definitely_retryable &&
                config_->enable_retry_queue) {
       OBCX_ERROR("消息发送失败且重试队列不可用: {}", failure_reason);
     } else if (!telegram_message_id.has_value()) {
@@ -274,33 +271,45 @@ auto QQHandler::forward_to_telegram(obcx::core::IBot &telegram_bot,
 
   } catch (const std::exception &e) {
     OBCX_ERROR("转发QQ消息到Telegram时出错: {}", e.what());
-    qq_bot.error_notify(
-        qq_group_id, fmt::format("转发消息到Telegram失败: {}", e.what()), true);
+    fatal_error = e.what();
+    outcome = DirectForwardOutcome{
+        .disposition = DirectForwardDisposition::DeliveryFailed,
+        .source_platform = "qq",
+        .source_message_id = event.message_id,
+        .target_platform = "telegram",
+        .failure_message = "bridge_processing_failed",
+    };
+  }
+  if (!fatal_error.empty()) {
+    try {
+      const obcx::common::Message error_message{
+          {.type = "text",
+           .data = {{"text",
+                     fmt::format("转发消息到Telegram失败: {}", fatal_error)}}}};
+      (void)co_await operations_->send_onebot11_group(qq_group_id,
+                                                      error_message);
+    } catch (const std::exception &error) {
+      OBCX_WARN("发送QQ转发错误提示失败: {}", error.what());
+    }
   }
   co_return outcome;
 }
 
-auto QQHandler::handle_recall_event(obcx::core::IBot &telegram_bot,
-                                    obcx::core::IBot &qq_bot,
-                                    obcx::common::Event event)
+auto QQHandler::handle_recall_event(obcx::common::Event event)
     -> boost::asio::awaitable<void> {
-  co_await event_handler_->handle_recall_event(telegram_bot, qq_bot, event);
+  co_await event_handler_->handle_recall_event(std::move(event));
 }
 
-auto QQHandler::handle_checkalive_command(obcx::core::IBot &telegram_bot,
-                                          obcx::core::IBot &qq_bot,
-                                          obcx::common::MessageEvent event,
+auto QQHandler::handle_checkalive_command(obcx::common::MessageEvent event,
                                           const std::string &telegram_group_id)
     -> boost::asio::awaitable<void> {
-  co_await command_handler_->handle_checkalive_command(
-      telegram_bot, qq_bot, event, telegram_group_id);
+  co_await command_handler_->handle_checkalive_command(std::move(event),
+                                                       telegram_group_id);
 }
 
-auto QQHandler::handle_poke_event(obcx::core::IBot &telegram_bot,
-                                  obcx::core::IBot &qq_bot,
-                                  const obcx::common::NoticeEvent &event)
+auto QQHandler::handle_poke_event(const obcx::common::NoticeEvent &event)
     -> boost::asio::awaitable<void> {
-  co_await event_handler_->handle_poke_event(telegram_bot, qq_bot, event);
+  co_await event_handler_->handle_poke_event(event);
 }
 
 } // namespace bridge

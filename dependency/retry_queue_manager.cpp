@@ -117,6 +117,15 @@ auto update_persisted_message_retry(
   }
 }
 
+auto terminalize_persisted_message_retry(
+    const std::shared_ptr<BridgeStateRepository> &repository,
+    MessageRetryEntry &entry, std::string reason) -> bool {
+  entry.retry_count = entry.max_retry_count;
+  entry.failure_reason = std::move(reason);
+  entry.next_retry_at = std::chrono::system_clock::now();
+  return update_persisted_message_retry(repository, entry, "terminal outcome");
+}
+
 auto persist_successful_message_mapping(
     const std::shared_ptr<BridgeStateRepository> &repository,
     const MessageRetryEntry &entry, const std::string &target_message_id)
@@ -449,71 +458,81 @@ auto RetryQueueManager::process_message_retries()
 
       auto result = co_await callback_it->second(entry, entry.message);
 
-      if (result.has_value()) {
+      if (result.disposition == MessageSendDisposition::Completed) {
+        if (!result.target_message_id.has_value() ||
+            result.target_message_id->empty()) {
+          terminalize_persisted_message_retry(
+              state_repository_, entry, "completed result missing message id");
+          continue;
+        }
         const bool mapping_persisted = persist_successful_message_mapping(
-            state_repository_, entry, result.value());
+            state_repository_, entry, *result.target_message_id);
         const bool retry_removed =
             mapping_persisted &&
             remove_persisted_message_retry(state_repository_, entry, "success");
         if (mapping_persisted && retry_removed) {
           OBCX_INFO("Message retry successful: {} -> {} (msg_id: {})",
                     entry.source_platform, entry.target_platform,
-                    result.value());
-        } else if (running_) {
-          entry.failure_reason = mapping_persisted
-                                     ? "retry row cleanup failed"
-                                     : "retry mapping persistence failed";
+                    *result.target_message_id);
+        } else if (mapping_persisted && running_) {
+          // The mapping makes a future pre-send check safe; retain only for
+          // cleanup recovery and never submit before checking that mapping.
+          entry.failure_reason = "retry row cleanup failed";
           entry.next_retry_at = calculate_next_retry_time(
               entry.retry_count, policy_.message_retry_base_interval_sec);
           update_persisted_message_retry(state_repository_, entry,
-                                         "completion persistence failure");
+                                         "completion cleanup failure");
           std::scoped_lock lock(message_retry_mutex_);
           message_retry_queue_.push_back(std::move(entry));
+        } else {
+          // Provider completion without a durable mapping cannot be retried
+          // safely. Keep the existing row terminal without changing schema.
+          terminalize_persisted_message_retry(
+              state_repository_, entry, "retry mapping persistence failed");
         }
-      } else {
+      } else if (result.disposition ==
+                 MessageSendDisposition::RetryableFailure) {
         entry.retry_count++;
-
+        entry.failure_reason = result.diagnostic.empty()
+                                   ? "definite retryable failure"
+                                   : result.diagnostic;
         if (entry.retry_count >= entry.max_retry_count) {
           OBCX_WARN("Message retry failed after {} attempts: {} -> {}",
                     entry.max_retry_count, entry.source_platform,
                     entry.target_platform);
           remove_persisted_message_retry(state_repository_, entry,
                                          "max attempts");
-          // Give up: do not re-add
         } else {
           entry.next_retry_at = calculate_next_retry_time(
               entry.retry_count, policy_.message_retry_base_interval_sec);
           update_persisted_message_retry(state_repository_, entry,
-                                         "send failure");
-          OBCX_DEBUG("Updated message retry count to {}, next retry in {}s",
-                     entry.retry_count,
-                     std::chrono::duration_cast<std::chrono::seconds>(
-                         entry.next_retry_at - now)
-                         .count());
-
+                                         "definite send failure");
           if (running_) {
             std::scoped_lock lock(message_retry_mutex_);
             message_retry_queue_.push_back(std::move(entry));
           }
         }
+      } else {
+        const std::string reason =
+            result.disposition == MessageSendDisposition::OutcomeUnknown
+                ? "outcome_unknown"
+                : "terminal_failure";
+        terminalize_persisted_message_retry(
+            state_repository_, entry,
+            result.diagnostic.empty() ? reason
+                                      : reason + ":" + result.diagnostic);
+        OBCX_WARN("Message retry stopped with {}: {} -> {}", reason,
+                  entry.source_platform, entry.target_platform);
       }
 
     } catch (const std::exception &e) {
       OBCX_ERROR("Error processing message retry: {}", e.what());
-      entry.retry_count++;
-      entry.failure_reason = e.what();
-      if (entry.retry_count >= entry.max_retry_count) {
-        remove_persisted_message_retry(state_repository_, entry,
-                                       "exception max attempts");
-      } else {
-        entry.next_retry_at = calculate_next_retry_time(
-            entry.retry_count, policy_.message_retry_base_interval_sec);
-        update_persisted_message_retry(state_repository_, entry, "exception");
-        if (running_) {
-          std::scoped_lock lock(message_retry_mutex_);
-          message_retry_queue_.push_back(std::move(entry));
-        }
-      }
+      terminalize_persisted_message_retry(state_repository_, entry,
+                                          "outcome_unknown:callback_exception");
+    } catch (...) {
+      OBCX_ERROR("Unknown error processing message retry");
+      terminalize_persisted_message_retry(state_repository_, entry,
+                                          "outcome_unknown:unknown_exception");
     }
   }
 }

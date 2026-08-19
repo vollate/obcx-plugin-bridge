@@ -1,10 +1,12 @@
 #include "common/config_loader.hpp"
 #include "core/actor_runtime_reload_controller.hpp"
+#include "core/bot_operation_dispatcher.hpp"
 #include "core/bot_registry.hpp"
 #include "core/db_manager.hpp"
 #include "core/message_event_ingress.hpp"
 #include "core/orchestrator.hpp"
 #include "core/qq_bot.hpp"
+#include "core/qq_telegram_bot_endpoints.hpp"
 #include "core/tg_bot.hpp"
 #include "onebot11/adapter/protocol_adapter.hpp"
 #include "telegram/adapter/protocol_adapter.hpp"
@@ -130,10 +132,10 @@ public:
       }
     }
     if (fail) {
-      co_return "{}";
+      co_return R"({"ok":false,"error_code":429,"description":"rate limited","parameters":{"retry_after":1}})";
     }
-    co_return "{\"result\":{\"message_id\":" + std::to_string(1000 + sequence) +
-        "}}";
+    co_return "{\"ok\":true,\"result\":{\"message_id\":" +
+        std::to_string(1000 + sequence) + "}}";
   }
 
   void fail_next_group_send() {
@@ -243,6 +245,8 @@ auto config_document(const fs::path &database, const fs::path &files,
          "db = \"main\"\n"
          "db_namespace = \"bridge\"\n\n"
          "[actors.bridge.config]\n"
+         "telegram_installation = \"telegram_live\"\n"
+         "onebot11_installation = \"qq_live\"\n"
          "enable_retry_queue = true\n"
          "message_retry_base_interval_sec = 300\n"
          "retry_queue_check_interval_sec = 300\n"
@@ -439,6 +443,12 @@ auto main(int argc, char **argv) -> int {
     telegram->run();
     registry->register_bot("qq", "qq_live", qq);
     registry->register_bot("telegram", "telegram_live", telegram);
+    auto dispatcher =
+        std::make_shared<obcx::core::QQTelegramOperationDispatcher>();
+    obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "qq_live",
+                                                         "qq", qq);
+    obcx::core::register_existing_bot_operation_endpoint(
+        *dispatcher, "telegram_live", "telegram", telegram);
 
     obcx::core::RuntimeGenerationBuilder builder;
     auto initial = builder.build({
@@ -451,6 +461,7 @@ auto main(int argc, char **argv) -> int {
         .configured_io_sources = 1,
         .db_manager = database,
         .bot_registry = registry,
+        .bot_operation_client = dispatcher,
         .require_registered_bots = true,
     });
     require(initial.ready(),

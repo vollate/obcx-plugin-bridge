@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -23,6 +24,22 @@
 #include <vector>
 
 namespace {
+
+class NoopBotOperationClient final : public obcx::bot::BotOperationClient {
+public:
+  auto supported_actions(const obcx::bot::BotInstallationRef &installation)
+      const -> obcx::bot::BotOperationResult<
+          obcx::bot::SupportedBotActions> override {
+    return obcx::bot::BotOperationResult<
+        obcx::bot::SupportedBotActions>::success({.installation =
+                                                      installation});
+  }
+};
+
+auto noop_bridge_operations() -> std::shared_ptr<bridge::BridgeBotOperations> {
+  return std::make_shared<bridge::BridgeBotOperations>(
+      std::make_shared<NoopBotOperationClient>(), "tg-main", "qq-main");
+}
 
 auto temp_db_path(const std::string &name) -> std::filesystem::path {
   const auto stamp =
@@ -41,9 +58,33 @@ auto sqlite_config(const std::filesystem::path &path)
   return config;
 }
 
-auto bridge_config_view(const std::filesystem::path &path)
+auto bridge_config_view(const std::filesystem::path &path,
+                        const bool inject_default_bots = true)
     -> obcx::common::ActorConfigView {
-  auto built = obcx::common::ConfigLoader::build_snapshot(path.string());
+  auto resolved = path;
+  if (inject_default_bots) {
+    std::ifstream input(path);
+    const std::string content{std::istreambuf_iterator<char>{input},
+                              std::istreambuf_iterator<char>{}};
+    if (!content.contains("[bots.")) {
+      resolved += ".with-bots.toml";
+      std::ofstream output(resolved);
+      output << R"(
+[bots.qq-main]
+type = "qq"
+enabled = true
+
+[bots.tg-main]
+type = "telegram"
+enabled = true
+
+)" << content;
+    }
+  }
+  auto built = obcx::common::ConfigLoader::build_snapshot(resolved.string());
+  if (resolved != path) {
+    std::filesystem::remove(resolved);
+  }
   if (!built) {
     throw std::runtime_error("failed to build test config snapshot");
   }
@@ -98,6 +139,8 @@ TEST(BridgeHandlerRepositoryTest, LoadsFfmpegPathFromActorConfiguration) {
     std::ofstream config(config_path);
     config << R"(
 [actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
 bridge_files_dir = "/tmp/bridge_files"
 ffmpeg_path = "/opt/bridge/bin/ffmpeg"
 )";
@@ -110,12 +153,134 @@ ffmpeg_path = "/opt/bridge/bin/ffmpeg"
   std::filesystem::remove(config_path);
 }
 
+TEST(BridgeHandlerRepositoryTest, LoadsOneExplicitEnabledInstallationPair) {
+  const auto config_path =
+      temp_db_path("explicit_installations").replace_extension(".toml");
+  {
+    std::ofstream config(config_path);
+    config << R"(
+[bots.qq-main]
+type = "qq"
+enabled = true
+
+[bots.tg-main]
+type = "telegram"
+enabled = true
+
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+)";
+  }
+
+  const auto config = bridge::load_bridge_config(
+      bridge_config_view(config_path, /*inject_default_bots=*/false));
+  EXPECT_EQ(config->telegram_installation, "tg-main");
+  EXPECT_EQ(config->onebot11_installation, "qq-main");
+  std::filesystem::remove(config_path);
+}
+
+TEST(BridgeHandlerRepositoryTest, RejectsInvalidInstallationPair) {
+  const std::vector<std::string> invalid = {
+      R"(
+[bots.qq-main]
+type = "qq"
+enabled = true
+[bots.tg-main]
+type = "telegram"
+enabled = true
+[actors.bridge.config]
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+)",
+      R"(
+[bots.same]
+type = "telegram"
+enabled = true
+[actors.bridge.config]
+telegram_installation = "same"
+onebot11_installation = "same"
+bridge_files_dir = "/tmp/bridge_files"
+)",
+      R"(
+[bots.qq-main]
+type = "qq"
+enabled = true
+[bots.tg-main]
+type = "qq"
+enabled = true
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+)",
+      R"(
+[bots.qq-main]
+type = "qq"
+enabled = false
+[bots.tg-main]
+type = "telegram"
+enabled = true
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+)",
+      R"(
+[bots.qq-main]
+type = "qq"
+enabled = true
+[actors.bridge.config]
+telegram_installation = "missing-tg"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+)",
+  };
+
+  for (std::size_t index = 0; index < invalid.size(); ++index) {
+    const auto config_path =
+        temp_db_path("invalid_installations_" + std::to_string(index))
+            .replace_extension(".toml");
+    {
+      std::ofstream config(config_path);
+      config << invalid[index];
+    }
+    EXPECT_THROW((void)bridge::load_bridge_config(bridge_config_view(
+                     config_path, /*inject_default_bots=*/false)),
+                 std::runtime_error)
+        << "invalid case " << index;
+    std::filesystem::remove(config_path);
+  }
+}
+
+TEST(BridgeHandlerRepositoryTest, ExactSourceBotMustMatchConfiguredSide) {
+  bridge::BridgeConfig config;
+  config.telegram_installation = "tg-main";
+  config.onebot11_installation = "qq-main";
+
+  EXPECT_NO_THROW(
+      bridge::validate_bridge_source(config, "telegram", "tg-main"));
+  EXPECT_NO_THROW(bridge::validate_bridge_source(config, "qq", "qq-main"));
+  EXPECT_THROW(bridge::validate_bridge_source(config, "telegram", ""),
+               std::runtime_error);
+  EXPECT_THROW(bridge::validate_bridge_source(config, "telegram", "tg-other"),
+               std::runtime_error);
+  EXPECT_THROW(bridge::validate_bridge_source(config, "qq", "qq-other"),
+               std::runtime_error);
+  EXPECT_THROW(
+      bridge::validate_bridge_source(config, "discord", "discord-main"),
+      std::runtime_error);
+}
+
 TEST(BridgeHandlerRepositoryTest, LoadsQqMediaDownloadLimit) {
   const auto default_path =
       temp_db_path("actor_default_qq_media_limit").replace_extension(".toml");
   {
     std::ofstream config(default_path);
     config << "[actors.bridge.config]\n"
+              "telegram_installation = \"tg-main\"\n"
+              "onebot11_installation = \"qq-main\"\n"
               "bridge_files_dir = \"/tmp/bridge_files\"\n";
   }
   const auto default_config =
@@ -128,6 +293,8 @@ TEST(BridgeHandlerRepositoryTest, LoadsQqMediaDownloadLimit) {
   {
     std::ofstream config(configured_path);
     config << "[actors.bridge.config]\n"
+              "telegram_installation = \"tg-main\"\n"
+              "onebot11_installation = \"qq-main\"\n"
               "bridge_files_dir = \"/tmp/bridge_files\"\n"
               "qq_media_download_max_bytes = 5242880\n";
   }
@@ -151,6 +318,8 @@ TEST(BridgeHandlerRepositoryTest, RejectsInvalidQqMediaDownloadLimit) {
     {
       std::ofstream config(config_path);
       config << "[actors.bridge.config]\n"
+                "telegram_installation = \"tg-main\"\n"
+                "onebot11_installation = \"qq-main\"\n"
                 "bridge_files_dir = \"/tmp/bridge_files\"\n"
              << invalid_values[index];
     }
@@ -169,6 +338,8 @@ TEST(BridgeHandlerRepositoryTest, LoadsConfiguredMessageRetryPolicy) {
     std::ofstream config(config_path);
     config << R"(
 [actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
 bridge_files_dir = "/tmp/bridge_files"
 enable_retry_queue = true
 message_retry_max_attempts = 7
@@ -206,6 +377,8 @@ TEST(BridgeHandlerRepositoryTest, RejectsInvalidMessageRetryPolicy) {
     {
       std::ofstream config(config_path);
       config << "[actors.bridge.config]\n"
+                "telegram_installation = \"tg-main\"\n"
+                "onebot11_installation = \"qq-main\"\n"
                 "bridge_files_dir = \"/tmp/bridge_files\"\n"
              << invalid_values[index];
     }
@@ -257,8 +430,8 @@ TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
 
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   bridge::qq::QQMessageFormatter formatter(
-      std::make_shared<const bridge::BridgeConfig>(), repository,
-      blocking_executor);
+      noop_bridge_operations(), std::make_shared<const bridge::BridgeConfig>(),
+      repository, blocking_executor);
 
   obcx::common::MessageEvent event;
   event.message_id = "qq-current";
@@ -321,7 +494,8 @@ TEST(BridgeHandlerRepositoryTest,
   EXPECT_NE(actor_source.find("obcx::message_store::events::MessageStored"),
             std::string::npos);
   EXPECT_NE(runtime_source.find("RetryQueueWorker"), std::string::npos);
-  EXPECT_NE(runtime_source.find("BotRegistry"), std::string::npos);
+  EXPECT_EQ(runtime_source.find("BotRegistry"), std::string::npos);
+  EXPECT_NE(runtime_source.find("BotOperationClient"), std::string::npos);
   EXPECT_EQ(runtime_source.find("IPlugin"), std::string::npos);
   EXPECT_EQ(runtime_source.find("get_bots"), std::string::npos);
   EXPECT_NE(qq_source.find("消息发送失败且重试队列不可用"), std::string::npos);

@@ -8,13 +8,18 @@
 namespace bridge::qq {
 
 QQCommandHandler::QQCommandHandler(
+    std::shared_ptr<BridgeBotOperations> operations,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
-    : state_repository_(std::move(state_repository)),
-      blocking_executor_(std::move(blocking_executor)) {}
+    : operations_(std::move(operations)),
+      state_repository_(std::move(state_repository)),
+      blocking_executor_(std::move(blocking_executor)) {
+  if (!operations_) {
+    throw std::invalid_argument("QQCommandHandler requires bot operations");
+  }
+}
 
 auto QQCommandHandler::handle_checkalive_command(
-    obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
     obcx::common::MessageEvent event, const std::string &telegram_group_id)
     -> boost::asio::awaitable<void> {
 
@@ -83,8 +88,7 @@ auto QQCommandHandler::handle_checkalive_command(
       response_text += "💬 Telegram平台状态: ❌ 无活动记录";
     }
 
-    co_await send_reply_message(qq_bot, qq_group_id, event.message_id,
-                                response_text);
+    co_await send_reply_message(qq_group_id, event.message_id, response_text);
 
     OBCX_INFO("/checkalive 命令处理完成");
 
@@ -94,9 +98,8 @@ auto QQCommandHandler::handle_checkalive_command(
 }
 
 auto QQCommandHandler::send_reply_message(
-    obcx::core::IBot &qq_bot, const std::string &qq_group_id,
-    const std::string &reply_to_message_id, const std::string &text)
-    -> boost::asio::awaitable<void> {
+    const std::string &qq_group_id, const std::string &reply_to_message_id,
+    const std::string &text) -> boost::asio::awaitable<void> {
   try {
     obcx::common::Message reply_message;
 
@@ -110,7 +113,7 @@ auto QQCommandHandler::send_reply_message(
     text_segment.data["text"] = text;
     reply_message.push_back(text_segment);
 
-    co_await qq_bot.send_group_message(qq_group_id, reply_message);
+    (void)co_await operations_->send_onebot11_group(qq_group_id, reply_message);
 
   } catch (const std::exception &e) {
     OBCX_ERROR("发送回复消息失败: {}", e.what());

@@ -7,13 +7,11 @@
 
 #include <common/logger.hpp>
 #include <fmt/format.h>
-#include <interfaces/qq_bot.hpp>
-#include <nlohmann/json.hpp>
 
 namespace bridge::qq {
 
 auto QQMediaProcessor::process_file_segment(
-    obcx::core::IBot &qq_bot, const obcx::common::MessageSegment &segment,
+    const obcx::common::MessageSegment &segment,
     const obcx::common::MessageEvent &event)
     -> boost::asio::awaitable<obcx::common::MessageSegment> {
 
@@ -34,33 +32,16 @@ auto QQMediaProcessor::process_file_segment(
   } else if (!file_id.empty()) {
     OBCX_DEBUG("URL为空，尝试通过file_id获取文件: {}", file_id);
     try {
-      std::string response;
-      auto *qq_bot_ptr = dynamic_cast<obcx::core::IQQBot *>(&qq_bot);
-      if (!qq_bot_ptr) {
-        throw std::runtime_error("当前 bot 不支持 QQ 扩展能力");
-      }
+      std::string download_url;
       if (event.group_id.has_value()) {
-        std::string group_id = event.group_id.value();
-        response = co_await qq_bot_ptr->get_group_file_url(group_id, file_id);
-        OBCX_DEBUG("get_group_file_url API响应: {}", response);
+        download_url = co_await operations_->resolve_onebot11_group_file(
+            *event.group_id, file_id);
       } else {
-        std::string user_id = event.user_id;
-        response = co_await qq_bot_ptr->get_private_file_url(user_id, file_id);
-        OBCX_DEBUG("get_private_file_url API响应: {}", response);
+        download_url = co_await operations_->resolve_onebot11_private_file(
+            event.user_id, file_id);
       }
-
-      nlohmann::json response_json = nlohmann::json::parse(response);
-
-      if (response_json.contains("status") && response_json["status"] == "ok" &&
-          response_json.contains("data") &&
-          response_json["data"].contains("url")) {
-        std::string download_url = response_json["data"]["url"];
-        converted_segment.data.erase("file_id");
-        converted_segment.data["url"] = download_url;
-        OBCX_DEBUG("成功通过API获取文件下载URL: {}", download_url);
-      } else {
-        throw std::runtime_error("API响应中没有找到下载URL");
-      }
+      converted_segment.data.erase("file_id");
+      converted_segment.data["url"] = download_url;
     } catch (const std::exception &e) {
       OBCX_WARN("通过API获取文件URL失败: {}", e.what());
       converted_segment.type = "text";

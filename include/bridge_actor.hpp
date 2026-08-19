@@ -53,6 +53,10 @@ public:
           {"message_retry_max_attempts", {{"default", 5}, {"minimum", 1}}},
           {"retry_queue_check_interval_sec",
            {{"default", 10}, {"minimum", 1}}}}},
+        {"required_strings", obcx::common::json::array({"bridge_files_dir"})},
+        {"bot_installations",
+         {{"onebot11_installation", "qq"},
+          {"telegram_installation", "telegram"}}},
         {"less_equal",
          obcx::common::json::array(
              {obcx::common::json::array({"message_retry_base_interval_sec",

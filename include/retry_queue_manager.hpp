@@ -12,10 +12,45 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace bridge {
 
 class BridgeStateRepository;
+
+enum class MessageSendDisposition {
+  Completed,
+  RetryableFailure,
+  TerminalFailure,
+  OutcomeUnknown,
+};
+
+struct MessageSendOutcome {
+  MessageSendDisposition disposition = MessageSendDisposition::TerminalFailure;
+  std::optional<std::string> target_message_id;
+  std::string diagnostic;
+
+  [[nodiscard]] static auto completed(std::string message_id)
+      -> MessageSendOutcome {
+    return {.disposition = MessageSendDisposition::Completed,
+            .target_message_id = std::move(message_id)};
+  }
+  [[nodiscard]] static auto retryable(std::string diagnostic)
+      -> MessageSendOutcome {
+    return {.disposition = MessageSendDisposition::RetryableFailure,
+            .diagnostic = std::move(diagnostic)};
+  }
+  [[nodiscard]] static auto terminal(std::string diagnostic)
+      -> MessageSendOutcome {
+    return {.disposition = MessageSendDisposition::TerminalFailure,
+            .diagnostic = std::move(diagnostic)};
+  }
+  [[nodiscard]] static auto unknown(std::string diagnostic)
+      -> MessageSendOutcome {
+    return {.disposition = MessageSendDisposition::OutcomeUnknown,
+            .diagnostic = std::move(diagnostic)};
+  }
+};
 
 struct RetryQueuePolicy {
   int message_retry_base_interval_sec = 2;
@@ -72,7 +107,7 @@ class RetryQueueManager
     : public std::enable_shared_from_this<RetryQueueManager> {
 public:
   using MessageSendCallback =
-      std::function<boost::asio::awaitable<std::optional<std::string>>(
+      std::function<boost::asio::awaitable<MessageSendOutcome>(
           const MessageRetryEntry &retry_info,
           const obcx::common::Message &message)>;
 

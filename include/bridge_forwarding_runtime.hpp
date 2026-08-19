@@ -1,13 +1,12 @@
 #pragma once
 
+#include "bridge_bot_operations.hpp"
 #include "bridge_forwarder.hpp"
 #include "bridge_state_repository.hpp"
 #include "received_message_repository.hpp"
 
-#include <core/blocking_executor.hpp>
-#include <core/bot_registry.hpp>
-
 #include <boost/asio/any_io_executor.hpp>
+#include <core/blocking_executor.hpp>
 
 #include <atomic>
 #include <memory>
@@ -28,7 +27,7 @@ public:
 class BridgeForwardingRuntime final : public IBridgeForwarder {
 public:
   BridgeForwardingRuntime(
-      std::shared_ptr<obcx::core::BotRegistry> bot_registry,
+      std::shared_ptr<obcx::bot::BotOperationClient> operation_client,
       std::shared_ptr<const BridgeConfig> config,
       std::shared_ptr<BridgeStateRepository> state_repository,
       std::shared_ptr<ReceivedMessageRepository> received_message_repository,
@@ -46,7 +45,7 @@ public:
   void shutdown() noexcept;
 
 private:
-  std::shared_ptr<obcx::core::BotRegistry> bot_registry_;
+  std::shared_ptr<BridgeBotOperations> operations_;
   std::shared_ptr<const BridgeConfig> config_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;

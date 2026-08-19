@@ -10,12 +10,19 @@
 #include "qq/message_formatter.hpp"
 #include "qq/photo_normalizer.hpp"
 #include "telegram/handler.hpp"
+#if __has_include("core/bot_operation_dispatcher.hpp") &&                      \
+                  __has_include("core/qq_telegram_bot_endpoints.hpp")
 #if __has_include("core/qq_bot.hpp") && __has_include("core/tg_bot.hpp")
 #define OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS 1
+#include "core/bot_operation_dispatcher.hpp"
 #include "core/qq_bot.hpp"
+#include "core/qq_telegram_bot_endpoints.hpp"
 #include "core/tg_bot.hpp"
 #include "onebot11/adapter/protocol_adapter.hpp"
 #include "telegram/adapter/protocol_adapter.hpp"
+#else
+#define OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS 0
+#endif
 #else
 #define OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS 0
 #endif
@@ -235,7 +242,15 @@ auto bridge_config_service(const bool enable_retry,
           .replace_extension(".toml");
   {
     std::ofstream config(config_path);
-    config << "[actors.bridge.config]\n"
+    config << "[bots.qq-main]\n"
+              "type = \"qq\"\n"
+              "enabled = true\n\n"
+              "[bots.tg-main]\n"
+              "type = \"telegram\"\n"
+              "enabled = true\n\n"
+              "[actors.bridge.config]\n"
+              "telegram_installation = \"tg-main\"\n"
+              "onebot11_installation = \"qq-main\"\n"
               "bridge_files_dir = \"/tmp/bridge_files\"\n"
               "enable_retry_queue = "
            << (enable_retry ? "true\n" : "false\n")
@@ -287,14 +302,20 @@ class RetryTestQQBot final : public obcx::core::QQBot {
 public:
   RetryTestQQBot() : QQBot(obcx::adapter::onebot11::ProtocolAdapter{}) {}
 
-  auto send_group_message(std::string_view, const obcx::common::Message &)
+  auto send_group_message(std::string_view group_id,
+                          const obcx::common::Message &message)
       -> asio::awaitable<std::string> override {
+    last_group_id = group_id;
+    last_message = message;
     const auto call = send_group_calls.fetch_add(1);
+    if (force_malformed_send.load(std::memory_order_acquire)) {
+      co_return "{}";
+    }
     if (always_succeed.load(std::memory_order_acquire) ||
         (succeed_after_first.load(std::memory_order_acquire) && call > 0)) {
       co_return "{\"status\":\"ok\",\"data\":{\"message_id\":9001}}";
     }
-    co_return "{}";
+    co_return R"({"status":"failed","retcode":-1,"message":"temporary unavailable","data":null})";
   }
 
   auto get_group_member_info(std::string_view, std::string_view user_id, bool)
@@ -306,7 +327,7 @@ public:
   auto delete_message(std::string_view)
       -> asio::awaitable<std::string> override {
     delete_message_calls.fetch_add(1, std::memory_order_relaxed);
-    co_return R"({"status":"ok"})";
+    co_return R"({"status":"ok","retcode":0,"data":null})";
   }
 
   auto get_forward_msg(std::string_view)
@@ -316,8 +337,11 @@ public:
 
   std::atomic_int send_group_calls = 0;
   std::atomic_int delete_message_calls = 0;
+  std::string last_group_id;
+  obcx::common::Message last_message;
   std::atomic_bool always_succeed = false;
   std::atomic_bool succeed_after_first = false;
+  std::atomic_bool force_malformed_send = false;
   std::string forward_response = "{}";
 };
 
@@ -328,11 +352,14 @@ public:
   auto send_group_message(std::string_view, const obcx::common::Message &)
       -> asio::awaitable<std::string> override {
     const auto call = send_group_calls.fetch_add(1);
+    if (force_malformed_send.load(std::memory_order_acquire)) {
+      co_return "{}";
+    }
     if (always_succeed.load(std::memory_order_acquire) ||
         (succeed_after_first.load(std::memory_order_acquire) && call > 0)) {
-      co_return "{\"result\":{\"message_id\":8001}}";
+      co_return "{\"ok\":true,\"result\":{\"message_id\":8001}}";
     }
-    co_return "{}";
+    co_return R"({"ok":false,"error_code":429,"description":"rate limited","parameters":{"retry_after":1}})";
   }
 
   auto send_topic_message(std::string_view, int64_t,
@@ -341,9 +368,23 @@ public:
     const auto call = send_topic_calls.fetch_add(1);
     if (always_succeed.load(std::memory_order_acquire) ||
         (succeed_after_first.load(std::memory_order_acquire) && call > 0)) {
-      co_return "{\"result\":{\"message_id\":8002}}";
+      co_return "{\"ok\":true,\"result\":{\"message_id\":8002}}";
     }
-    co_return "{}";
+    co_return R"({"ok":false,"error_code":429,"description":"rate limited","parameters":{"retry_after":1}})";
+  }
+
+  auto get_media_download_url(const obcx::core::MediaFileInfo &file)
+      -> asio::awaitable<std::optional<std::string>> override {
+    last_fetched_file = file;
+    media_resolve_calls.fetch_add(1, std::memory_order_relaxed);
+    co_return media_download_url;
+  }
+
+  auto download_file_content(std::string_view url)
+      -> asio::awaitable<std::string> override {
+    last_download_url = url;
+    media_download_calls.fetch_add(1, std::memory_order_relaxed);
+    co_return media_file_content;
   }
 
   auto send_media_group(
@@ -353,7 +394,7 @@ public:
       -> asio::awaitable<std::string> override {
     send_media_group_calls.fetch_add(1, std::memory_order_relaxed);
     media_group_sizes.push_back(media.size());
-    co_return R"({"result":[{"message_id":8101},{"message_id":8102}]})";
+    co_return R"({"ok":true,"result":[{"message_id":8101},{"message_id":8102}]})";
   }
 
   auto send_media_group_with_entities(
@@ -371,10 +412,18 @@ public:
   std::atomic_int send_group_calls = 0;
   std::atomic_int send_topic_calls = 0;
   std::atomic_int send_media_group_calls = 0;
+  std::atomic_int media_resolve_calls = 0;
+  std::atomic_int media_download_calls = 0;
   std::vector<size_t> media_group_sizes;
+  std::optional<std::string> media_download_url =
+      "https://api.telegram.test/file/bot123:secret/file.bin";
+  std::string media_file_content = "telegram-media";
+  std::string last_download_url;
+  obcx::core::MediaFileInfo last_fetched_file;
   std::vector<obcx::core::TelegramTextEntity> last_media_group_entities;
   std::atomic_bool always_succeed = false;
   std::atomic_bool succeed_after_first = false;
+  std::atomic_bool force_malformed_send = false;
 };
 
 class MultipartFallbackTelegramBot final : public obcx::core::TGBot {
@@ -388,9 +437,7 @@ public:
       std::string_view, std::optional<int64_t>, std::optional<std::string>)
       -> asio::awaitable<std::string> override {
     url_send_calls.fetch_add(1, std::memory_order_relaxed);
-    throw std::runtime_error(
-        R"(HTTP request failed: 400: {"description":"failed to get HTTP URL content"})");
-    co_return std::string{};
+    co_return R"({"ok":false,"error_code":400,"description":"failed to get HTTP URL content"})";
   }
 
   auto send_media_group_with_entities(
@@ -430,7 +477,7 @@ public:
     if (multipart_fails.load(std::memory_order_acquire)) {
       throw std::runtime_error(multipart_error);
     }
-    co_return R"({"result":[{"message_id":8201},{"message_id":8202}]})";
+    co_return R"({"ok":true,"result":[{"message_id":8201},{"message_id":8202}]})";
   }
 
   auto send_media_group_uploads_with_entities(
@@ -473,6 +520,35 @@ public:
   obcx::common::Message last_message;
 };
 
+auto bridge_operations(obcx::core::IBot &qq_bot, obcx::core::IBot &telegram_bot)
+    -> std::shared_ptr<bridge::BridgeBotOperations> {
+  auto qq_alias =
+      std::shared_ptr<obcx::core::IBot>(&qq_bot, [](obcx::core::IBot *) {});
+  auto telegram_alias = std::shared_ptr<obcx::core::IBot>(
+      &telegram_bot, [](obcx::core::IBot *) {});
+  auto dispatcher =
+      std::make_shared<obcx::core::QQTelegramOperationDispatcher>();
+  obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "qq-main",
+                                                       "qq", qq_alias);
+  obcx::core::register_existing_bot_operation_endpoint(
+      *dispatcher, "tg-main", "telegram", telegram_alias);
+  return std::make_shared<bridge::BridgeBotOperations>(dispatcher, "tg-main",
+                                                       "qq-main");
+}
+
+auto bridge_operations_for_telegram(obcx::core::IBot &telegram_bot)
+    -> std::shared_ptr<bridge::BridgeBotOperations> {
+  static RetryTestQQBot onebot_stub;
+  return bridge_operations(onebot_stub, telegram_bot);
+}
+
+auto bridge_operations_for_onebot(obcx::core::IBot &qq_bot)
+    -> std::shared_ptr<bridge::BridgeBotOperations> {
+  static RetryTestTelegramBot telegram_stub;
+  telegram_stub.always_succeed.store(true, std::memory_order_release);
+  return bridge_operations(qq_bot, telegram_stub);
+}
+
 auto bridge_retry_services(
     const std::shared_ptr<obcx::core::DbManager> &db_manager,
     const std::shared_ptr<RetryTestQQBot> &qq_bot,
@@ -483,10 +559,17 @@ auto bridge_retry_services(
   auto registry = std::make_shared<obcx::core::BotRegistry>();
   registry->register_bot("qq", "qq-main", qq_bot);
   registry->register_bot("telegram", "tg-main", telegram_bot);
+  auto dispatcher =
+      std::make_shared<obcx::core::QQTelegramOperationDispatcher>();
+  obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "qq-main",
+                                                       "qq", qq_bot);
+  obcx::core::register_existing_bot_operation_endpoint(
+      *dispatcher, "tg-main", "telegram", telegram_bot);
 
   auto services = std::make_shared<obcx::core::ActorServices>();
   services->register_service<obcx::core::DbManager>(db_manager);
   services->register_service<obcx::core::BotRegistry>(registry);
+  services->register_service<obcx::bot::BotOperationClient>(dispatcher);
   services->register_service<obcx::common::ActorConfigService>(
       bridge_config_service(enable_retry, retry_interval_seconds,
                             topic_mapping));
@@ -565,7 +648,17 @@ TEST(BridgeActorTest, LoadsGroupMappingsFromGenerationSnapshot) {
   {
     std::ofstream config(config_path);
     config << R"(
+[bots.qq-main]
+type = "qq"
+enabled = true
+
+[bots.tg-main]
+type = "telegram"
+enabled = true
+
 [actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
 bridge_files_dir = "/tmp/bridge_files"
 
 [[group_mappings.group_to_group]]
@@ -684,6 +777,15 @@ TEST(BridgeActorTest, DeclaresTypedCommandsWithoutHandlerMetadata) {
   EXPECT_EQ(contract["commands"][2]["name"], "recall");
   EXPECT_FALSE(contract["commands"][0].contains("handler"));
   EXPECT_FALSE(contract["commands"][0].contains("callable"));
+  ASSERT_TRUE(contract.contains("configuration"));
+  EXPECT_EQ(contract["configuration"]["required_strings"],
+            obcx::common::json::array({"bridge_files_dir"}));
+  EXPECT_EQ(
+      contract["configuration"]["bot_installations"]["telegram_installation"],
+      "telegram");
+  EXPECT_EQ(
+      contract["configuration"]["bot_installations"]["onebot11_installation"],
+      "qq");
   EXPECT_TRUE(
       std::ranges::any_of(contract["accepted_inputs"], [](const auto &input) {
         return input == "obcx::core::events::RawNoticeEvent";
@@ -823,6 +925,65 @@ TEST(BridgeActorTest, EmitsMessageForwardFailedWhenMappingFieldsAreMissing) {
   EXPECT_EQ(result.emitted.front().type,
             "bridge::events::MessageForwardFailed");
   EXPECT_EQ(result.emitted.front().payload["code"], "missing_forward_mapping");
+
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, UnmappedMessageIsSuccessfulNoOp) {
+  const auto db_path = temp_db_path("runtime_forwarder_noop");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  services->register_service<obcx::core::DbManager>(db_manager);
+  auto forwarder =
+      std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{});
+  services->register_service<bridge::IBridgeForwarder>(forwarder);
+
+  auto stored = message_stored("qq-unmapped-1", "unused-target");
+  stored.payload.erase("target_platform");
+  stored.payload.erase("target_message_id");
+  const auto result = run_actor(services, std::move(stored));
+
+  EXPECT_TRUE(result.ok());
+  EXPECT_TRUE(result.emitted.empty());
+  ASSERT_EQ(forwarder->seen_messages.size(), 1U);
+
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, DeliveryFailureKeepsTypedDiagnosticWithoutMapping) {
+  const auto db_path = temp_db_path("runtime_forwarder_delivery_failure");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  services->register_service<obcx::core::DbManager>(db_manager);
+  auto forwarder =
+      std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{
+          .disposition = bridge::DirectForwardDisposition::DeliveryFailed,
+          .source_platform = "qq",
+          .source_message_id = "qq-failed-1",
+          .target_platform = "telegram",
+          .target_bot = "tg-main",
+          .failure_message = "transport_failure",
+          .failure_retryable = true,
+      });
+  services->register_service<bridge::IBridgeForwarder>(forwarder);
+
+  auto stored = message_stored("qq-failed-1", "unused-target");
+  stored.payload.erase("target_platform");
+  stored.payload.erase("target_message_id");
+  const auto result = run_actor(services, std::move(stored));
+
+  ASSERT_FALSE(result.ok());
+  ASSERT_TRUE(result.failure.has_value());
+  EXPECT_EQ(result.failure->code, "bridge_delivery_failed");
+  EXPECT_EQ(result.failure->message, "transport_failure");
+  EXPECT_TRUE(result.failure->retryable);
+  ASSERT_EQ(result.emitted.size(), 1U);
+  EXPECT_EQ(result.emitted.front().type,
+            "bridge::events::MessageForwardFailed");
 
   std::filesystem::remove(db_path);
 }
@@ -1038,9 +1199,16 @@ TEST(BridgeActorTest, ForwardsQqPokeNoticeToTelegramThroughRuntime) {
   auto registry = std::make_shared<obcx::core::BotRegistry>();
   registry->register_bot("qq", "qq-main", qq_bot);
   registry->register_bot("telegram", "tg-main", telegram_bot);
+  auto dispatcher =
+      std::make_shared<obcx::core::QQTelegramOperationDispatcher>();
+  obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "qq-main",
+                                                       "qq", qq_bot);
+  obcx::core::register_existing_bot_operation_endpoint(
+      *dispatcher, "tg-main", "telegram", telegram_bot);
   auto services = std::make_shared<obcx::core::ActorServices>();
   services->register_service<obcx::core::DbManager>(db_manager);
   services->register_service<obcx::core::BotRegistry>(registry);
+  services->register_service<obcx::bot::BotOperationClient>(dispatcher);
   services->register_service<obcx::common::ActorConfigService>(
       bridge_config_service(false));
 
@@ -1061,8 +1229,9 @@ TEST(BridgeActorTest, ForwardsQqPokeNoticeToTelegramThroughRuntime) {
 
 TEST(BridgeActorTest, QqSenderPrefixStylesWholeBracketedLabelForTelegram) {
   auto config = std::make_shared<bridge::BridgeConfig>();
-  bridge::qq::QQMessageFormatter formatter(config);
   RetryTestQQBot qq_bot;
+  bridge::qq::QQMessageFormatter formatter(bridge_operations_for_onebot(qq_bot),
+                                           config);
   const bridge::GroupBridgeConfig bridge_config("tg-group", "qq-group", true,
                                                 false, true, true);
   obcx::common::MessageEvent event;
@@ -1073,7 +1242,7 @@ TEST(BridgeActorTest, QqSenderPrefixStylesWholeBracketedLabelForTelegram) {
   asio::io_context ioc;
   auto future = asio::co_spawn(
       ioc,
-      formatter.format_sender_info(qq_bot, event, &bridge_config, "qq-group",
+      formatter.format_sender_info(event, &bridge_config, "qq-group",
                                    "tg-group", -1, output),
       asio::use_future);
   ioc.run();
@@ -1085,6 +1254,37 @@ TEST(BridgeActorTest, QqSenderPrefixStylesWholeBracketedLabelForTelegram) {
   EXPECT_EQ(output[0].data.value("telegram_style", ""), "italic");
   EXPECT_EQ(output[1].data.value("text", ""), "\t");
   EXPECT_FALSE(output[1].data.contains("telegram_style"));
+}
+
+TEST(BridgeActorTest, RejectsMissingOrMismatchedSourceBotBeforeProviderIo) {
+  const auto db_path = temp_db_path("source_bot_rejection");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  telegram_bot->always_succeed.store(true, std::memory_order_release);
+  auto services =
+      bridge_retry_services(db_manager, qq_bot, telegram_bot, false);
+
+  auto missing = bridge_message_stored("qq", "qq-missing-source", "qq-group");
+  missing.source_bot.clear();
+  const auto missing_result = run_actor(services, std::move(missing));
+  EXPECT_FALSE(missing_result.ok());
+  EXPECT_EQ(telegram_bot->send_group_calls.load(), 0);
+
+  auto mismatched = bridge_message_stored("qq", "qq-wrong-source", "qq-group");
+  mismatched.source_bot = "qq-other";
+  const auto mismatched_result = run_actor(services, std::move(mismatched));
+  EXPECT_FALSE(mismatched_result.ok());
+  EXPECT_EQ(telegram_bot->send_group_calls.load(), 0);
+
+  auto notice = raw_poke_notice();
+  notice.source_bot.clear();
+  const auto notice_result = run_actor(services, std::move(notice));
+  EXPECT_FALSE(notice_result.ok());
+  EXPECT_EQ(telegram_bot->send_group_calls.load(), 0);
+
+  std::filesystem::remove(db_path);
 }
 
 TEST(BridgeActorTest, QqDirectForwardUsesOneDedupReadAndOneActorWrite) {
@@ -1155,6 +1355,60 @@ TEST(BridgeActorTest, TelegramDirectForwardUsesOneDedupReadAndOneActorWrite) {
   EXPECT_EQ(counts.deferred_media_group_writes, 0U);
   EXPECT_EQ(repository->get_target_message_id("telegram", "tg-direct-1", "qq"),
             "9001");
+
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, TelegramMediaFetchIsBoundedAndLeavesNoTokenUrl) {
+  const auto db_path = temp_db_path("telegram_media_fetch");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  qq_bot->always_succeed.store(true, std::memory_order_release);
+  auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  auto services =
+      bridge_retry_services(db_manager, qq_bot, telegram_bot, false);
+
+  auto stored = bridge_message_stored("telegram", "tg-media-1", "tg-group");
+  stored.raw["raw_message"] = "[image]";
+  stored.raw["message"] = nlohmann::json::array(
+      {{{"type", "image"}, {"data", {{"file_id", "tg-file-1"}}}}});
+  stored.raw["image"] = {{"file_id", "tg-file-1"},
+                         {"file_unique_id", "unique-1"},
+                         {"file_size", 14},
+                         {"mime_type", "image/jpeg"},
+                         {"file_name", "image.jpg"}};
+
+  const auto result = run_actor(services, std::move(stored));
+  ASSERT_TRUE(result.ok());
+  EXPECT_EQ(telegram_bot->media_resolve_calls.load(), 1);
+  EXPECT_EQ(telegram_bot->media_download_calls.load(), 1);
+  EXPECT_EQ(telegram_bot->last_fetched_file.file_id, "tg-file-1");
+  ASSERT_EQ(qq_bot->last_message.size(), 1U);
+  EXPECT_EQ(qq_bot->last_message.front().type, "image");
+  const auto file =
+      qq_bot->last_message.front().data.value("file", std::string{});
+  EXPECT_TRUE(file.starts_with("file:///"));
+  EXPECT_EQ(file.find("bot123:secret"), std::string::npos);
+  EXPECT_EQ(qq_bot->last_message.front().data.dump().find("api.telegram"),
+            std::string::npos);
+
+  const auto container_prefix =
+      std::string{"file:///root/llonebot/bridge_files"};
+  if (file.starts_with(container_prefix)) {
+    const auto host_path =
+        std::string{"/tmp/bridge_files"} + file.substr(container_prefix.size());
+    EXPECT_FALSE(std::filesystem::exists(host_path));
+  }
+
+  telegram_bot->media_file_content = std::string(10U * 1024U * 1024U + 1U, 'x');
+  auto oversized = bridge_message_stored("telegram", "tg-media-2", "tg-group");
+  oversized.raw["raw_message"] = "[image]";
+  oversized.raw["message"] = nlohmann::json::array(
+      {{{"type", "image"}, {"data", {{"file_id", "tg-file-2"}}}}});
+  const auto oversized_result = run_actor(services, std::move(oversized));
+  EXPECT_FALSE(oversized_result.ok());
+  EXPECT_EQ(qq_bot->send_group_calls.load(), 1);
 
   std::filesystem::remove(db_path);
 }
@@ -1288,8 +1542,10 @@ TEST(BridgeActorTest,
   config->bridge_files_dir = "/tmp/bridge_files";
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   std::atomic_int download_calls = 0;
+  MultipartFallbackTelegramBot telegram_bot;
   bridge::qq::QQMessageFormatter formatter(
-      config, nullptr, blocking_executor,
+      bridge_operations_for_telegram(telegram_bot), config, nullptr,
+      blocking_executor,
       [&download_calls](
           const bridge::BridgeConfig &,
           const std::vector<std::pair<std::string, std::string>> &media)
@@ -1319,7 +1575,6 @@ TEST(BridgeActorTest,
         co_return media;
       },
       preserve_test_images);
-  MultipartFallbackTelegramBot telegram_bot;
   const std::vector<obcx::common::MessageSegment> image_segments = {
       {.type = "image", .data = {{"url", "invalid://one"}}},
       {.type = "image", .data = {{"url", "invalid://two"}}},
@@ -1332,8 +1587,8 @@ TEST(BridgeActorTest,
   asio::io_context ioc;
   auto future = asio::co_spawn(
       ioc,
-      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
-                                 -1, "sender", &bridge_config, {}, event),
+      formatter.send_media_group(image_segments, {}, "tg-group", -1, "sender",
+                                 &bridge_config, {}, event),
       asio::use_future);
   ioc.run();
   const auto result = future.get();
@@ -1359,8 +1614,8 @@ TEST(BridgeActorTest,
   asio::io_context failing_ioc;
   auto failing_future = asio::co_spawn(
       failing_ioc,
-      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
-                                 -1, "sender", &bridge_config, {}, event),
+      formatter.send_media_group(image_segments, {}, "tg-group", -1, "sender",
+                                 &bridge_config, {}, event),
       asio::use_future);
   failing_ioc.run();
   const auto failing_result = failing_future.get();
@@ -1379,8 +1634,10 @@ TEST(BridgeActorTest,
   auto config = std::make_shared<bridge::BridgeConfig>();
   config->bridge_files_dir = "/tmp/bridge_files";
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
+  MultipartFallbackTelegramBot telegram_bot;
   bridge::qq::QQMessageFormatter formatter(
-      config, nullptr, blocking_executor,
+      bridge_operations_for_telegram(telegram_bot), config, nullptr,
+      blocking_executor,
       [](const bridge::BridgeConfig &,
          const std::vector<std::pair<std::string, std::string>> &media)
           -> asio::awaitable<std::vector<bridge::qq::MediaDownloadResult>> {
@@ -1420,7 +1677,6 @@ TEST(BridgeActorTest,
              .output_dimensions = {960, 960}},
         };
       });
-  MultipartFallbackTelegramBot telegram_bot;
   const std::vector<obcx::common::MessageSegment> image_segments = {
       {.type = "image", .data = {{"url", "invalid://overlong"}}},
       {.type = "image", .data = {{"url", "invalid://wide"}}},
@@ -1434,8 +1690,8 @@ TEST(BridgeActorTest,
   asio::io_context ioc;
   auto future = asio::co_spawn(
       ioc,
-      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
-                                 -1, "sender", &bridge_config, {}, event),
+      formatter.send_media_group(image_segments, {}, "tg-group", -1, "sender",
+                                 &bridge_config, {}, event),
       asio::use_future);
   ioc.run();
   const auto result = future.get();
@@ -1457,8 +1713,11 @@ TEST(BridgeActorTest,
   config->bridge_files_dir = "/tmp/bridge_files";
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   std::atomic_int placeholder_downloads = 0;
+  MultipartFallbackTelegramBot telegram_bot;
+  RetryTestQQBot qq_bot;
   bridge::qq::QQMessageFormatter formatter(
-      config, nullptr, blocking_executor,
+      bridge_operations(qq_bot, telegram_bot), config, nullptr,
+      blocking_executor,
       [&placeholder_downloads](
           const bridge::BridgeConfig &,
           const std::vector<std::pair<std::string, std::string>> &media)
@@ -1514,7 +1773,6 @@ TEST(BridgeActorTest,
              .output_dimensions = {960, 960}},
         };
       });
-  RetryTestQQBot qq_bot;
   nlohmann::json messages = nlohmann::json::array();
   for (std::size_t index = 0; index < 5; ++index) {
     messages.push_back(
@@ -1527,17 +1785,15 @@ TEST(BridgeActorTest,
   qq_bot.forward_response =
       nlohmann::json{{"status", "ok"}, {"data", {{"messages", messages}}}}
           .dump();
-  MultipartFallbackTelegramBot telegram_bot;
   obcx::common::Message output;
   const obcx::common::MessageSegment forward_segment{
       .type = "forward", .data = {{"id", "dimension-forward"}}};
 
   asio::io_context ioc;
-  auto future = asio::co_spawn(
-      ioc,
-      formatter.process_forward_message(qq_bot, telegram_bot, forward_segment,
-                                        "tg-group", -1, output),
-      asio::use_future);
+  auto future = asio::co_spawn(ioc,
+                               formatter.process_forward_message(
+                                   forward_segment, "tg-group", -1, output),
+                               asio::use_future);
   ioc.run();
   future.get();
   blocking_executor->shutdown();
@@ -1567,8 +1823,11 @@ TEST(BridgeActorTest, QqForwardMediaFailureShowsStageAndStableReason) {
   auto config = std::make_shared<bridge::BridgeConfig>();
   config->bridge_files_dir = "/tmp/bridge_files";
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
+  MultipartFallbackTelegramBot telegram_bot;
+  RetryTestQQBot qq_bot;
   bridge::qq::QQMessageFormatter formatter(
-      config, nullptr, blocking_executor,
+      bridge_operations(qq_bot, telegram_bot), config, nullptr,
+      blocking_executor,
       [](const bridge::BridgeConfig &,
          const std::vector<std::pair<std::string, std::string>> &media)
           -> asio::awaitable<std::vector<bridge::qq::MediaDownloadResult>> {
@@ -1592,7 +1851,6 @@ TEST(BridgeActorTest, QqForwardMediaFailureShowsStageAndStableReason) {
         co_return media;
       },
       preserve_test_images);
-  RetryTestQQBot qq_bot;
   qq_bot.forward_response = R"({
     "status":"ok",
     "data":{"messages":[{
@@ -1603,7 +1861,6 @@ TEST(BridgeActorTest, QqForwardMediaFailureShowsStageAndStableReason) {
       ]
     }]}
   })";
-  MultipartFallbackTelegramBot telegram_bot;
   telegram_bot.multipart_fails.store(true, std::memory_order_release);
   telegram_bot.multipart_error =
       R"(HTTP request failed: 400: {"ok":false,"description":"Bad Request: IMAGE_PROCESS_FAILED"})";
@@ -1612,11 +1869,10 @@ TEST(BridgeActorTest, QqForwardMediaFailureShowsStageAndStableReason) {
   obcx::common::Message output;
 
   asio::io_context ioc;
-  auto future = asio::co_spawn(
-      ioc,
-      formatter.process_forward_message(qq_bot, telegram_bot, forward_segment,
-                                        "tg-group", -1, output),
-      asio::use_future);
+  auto future = asio::co_spawn(ioc,
+                               formatter.process_forward_message(
+                                   forward_segment, "tg-group", -1, output),
+                               asio::use_future);
   ioc.run();
   future.get();
 
@@ -1638,11 +1894,11 @@ TEST(BridgeActorTest, QqForwardMediaFailureShowsStageAndStableReason) {
       R"(HTTP request failed: 400: {"ok":false,"description":"Bad Request: PHOTO_INVALID_DIMENSIONS"})";
   obcx::common::Message dimension_output;
   asio::io_context dimension_ioc;
-  auto dimension_future = asio::co_spawn(
-      dimension_ioc,
-      formatter.process_forward_message(qq_bot, telegram_bot, forward_segment,
-                                        "tg-group", -1, dimension_output),
-      asio::use_future);
+  auto dimension_future =
+      asio::co_spawn(dimension_ioc,
+                     formatter.process_forward_message(
+                         forward_segment, "tg-group", -1, dimension_output),
+                     asio::use_future);
   dimension_ioc.run();
   dimension_future.get();
   blocking_executor->shutdown();
@@ -1664,8 +1920,10 @@ TEST(BridgeActorTest, QqMultipartFallbackDownloadsSanitizedPlaceholderOnce) {
   config->bridge_files_dir = "/tmp/bridge_files";
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   std::atomic_int download_calls = 0;
+  MultipartFallbackTelegramBot telegram_bot;
   bridge::qq::QQMessageFormatter formatter(
-      config, nullptr, blocking_executor,
+      bridge_operations_for_telegram(telegram_bot), config, nullptr,
+      blocking_executor,
       [&download_calls](
           const bridge::BridgeConfig &,
           const std::vector<std::pair<std::string, std::string>> &media)
@@ -1679,7 +1937,6 @@ TEST(BridgeActorTest, QqMultipartFallbackDownloadsSanitizedPlaceholderOnce) {
                                                   .data = "placeholder-once"}}};
       },
       {}, preserve_test_images);
-  MultipartFallbackTelegramBot telegram_bot;
   const std::vector<obcx::common::MessageSegment> image_segments = {
       {.type = "image", .data = {{"url", "invalid://one"}}},
       {.type = "image", .data = {{"url", "invalid://two"}}},
@@ -1692,8 +1949,8 @@ TEST(BridgeActorTest, QqMultipartFallbackDownloadsSanitizedPlaceholderOnce) {
   asio::io_context ioc;
   auto future = asio::co_spawn(
       ioc,
-      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
-                                 -1, "sender", &bridge_config, {}, event),
+      formatter.send_media_group(image_segments, {}, "tg-group", -1, "sender",
+                                 &bridge_config, {}, event),
       asio::use_future);
   ioc.run();
   const auto result = future.get();
@@ -1714,8 +1971,10 @@ TEST(BridgeActorTest,
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   std::atomic_int batch_downloads = 0;
   std::atomic_int placeholder_downloads = 0;
+  MultipartFallbackTelegramBot telegram_bot;
   bridge::qq::QQMessageFormatter formatter(
-      config, nullptr, blocking_executor,
+      bridge_operations_for_telegram(telegram_bot), config, nullptr,
+      blocking_executor,
       [&batch_downloads, &placeholder_downloads](
           const bridge::BridgeConfig &,
           const std::vector<std::pair<std::string, std::string>> &media)
@@ -1747,7 +2006,6 @@ TEST(BridgeActorTest,
         co_return media;
       },
       preserve_test_images);
-  MultipartFallbackTelegramBot telegram_bot;
   const std::vector<obcx::common::MessageSegment> image_segments = {
       {.type = "image", .data = {{"url", "invalid://one"}}},
       {.type = "image", .data = {{"url", "invalid://two"}}},
@@ -1760,8 +2018,8 @@ TEST(BridgeActorTest,
   asio::io_context ioc;
   auto future = asio::co_spawn(
       ioc,
-      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
-                                 -1, "sender", &bridge_config, {}, event),
+      formatter.send_media_group(image_segments, {}, "tg-group", -1, "sender",
+                                 &bridge_config, {}, event),
       asio::use_future);
   ioc.run();
   const auto result = future.get();
@@ -1782,8 +2040,10 @@ TEST(BridgeActorTest,
   config->bridge_files_dir = "/tmp/bridge_files";
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   std::atomic_int placeholder_downloads = 0;
+  MultipartFallbackTelegramBot telegram_bot;
   bridge::qq::QQMessageFormatter formatter(
-      config, nullptr, blocking_executor,
+      bridge_operations_for_telegram(telegram_bot), config, nullptr,
+      blocking_executor,
       [&placeholder_downloads](
           const bridge::BridgeConfig &,
           const std::vector<std::pair<std::string, std::string>> &media)
@@ -1813,7 +2073,6 @@ TEST(BridgeActorTest,
         co_return media;
       },
       preserve_test_images);
-  MultipartFallbackTelegramBot telegram_bot;
   const std::vector<obcx::common::MessageSegment> image_segments = {
       {.type = "image", .data = {{"url", "invalid://one"}}},
       {.type = "image", .data = {{"url", "invalid://two"}}},
@@ -1827,8 +2086,8 @@ TEST(BridgeActorTest,
   asio::io_context ioc;
   auto future = asio::co_spawn(
       ioc,
-      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
-                                 -1, "sender", &bridge_config, {}, event),
+      formatter.send_media_group(image_segments, {}, "tg-group", -1, "sender",
+                                 &bridge_config, {}, event),
       asio::use_future);
   ioc.run();
   const auto result = future.get();
@@ -1852,8 +2111,11 @@ TEST(BridgeActorTest,
 TEST(BridgeActorTest, QqForwardKeepsElevenImagesInValidNineAndTwoBatches) {
   auto config = std::make_shared<bridge::BridgeConfig>();
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
+  RetryTestQQBot qq_bot;
+  RetryTestTelegramBot telegram_bot;
   bridge::qq::QQMessageFormatter formatter(
-      config, nullptr, blocking_executor, {},
+      bridge_operations(qq_bot, telegram_bot), config, nullptr,
+      blocking_executor, {},
       [](const bridge::BridgeConfig &,
          const std::vector<std::pair<std::string, std::string>> &media,
          std::vector<std::string> &replaced)
@@ -1861,7 +2123,6 @@ TEST(BridgeActorTest, QqForwardKeepsElevenImagesInValidNineAndTwoBatches) {
         replaced.clear();
         co_return media;
       });
-  RetryTestQQBot qq_bot;
   nlohmann::json messages = nlohmann::json::array();
   for (std::size_t index = 0; index < 11; ++index) {
     messages.push_back(
@@ -1874,17 +2135,15 @@ TEST(BridgeActorTest, QqForwardKeepsElevenImagesInValidNineAndTwoBatches) {
   qq_bot.forward_response =
       nlohmann::json{{"status", "ok"}, {"data", {{"messages", messages}}}}
           .dump();
-  RetryTestTelegramBot telegram_bot;
   obcx::common::Message output;
   const obcx::common::MessageSegment forward_segment{
       .type = "forward", .data = {{"id", "eleven-forward-images"}}};
 
   asio::io_context ioc;
-  auto future = asio::co_spawn(
-      ioc,
-      formatter.process_forward_message(qq_bot, telegram_bot, forward_segment,
-                                        "tg-group", -1, output),
-      asio::use_future);
+  auto future = asio::co_spawn(ioc,
+                               formatter.process_forward_message(
+                                   forward_segment, "tg-group", -1, output),
+                               asio::use_future);
   ioc.run();
   future.get();
   blocking_executor->shutdown();
@@ -1897,8 +2156,10 @@ TEST(BridgeActorTest, QqMediaGroupKeepsElevenImagesInValidNineAndTwoBatches) {
   auto config = std::make_shared<bridge::BridgeConfig>();
   config->bridge_files_dir = "/tmp/bridge_files";
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
-  bridge::qq::QQMessageFormatter formatter(config, nullptr, blocking_executor);
   RetryTestTelegramBot telegram_bot;
+  bridge::qq::QQMessageFormatter formatter(
+      bridge_operations_for_telegram(telegram_bot), config, nullptr,
+      blocking_executor);
   std::vector<obcx::common::MessageSegment> image_segments;
   image_segments.reserve(11);
   for (size_t index = 0; index < 11; ++index) {
@@ -1914,8 +2175,8 @@ TEST(BridgeActorTest, QqMediaGroupKeepsElevenImagesInValidNineAndTwoBatches) {
   asio::io_context ioc;
   auto future = asio::co_spawn(
       ioc,
-      formatter.send_media_group(telegram_bot, image_segments, {}, "tg-group",
-                                 -1, "sender", &bridge_config, {}, event),
+      formatter.send_media_group(image_segments, {}, "tg-group", -1, "sender",
+                                 &bridge_config, {}, event),
       asio::use_future);
   ioc.run();
   const auto result = future.get();
@@ -1941,12 +2202,13 @@ TEST(BridgeActorTest,
                                             false, true, true));
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
   asio::io_context ioc;
-  auto handler = std::make_shared<bridge::TelegramHandler>(
-      config, nullptr, ioc.get_executor(), repository, nullptr,
-      blocking_executor);
   auto qq_bot = std::make_shared<RetryTestQQBot>();
   qq_bot->always_succeed.store(true, std::memory_order_release);
   auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  auto operations = bridge_operations(*qq_bot, *telegram_bot);
+  auto handler = std::make_shared<bridge::TelegramHandler>(
+      operations, config, nullptr, ioc.get_executor(), repository, nullptr,
+      blocking_executor);
 
   auto media_group_event = [](std::string message_id, std::string text) {
     obcx::common::MessageEvent event;
@@ -1968,10 +2230,9 @@ TEST(BridgeActorTest,
        second = media_group_event("tg-album-2", "second")]() mutable
           -> asio::awaitable<std::pair<bridge::DirectForwardOutcome,
                                        bridge::DirectForwardOutcome>> {
-        auto first_outcome = co_await handler->forward_to_qq(
-            *telegram_bot, *qq_bot, std::move(first));
-        auto second_outcome = co_await handler->forward_to_qq(
-            *telegram_bot, *qq_bot, std::move(second));
+        auto first_outcome = co_await handler->forward_to_qq(std::move(first));
+        auto second_outcome =
+            co_await handler->forward_to_qq(std::move(second));
         handler->flush_pending_media_groups();
         co_return std::pair{std::move(first_outcome),
                             std::move(second_outcome)};
@@ -2052,6 +2313,42 @@ TEST(BridgeActorTest, EnabledTelegramToQqFailurePersistsMessageRetry) {
   std::filesystem::remove(db_path);
 }
 
+TEST(BridgeActorTest, PossiblySubmittedInitialSendsAreNeverQueued) {
+  const auto db_path = temp_db_path("possibly_submitted_initial");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  qq_bot->force_malformed_send.store(true, std::memory_order_release);
+  telegram_bot->force_malformed_send.store(true, std::memory_order_release);
+  auto services = bridge_retry_services(db_manager, qq_bot, telegram_bot, true);
+
+  const auto qq_result = run_actor(
+      services, bridge_message_stored("qq", "qq-unknown-1", "qq-group"));
+  const auto telegram_result = run_actor(
+      services, bridge_message_stored("telegram", "tg-unknown-1", "tg-group"));
+
+  EXPECT_FALSE(qq_result.ok());
+  EXPECT_FALSE(telegram_result.ok());
+  EXPECT_EQ(telegram_bot->send_group_calls.load(), 1);
+  EXPECT_EQ(qq_bot->send_group_calls.load(), 1);
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      *db_manager, "main", "bridge");
+  EXPECT_TRUE(
+      repository
+          ->get_pending_message_retries(
+              std::chrono::system_clock::now() + std::chrono::hours{1}, 10)
+          .empty());
+  EXPECT_FALSE(
+      repository->get_target_message_id("qq", "qq-unknown-1", "telegram")
+          .has_value());
+  EXPECT_FALSE(
+      repository->get_target_message_id("telegram", "tg-unknown-1", "qq")
+          .has_value());
+
+  std::filesystem::remove(db_path);
+}
+
 TEST(BridgeActorTest, DisabledRetryCreatesNoWorkerOrDurableRow) {
   const auto db_path = temp_db_path("retry_disabled");
   auto db_manager = std::make_shared<obcx::core::DbManager>();
@@ -2077,7 +2374,7 @@ TEST(BridgeActorTest, DisabledRetryCreatesNoWorkerOrDurableRow) {
   std::filesystem::remove(db_path);
 }
 
-TEST(BridgeActorTest, TelegramGroupRetryUsesBotRegistryAndPersistsMapping) {
+TEST(BridgeActorTest, TelegramGroupRetryUsesOperationClientAndPersistsMapping) {
   const auto db_path = temp_db_path("telegram_group_retry_success");
   auto db_manager = std::make_shared<obcx::core::DbManager>();
   db_manager->configure({sqlite_config(db_path)});
@@ -2116,7 +2413,7 @@ TEST(BridgeActorTest, TelegramGroupRetryUsesBotRegistryAndPersistsMapping) {
   std::filesystem::remove(db_path);
 }
 
-TEST(BridgeActorTest, TelegramTopicRetryUsesTopicApiAndPersistsMapping) {
+TEST(BridgeActorTest, TelegramTopicRetryUsesOperationClientAndPersistsMapping) {
   const auto db_path = temp_db_path("telegram_topic_retry_success");
   auto db_manager = std::make_shared<obcx::core::DbManager>();
   db_manager->configure({sqlite_config(db_path)});
@@ -2155,7 +2452,7 @@ TEST(BridgeActorTest, TelegramTopicRetryUsesTopicApiAndPersistsMapping) {
   std::filesystem::remove(db_path);
 }
 
-TEST(BridgeActorTest, QqGroupRetryUsesBotRegistryAndPersistsMapping) {
+TEST(BridgeActorTest, QqGroupRetryUsesOperationClientAndPersistsMapping) {
   const auto db_path = temp_db_path("qq_group_retry_success");
   auto db_manager = std::make_shared<obcx::core::DbManager>();
   db_manager->configure({sqlite_config(db_path)});

@@ -12,9 +12,21 @@ add_executable(bridge_actor_test bridge_actor_test.cpp
 target_include_directories(
   bridge_actor_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
                             ${CMAKE_SOURCE_DIR}/include)
+if(IS_ABSOLUTE "${OBCX_CORE_SOURCE_DIR}" AND
+   EXISTS "${OBCX_CORE_SOURCE_DIR}/include/core/qq_bot.hpp")
+  target_include_directories(bridge_actor_test
+                             PRIVATE ${OBCX_CORE_SOURCE_DIR}/include)
+endif()
 target_link_libraries(bridge_actor_test PRIVATE bridge_core GTest::gtest_main)
 target_compile_definitions(bridge_actor_test
                            PRIVATE OBCX_BRIDGE_ACTOR_NO_EXPORT)
+
+add_executable(command_operation_test command_operation_test.cpp)
+target_include_directories(
+  command_operation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
+                                 ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(command_operation_test PRIVATE bridge_core
+                                                     GTest::gtest_main)
 
 add_executable(retry_queue_manager_test retry_queue_manager_test.cpp)
 target_include_directories(
@@ -80,6 +92,8 @@ set(_bridge_test_labels "unit\\;actor-package\\;bridge")
 gtest_discover_tests(bridge_database_schema_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")
 gtest_discover_tests(bridge_actor_test DISCOVERY_MODE PRE_TEST
+                     PROPERTIES LABELS "${_bridge_test_labels}")
+gtest_discover_tests(command_operation_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")
 gtest_discover_tests(retry_queue_manager_test DISCOVERY_MODE PRE_TEST
                      PROPERTIES LABELS "${_bridge_test_labels}")

@@ -7,7 +7,6 @@
 #include "telegram/handler.hpp"
 
 #include <common/logger.hpp>
-#include <interfaces/telegram_bot.hpp>
 
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
@@ -47,44 +46,6 @@ auto target_platform_for(const std::string &platform) -> std::string {
   return {};
 }
 
-auto require_bot(const std::shared_ptr<obcx::core::BotRegistry> &registry,
-                 const std::string &platform) -> obcx::core::RegisteredBot {
-  if (!registry) {
-    throw std::runtime_error("bridge forwarding requires BotRegistry service");
-  }
-  auto bot = registry->find_bot(platform);
-  if (!bot.has_value() || bot->bot == nullptr) {
-    throw std::runtime_error("bridge forwarding missing bot for platform " +
-                             platform);
-  }
-  return bot.value();
-}
-
-auto require_source_bot(
-    const std::shared_ptr<obcx::core::BotRegistry> &registry,
-    const obcx::command::CommandInvocation &invocation)
-    -> obcx::core::RegisteredBot {
-  if (registry && !invocation.source_bot.empty()) {
-    if (auto bot = registry->find_bot(invocation.source_platform,
-                                      invocation.source_bot)) {
-      return *bot;
-    }
-  }
-  return require_bot(registry, invocation.source_platform);
-}
-
-auto require_source_bot(
-    const std::shared_ptr<obcx::core::BotRegistry> &registry,
-    const obcx::core::MessageEnvelope &message) -> obcx::core::RegisteredBot {
-  if (registry && !message.source_bot.empty()) {
-    if (auto bot =
-            registry->find_bot(message.source_platform, message.source_bot)) {
-      return *bot;
-    }
-  }
-  return require_bot(registry, message.source_platform);
-}
-
 auto command_message(const obcx::command::CommandInvocation &invocation)
     -> obcx::core::MessageEnvelope {
   obcx::core::MessageEnvelope message;
@@ -117,86 +78,62 @@ auto retry_policy(const BridgeConfig &config) -> RetryQueuePolicy {
   };
 }
 
-auto response_message_id(const std::string &response, const char *container)
-    -> std::optional<std::string> {
-  if (response.empty()) {
-    return std::nullopt;
-  }
-  const auto document = nlohmann::json::parse(response, nullptr, false, true);
-  if (document.is_discarded() || !document.is_object() ||
-      !document.contains(container) || !document.at(container).is_object() ||
-      !document.at(container).contains("message_id")) {
-    return std::nullopt;
-  }
-  const auto &message_id = document.at(container).at("message_id");
-  if (message_id.is_string()) {
-    return message_id.get<std::string>();
-  }
-  if (message_id.is_number_integer()) {
-    return std::to_string(message_id.get<std::int64_t>());
-  }
-  if (message_id.is_number_unsigned()) {
-    return std::to_string(message_id.get<std::uint64_t>());
-  }
-  return std::nullopt;
-}
-
 auto telegram_retry_callback(
-    const std::shared_ptr<obcx::core::BotRegistry> &bot_registry)
+    const std::shared_ptr<BridgeBotOperations> &operations)
     -> RetryQueueManager::MessageSendCallback {
-  return [bot_registry](const MessageRetryEntry &retry,
-                        const obcx::common::Message &message)
-             -> boost::asio::awaitable<std::optional<std::string>> {
-    const auto registration =
-        bot_registry ? bot_registry->find_bot("telegram") : std::nullopt;
-    if (!registration.has_value() || !registration->bot) {
-      OBCX_WARN("Telegram bot unavailable for bridge message retry");
-      co_return std::nullopt;
-    }
-
+  return [operations](const MessageRetryEntry &retry,
+                      const obcx::common::Message &message)
+             -> boost::asio::awaitable<MessageSendOutcome> {
     try {
-      std::string response;
       if (retry.target_topic_id > 0) {
-        auto *telegram =
-            dynamic_cast<obcx::core::ITelegramBot *>(registration->bot.get());
-        if (telegram == nullptr) {
-          OBCX_WARN("Registered Telegram bot lacks topic-send capability");
-          co_return std::nullopt;
-        }
-        response = co_await telegram->send_topic_message(
-            retry.group_id, retry.target_topic_id, message);
-      } else {
-        response = co_await registration->bot->send_group_message(
-            retry.group_id, message);
+        co_return MessageSendOutcome::completed(
+            co_await operations->send_telegram_topic(
+                retry.group_id, retry.target_topic_id, message));
       }
-      co_return response_message_id(response, "result");
-    } catch (const std::exception &) {
-      OBCX_WARN("Telegram bridge message retry send failed");
-      co_return std::nullopt;
+      co_return MessageSendOutcome::completed(
+          co_await operations->send_telegram_group(retry.group_id, message));
+    } catch (const BridgeBotOperationFailure &failure) {
+      const auto &error = failure.error();
+      if (error.submission_safety ==
+          obcx::bot::SubmissionSafety::PossiblySubmitted) {
+        co_return MessageSendOutcome::unknown(
+            std::string{obcx::bot::error_code_id(error.code)});
+      }
+      if (error.retryable) {
+        co_return MessageSendOutcome::retryable(
+            std::string{obcx::bot::error_code_id(error.code)});
+      }
+      co_return MessageSendOutcome::terminal(
+          std::string{obcx::bot::error_code_id(error.code)});
+    } catch (...) {
+      co_return MessageSendOutcome::unknown("unclassified_exception");
     }
   };
 }
 
-auto qq_retry_callback(
-    const std::shared_ptr<obcx::core::BotRegistry> &bot_registry)
+auto qq_retry_callback(const std::shared_ptr<BridgeBotOperations> &operations)
     -> RetryQueueManager::MessageSendCallback {
-  return [bot_registry](const MessageRetryEntry &retry,
-                        const obcx::common::Message &message)
-             -> boost::asio::awaitable<std::optional<std::string>> {
-    const auto registration =
-        bot_registry ? bot_registry->find_bot("qq") : std::nullopt;
-    if (!registration.has_value() || !registration->bot) {
-      OBCX_WARN("QQ bot unavailable for bridge message retry");
-      co_return std::nullopt;
-    }
-
+  return [operations](const MessageRetryEntry &retry,
+                      const obcx::common::Message &message)
+             -> boost::asio::awaitable<MessageSendOutcome> {
     try {
-      const auto response = co_await registration->bot->send_group_message(
-          retry.group_id, message);
-      co_return response_message_id(response, "data");
-    } catch (const std::exception &) {
-      OBCX_WARN("QQ bridge message retry send failed");
-      co_return std::nullopt;
+      co_return MessageSendOutcome::completed(
+          co_await operations->send_onebot11_group(retry.group_id, message));
+    } catch (const BridgeBotOperationFailure &failure) {
+      const auto &error = failure.error();
+      if (error.submission_safety ==
+          obcx::bot::SubmissionSafety::PossiblySubmitted) {
+        co_return MessageSendOutcome::unknown(
+            std::string{obcx::bot::error_code_id(error.code)});
+      }
+      if (error.retryable) {
+        co_return MessageSendOutcome::retryable(
+            std::string{obcx::bot::error_code_id(error.code)});
+      }
+      co_return MessageSendOutcome::terminal(
+          std::string{obcx::bot::error_code_id(error.code)});
+    } catch (...) {
+      co_return MessageSendOutcome::unknown("unclassified_exception");
     }
   };
 }
@@ -205,7 +142,7 @@ auto qq_retry_callback(
 
 class RetryQueueWorker {
 public:
-  RetryQueueWorker(std::shared_ptr<obcx::core::BotRegistry> bot_registry,
+  RetryQueueWorker(std::shared_ptr<BridgeBotOperations> operations,
                    const BridgeConfig &config,
                    std::shared_ptr<BridgeStateRepository> state_repository)
       : work_guard_(std::make_unique<WorkGuard>(
@@ -213,9 +150,9 @@ public:
         manager_(std::make_shared<RetryQueueManager>(
             io_context_, std::move(state_repository), retry_policy(config))) {
     manager_->register_message_send_callback(
-        "telegram", telegram_retry_callback(bot_registry));
+        "telegram", telegram_retry_callback(operations));
     manager_->register_message_send_callback("qq",
-                                             qq_retry_callback(bot_registry));
+                                             qq_retry_callback(operations));
     manager_->restore_persisted_message_retries();
     manager_->start();
     worker_thread_ = std::thread([this] {
@@ -298,13 +235,13 @@ private:
 };
 
 BridgeForwardingRuntime::BridgeForwardingRuntime(
-    std::shared_ptr<obcx::core::BotRegistry> bot_registry,
+    std::shared_ptr<obcx::bot::BotOperationClient> operation_client,
     std::shared_ptr<const BridgeConfig> config,
     std::shared_ptr<BridgeStateRepository> state_repository,
     std::shared_ptr<ReceivedMessageRepository> received_message_repository,
     boost::asio::any_io_executor buffer_executor,
     std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
-    : bot_registry_(std::move(bot_registry)), config_(std::move(config)),
+    : config_(std::move(config)),
       state_repository_(std::move(state_repository)),
       received_message_repository_(std::move(received_message_repository)),
       blocking_executor_(std::move(blocking_executor)) {
@@ -315,12 +252,15 @@ BridgeForwardingRuntime::BridgeForwardingRuntime(
     throw std::invalid_argument(
         "bridge forwarding requires BlockingExecutor service");
   }
+  operations_ = std::make_shared<BridgeBotOperations>(
+      std::move(operation_client), config_->telegram_installation,
+      config_->onebot11_installation);
 
   std::shared_ptr<RetryQueueManager> retry_manager;
   if (config_->enable_retry_queue) {
     try {
-      retry_worker_ = std::make_unique<RetryQueueWorker>(
-          bot_registry_, *config_, state_repository_);
+      retry_worker_ = std::make_unique<RetryQueueWorker>(operations_, *config_,
+                                                         state_repository_);
       retry_manager = retry_worker_->manager();
     } catch (const std::exception &error) {
       throw BridgeRetryUnavailable(
@@ -330,11 +270,12 @@ BridgeForwardingRuntime::BridgeForwardingRuntime(
   }
 
   qq_handler_ = std::make_shared<QQHandler>(
-      config_, retry_manager, state_repository_, received_message_repository_,
-      blocking_executor_);
+      operations_, config_, retry_manager, state_repository_,
+      received_message_repository_, blocking_executor_);
   telegram_handler_ = std::make_shared<TelegramHandler>(
-      config_, std::move(retry_manager), std::move(buffer_executor),
-      state_repository_, received_message_repository_, blocking_executor_);
+      operations_, config_, std::move(retry_manager),
+      std::move(buffer_executor), state_repository_,
+      received_message_repository_, blocking_executor_);
 }
 
 BridgeForwardingRuntime::~BridgeForwardingRuntime() { shutdown(); }
@@ -374,20 +315,15 @@ auto BridgeForwardingRuntime::forward_message(
     throw std::runtime_error("unsupported bridge source platform " +
                              from_platform);
   }
-
-  const auto source_bot = require_bot(bot_registry_, from_platform);
-  const auto target_bot = require_bot(bot_registry_, to_platform);
+  validate_bridge_source(*config_, from_platform, message.source_bot);
 
   DirectForwardOutcome outcome;
   if (from_platform == "qq") {
-    outcome = co_await qq_handler_->forward_to_telegram(
-        *target_bot.bot, *source_bot.bot, event.value());
+    outcome = co_await qq_handler_->forward_to_telegram(event.value());
   } else if (is_telegram_edit(event.value())) {
-    outcome = co_await telegram_handler_->handle_message_edited(
-        *source_bot.bot, *target_bot.bot, event.value());
+    outcome = co_await telegram_handler_->handle_message_edited(event.value());
   } else {
-    outcome = co_await telegram_handler_->forward_to_qq(
-        *source_bot.bot, *target_bot.bot, event.value());
+    outcome = co_await telegram_handler_->forward_to_qq(event.value());
   }
 
   co_return BridgeForwardResult{
@@ -395,8 +331,11 @@ auto BridgeForwardingRuntime::forward_message(
       .source_platform = std::move(outcome.source_platform),
       .source_message_id = std::move(outcome.source_message_id),
       .target_platform = std::move(outcome.target_platform),
-      .target_bot = target_bot.bot_id,
+      .target_bot = to_platform == "telegram" ? config_->telegram_installation
+                                              : config_->onebot11_installation,
       .target_message_id = std::move(outcome.target_message_id),
+      .failure_message = std::move(outcome.failure_message),
+      .failure_retryable = outcome.failure_retryable,
   };
 }
 
@@ -413,13 +352,13 @@ auto BridgeForwardingRuntime::handle_command(
     co_return false;
   }
 
-  const auto source = require_source_bot(bot_registry_, invocation);
+  validate_bridge_source(*config_, invocation.source_platform,
+                         invocation.source_bot);
   if (invocation.source_platform == "telegram") {
     if (invocation.name != "recall" && invocation.name != "checkalive" &&
         invocation.name != "poke") {
       co_return false;
     }
-    const auto target = require_bot(bot_registry_, "qq");
     const auto telegram_group_id = *event->group_id;
     const auto *mapping = config_->bridge_config(telegram_group_id);
     if (mapping == nullptr) {
@@ -437,28 +376,24 @@ auto BridgeForwardingRuntime::handle_command(
       co_return false;
     }
     if (invocation.name == "recall") {
-      co_await telegram_handler_->handle_recall_command(
-          *source.bot, *target.bot, *event, qq_group_id);
+      co_await telegram_handler_->handle_recall_command(*event, qq_group_id);
     } else if (invocation.name == "checkalive") {
-      co_await telegram_handler_->handle_checkalive_command(
-          *source.bot, *target.bot, *event, qq_group_id);
+      co_await telegram_handler_->handle_checkalive_command(*event,
+                                                            qq_group_id);
     } else {
-      co_await telegram_handler_->handle_poke_command(*source.bot, *target.bot,
-                                                      *event, qq_group_id);
+      co_await telegram_handler_->handle_poke_command(*event, qq_group_id);
     }
     co_return true;
   }
 
   if (invocation.source_platform == "qq" && invocation.name == "checkalive") {
-    const auto target = require_bot(bot_registry_, "telegram");
     const auto [telegram_group_id, topic_id] =
         config_->tg_group_and_topic_id(*event->group_id);
     (void)topic_id;
     if (telegram_group_id.empty()) {
       co_return false;
     }
-    co_await qq_handler_->handle_checkalive_command(*target.bot, *source.bot,
-                                                    *event, telegram_group_id);
+    co_await qq_handler_->handle_checkalive_command(*event, telegram_group_id);
     co_return true;
   }
   co_return false;
@@ -473,16 +408,14 @@ auto BridgeForwardingRuntime::handle_notice(
   if (message.source_platform != "qq") {
     co_return false;
   }
+  validate_bridge_source(*config_, message.source_platform, message.source_bot);
   const auto notice = notice_event_from_raw_notice(message);
   if (!notice.has_value()) {
     co_return false;
   }
 
-  const auto source = require_source_bot(bot_registry_, message);
-  const auto target = require_bot(bot_registry_, "telegram");
   obcx::common::Event event = *notice;
-  co_await qq_handler_->handle_recall_event(*target.bot, *source.bot,
-                                            std::move(event));
+  co_await qq_handler_->handle_recall_event(std::move(event));
   co_return true;
 }
 

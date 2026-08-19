@@ -6,8 +6,6 @@
 #include <common/json_utils.hpp>
 #include <common/logger.hpp>
 #include <fmt/format.h>
-#include <interfaces/qq_bot.hpp>
-#include <interfaces/telegram_bot.hpp>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -86,18 +84,19 @@ public:
       if (input.bad() || file_data.size() != image.data.size()) {
         throw std::runtime_error("cannot read QQ media temporary file");
       }
-      result.uploads_.push_back(obcx::core::TelegramMediaUpload{
+      result.uploads_.push_back(obcx::bot::TelegramMediaUpload{
           .type = std::move(image.type),
           .filename = std::move(filename),
           .mime_type = std::move(image.mime_type),
-          .data = std::move(file_data),
+          .bytes =
+              std::vector<std::uint8_t>(file_data.begin(), file_data.end()),
       });
     }
     return result;
   }
 
   [[nodiscard]] auto uploads() const
-      -> const std::vector<obcx::core::TelegramMediaUpload> & {
+      -> const std::vector<obcx::bot::TelegramMediaUpload> & {
     return uploads_;
   }
 
@@ -116,11 +115,17 @@ private:
   }
 
   fs::path root_;
-  std::vector<obcx::core::TelegramMediaUpload> uploads_;
+  std::vector<obcx::bot::TelegramMediaUpload> uploads_;
 };
 
-auto is_telegram_bad_request(std::string_view error) -> bool {
-  return error.find("HTTP request failed: 400") != std::string_view::npos;
+auto is_telegram_bad_request(const std::exception &error) -> bool {
+  if (const auto *typed =
+          dynamic_cast<const BridgeBotOperationFailure *>(&error)) {
+    return typed->error().code ==
+               obcx::bot::BotOperationErrorCode::ProviderRejected &&
+           typed->error().provider_code == "400";
+  }
+  return std::string_view{error.what()}.contains("HTTP request failed: 400");
 }
 
 auto is_operation_aborted(const std::exception &error) -> bool {
@@ -299,11 +304,31 @@ void append_italic_telegram_sender(obcx::common::Message &message,
       obcx::common::MessageSegment{.type = "text", .data = {{"text", "\t"}}});
 }
 
+auto telegram_utf16_units(const std::string_view text) -> std::size_t {
+  std::size_t units = 0;
+  for (std::size_t index = 0; index < text.size();) {
+    const auto lead = static_cast<unsigned char>(text[index]);
+    std::size_t width = 1;
+    if ((lead & 0xE0U) == 0xC0U) {
+      width = 2;
+    } else if ((lead & 0xF0U) == 0xE0U) {
+      width = 3;
+    } else if ((lead & 0xF8U) == 0xF0U) {
+      width = 4;
+    }
+    if (index + width > text.size()) {
+      width = 1;
+    }
+    units += width == 4 ? 2U : 1U;
+    index += width;
+  }
+  return units;
+}
+
 auto italic_entity(std::string_view text)
-    -> std::vector<obcx::core::TelegramTextEntity> {
-  return {{.type = "italic",
-           .offset = 0,
-           .length = obcx::core::telegram_utf16_code_units(text)}};
+    -> std::vector<obcx::bot::TelegramTextEntity> {
+  return {
+      {.type = "italic", .offset = 0, .length = telegram_utf16_units(text)}};
 }
 
 auto caption_with_media_recovery(std::string_view caption,
@@ -329,17 +354,21 @@ auto caption_with_media_recovery(std::string_view caption,
 } // namespace
 
 QQMessageFormatter::QQMessageFormatter(
+    std::shared_ptr<BridgeBotOperations> operations,
     std::shared_ptr<const bridge::BridgeConfig> config,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor,
     ImageDownloader image_downloader, ImageSanitizer image_sanitizer,
     ImageNormalizer image_normalizer)
-    : config_(std::move(config)),
+    : operations_(std::move(operations)), config_(std::move(config)),
       state_repository_(std::move(state_repository)),
       blocking_executor_(std::move(blocking_executor)),
       image_downloader_(std::move(image_downloader)),
       image_sanitizer_(std::move(image_sanitizer)),
       image_normalizer_(std::move(image_normalizer)) {
+  if (!operations_) {
+    throw std::invalid_argument("QQMessageFormatter requires bot operations");
+  }
   if (!image_downloader_) {
     image_downloader_ =
         [](const bridge::BridgeConfig &config,
@@ -366,11 +395,10 @@ QQMessageFormatter::QQMessageFormatter(
 }
 
 auto QQMessageFormatter::send_media_group_with_fallback(
-    obcx::core::IBot &telegram_bot, std::string_view telegram_group_id,
-    const std::vector<PreparedMedia> &media, std::string_view caption,
-    std::optional<int64_t> topic_id,
+    std::string_view telegram_group_id, const std::vector<PreparedMedia> &media,
+    std::string_view caption, std::optional<int64_t> topic_id,
     std::optional<std::string> reply_to_message_id,
-    const std::vector<obcx::core::TelegramTextEntity> &caption_entities)
+    const std::vector<obcx::bot::TelegramTextEntity> &caption_entities)
     -> boost::asio::awaitable<MediaGroupFallbackResult> {
   std::vector<std::pair<std::string, std::string>> remote_media;
   remote_media.reserve(media.size());
@@ -382,18 +410,18 @@ auto QQMessageFormatter::send_media_group_with_fallback(
     }
   }
 
-  auto *telegram = dynamic_cast<obcx::core::ITelegramBot *>(&telegram_bot);
-  if (telegram == nullptr) {
-    throw MediaFallbackError("fallback_setup", "telegram_bot_unavailable",
-                             media.size(), replaced_indices.size());
-  }
   try {
-    auto response = co_await telegram->send_media_group_with_entities(
-        telegram_group_id, remote_media,
+    std::vector<obcx::bot::TelegramMediaSource> sources;
+    sources.reserve(remote_media.size());
+    for (const auto &[type, source] : remote_media) {
+      sources.push_back({.type = type, .source = source});
+    }
+    auto response = co_await operations_->send_telegram_media_urls(
+        telegram_group_id, std::move(sources),
         caption_with_media_recovery(caption, replaced_indices.size(), 0),
         topic_id, reply_to_message_id, caption_entities);
     co_return MediaGroupFallbackResult{
-        .response = std::move(response),
+        .send_result = std::move(response),
         .replaced_count = replaced_indices.size(),
     };
   } catch (const std::exception &error) {
@@ -401,7 +429,7 @@ auto QQMessageFormatter::send_media_group_with_fallback(
       throw;
     }
     const auto category = telegram_failure_category(error.what());
-    if (!is_telegram_bad_request(error.what())) {
+    if (!is_telegram_bad_request(error)) {
       throw MediaFallbackError("direct_url_send", std::string{category},
                                media.size(), replaced_indices.size());
     }
@@ -414,13 +442,6 @@ auto QQMessageFormatter::send_media_group_with_fallback(
     throw MediaFallbackError("fallback_setup", "blocking_executor_unavailable",
                              media.size(), replaced_indices.size());
   }
-  auto *uploader =
-      dynamic_cast<obcx::core::ITelegramMediaGroupUploader *>(&telegram_bot);
-  if (uploader == nullptr) {
-    throw MediaFallbackError("fallback_setup", "multipart_uploader_unavailable",
-                             media.size(), replaced_indices.size());
-  }
-
   std::vector<MediaDownloadResult> outcomes(media.size());
   std::vector<std::pair<std::string, std::string>> source_downloads;
   std::vector<std::size_t> source_indices;
@@ -590,15 +611,18 @@ auto QQMessageFormatter::send_media_group_with_fallback(
   }
   const auto temporary_root = temporary.root();
 
-  std::string response;
+  std::optional<obcx::bot::SendMessageResult> response;
   std::string upload_failure_category;
   std::exception_ptr upload_cancellation;
   try {
-    response = co_await uploader->send_media_group_uploads_with_entities(
+    const auto maximum_bytes = std::min(obcx::bot::maximum_actor_media_bytes,
+                                        config_->qq_media_download_max_bytes *
+                                            temporary.uploads().size());
+    response = co_await operations_->send_telegram_media_uploads(
         telegram_group_id, temporary.uploads(),
         caption_with_media_recovery(caption, replaced_indices.size(),
                                     normalized_count),
-        topic_id, reply_to_message_id, caption_entities);
+        maximum_bytes, topic_id, reply_to_message_id, caption_entities);
   } catch (const std::exception &error) {
     if (is_operation_aborted(error)) {
       upload_cancellation = std::current_exception();
@@ -644,7 +668,7 @@ auto QQMessageFormatter::send_media_group_with_fallback(
                              normalized_count);
   }
   co_return MediaGroupFallbackResult{
-      .response = std::move(response),
+      .send_result = std::move(response),
       .used_multipart = true,
       .replaced_count = replaced_indices.size(),
       .normalized_count = normalized_count,
@@ -652,14 +676,14 @@ auto QQMessageFormatter::send_media_group_with_fallback(
 }
 
 auto QQMessageFormatter::format_sender_info(
-    obcx::core::IBot &qq_bot, const obcx::common::MessageEvent &event,
+    const obcx::common::MessageEvent &event,
     const GroupBridgeConfig *bridge_config, const std::string &qq_group_id,
     const std::string &telegram_group_id, int64_t topic_id,
     obcx::common::Message &message_to_send)
     -> boost::asio::awaitable<std::string> {
 
   std::string sender_display_name = co_await get_user_display_name(
-      qq_bot, event.user_id, event.group_id.value_or(""));
+      event.user_id, event.group_id.value_or(""));
 
   bool show_sender = false;
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
@@ -736,7 +760,6 @@ auto QQMessageFormatter::format_reply_message(
 }
 
 auto QQMessageFormatter::process_forward_message(
-    obcx::core::IBot &qq_bot, obcx::core::IBot &telegram_bot,
     const obcx::common::MessageSegment &segment,
     const std::string &telegram_group_id, int64_t topic_id,
     obcx::common::Message &message_to_send) -> boost::asio::awaitable<void> {
@@ -749,216 +772,201 @@ auto QQMessageFormatter::process_forward_message(
 
     OBCX_DEBUG("处理合并转发消息，ID: {}", forward_id);
 
-    std::string forward_response =
-        co_await dynamic_cast<obcx::core::IQQBot &>(qq_bot).get_forward_msg(
-            forward_id);
-    nlohmann::json forward_json = nlohmann::json::parse(forward_response);
+    nlohmann::json forward_data{
+        {"messages",
+         co_await operations_->get_onebot11_forward_messages(forward_id)}};
 
-    if (forward_json.contains("status") && forward_json["status"] == "ok" &&
-        forward_json.contains("data") && forward_json["data"].is_object()) {
-      auto forward_data = forward_json["data"];
+    obcx::common::MessageSegment forward_title_segment;
+    forward_title_segment.type = "text";
+    forward_title_segment.data["text"] = "\n📋 合并转发消息:\n";
+    message_to_send.push_back(forward_title_segment);
 
-      obcx::common::MessageSegment forward_title_segment;
-      forward_title_segment.type = "text";
-      forward_title_segment.data["text"] = "\n📋 合并转发消息:\n";
-      message_to_send.push_back(forward_title_segment);
+    // 合并转发节点里的图片要单独走 sendMediaGroup，不能塞进文本里。
+    std::vector<obcx::common::MessageSegment> forward_images;
 
-      // 合并转发节点里的图片要单独走 sendMediaGroup，不能塞进文本里。
-      std::vector<obcx::common::MessageSegment> forward_images;
+    if (forward_data.contains("messages") &&
+        forward_data["messages"].is_array()) {
+      for (const auto &msg_node : forward_data["messages"]) {
+        if (msg_node.is_object()) {
+          std::string node_sender =
+              msg_node.value("sender", nlohmann::json::object())
+                  .value("nickname", "未知用户");
 
-      if (forward_data.contains("messages") &&
-          forward_data["messages"].is_array()) {
-        for (const auto &msg_node : forward_data["messages"]) {
-          if (msg_node.is_object()) {
-            std::string node_sender =
-                msg_node.value("sender", nlohmann::json::object())
-                    .value("nickname", "未知用户");
+          std::string node_content = "";
+          if (msg_node.contains("content") && msg_node["content"].is_array()) {
+            for (const auto &content_seg : msg_node["content"]) {
+              if (content_seg.is_object() && content_seg.contains("type")) {
+                std::string seg_type = content_seg["type"];
+                if (seg_type == "text" && content_seg.contains("data") &&
+                    content_seg["data"].contains("text")) {
+                  node_content +=
+                      content_seg["data"]["text"].get<std::string>();
+                } else if (seg_type == "face" && content_seg.contains("data") &&
+                           content_seg["data"].contains("id")) {
+                  node_content +=
+                      fmt::format("[表情:{}]",
+                                  content_seg["data"]["id"].get<std::string>());
+                } else if (seg_type == "image") {
+                  // 占位文字：图片本体在收集后批量发送，节点文本里只保留序号引用。
+                  node_content +=
+                      fmt::format("[图片{}]", forward_images.size() + 1);
 
-            std::string node_content = "";
-            if (msg_node.contains("content") &&
-                msg_node["content"].is_array()) {
-              for (const auto &content_seg : msg_node["content"]) {
-                if (content_seg.is_object() && content_seg.contains("type")) {
-                  std::string seg_type = content_seg["type"];
-                  if (seg_type == "text" && content_seg.contains("data") &&
-                      content_seg["data"].contains("text")) {
-                    node_content +=
-                        content_seg["data"]["text"].get<std::string>();
-                  } else if (seg_type == "face" &&
-                             content_seg.contains("data") &&
-                             content_seg["data"].contains("id")) {
-                    node_content += fmt::format(
-                        "[表情:{}]",
-                        content_seg["data"]["id"].get<std::string>());
-                  } else if (seg_type == "image") {
-                    // 占位文字：图片本体在收集后批量发送，节点文本里只保留序号引用。
-                    node_content +=
-                        fmt::format("[图片{}]", forward_images.size() + 1);
-
-                    obcx::common::MessageSegment img_segment;
-                    img_segment.type = "image";
-                    if (content_seg.contains("data")) {
-                      auto img_data = content_seg["data"];
-                      if (img_data.contains("url") &&
-                          img_data["url"].is_string()) {
-                        img_segment.data["url"] =
-                            img_data["url"].get<std::string>();
-                        img_segment.data["file"] =
-                            img_data["url"].get<std::string>();
-                      } else if (img_data.contains("file") &&
-                                 img_data["file"].is_string()) {
-                        img_segment.data["file"] =
-                            img_data["file"].get<std::string>();
-                      }
-                      if (img_data.contains("subType")) {
-                        img_segment.data["subType"] = img_data["subType"];
-                      }
+                  obcx::common::MessageSegment img_segment;
+                  img_segment.type = "image";
+                  if (content_seg.contains("data")) {
+                    auto img_data = content_seg["data"];
+                    if (img_data.contains("url") &&
+                        img_data["url"].is_string()) {
+                      img_segment.data["url"] =
+                          img_data["url"].get<std::string>();
+                      img_segment.data["file"] =
+                          img_data["url"].get<std::string>();
+                    } else if (img_data.contains("file") &&
+                               img_data["file"].is_string()) {
+                      img_segment.data["file"] =
+                          img_data["file"].get<std::string>();
                     }
-                    forward_images.push_back(img_segment);
-                    OBCX_DEBUG(
-                        "收集合并转发中的图片: url={}",
-                        img_segment.data.value(
-                            "url", img_segment.data.value("file", "无URL")));
-                  } else if (seg_type == "at" && content_seg.contains("data") &&
-                             content_seg["data"].contains("qq")) {
-                    node_content += fmt::format(
-                        "[@{}]", content_seg["data"]["qq"].get<std::string>());
-                  } else {
-                    node_content += fmt::format("[{}]", seg_type);
+                    if (img_data.contains("subType")) {
+                      img_segment.data["subType"] = img_data["subType"];
+                    }
                   }
+                  forward_images.push_back(img_segment);
+                  OBCX_DEBUG(
+                      "收集合并转发中的图片: url={}",
+                      img_segment.data.value(
+                          "url", img_segment.data.value("file", "无URL")));
+                } else if (seg_type == "at" && content_seg.contains("data") &&
+                           content_seg["data"].contains("qq")) {
+                  node_content += fmt::format(
+                      "[@{}]", content_seg["data"]["qq"].get<std::string>());
+                } else {
+                  node_content += fmt::format("[{}]", seg_type);
                 }
               }
-            } else if (msg_node.contains("content") &&
-                       msg_node["content"].is_string()) {
-              // 兼容老版本 content 直接是字符串的格式
-              node_content = msg_node["content"].get<std::string>();
             }
-
-            obcx::common::MessageSegment node_segment;
-            node_segment.type = "text";
-            node_segment.data["text"] =
-                fmt::format("👤 {}: {}\n", node_sender, node_content);
-            message_to_send.push_back(node_segment);
+          } else if (msg_node.contains("content") &&
+                     msg_node["content"].is_string()) {
+            // 兼容老版本 content 直接是字符串的格式
+            node_content = msg_node["content"].get<std::string>();
           }
+
+          obcx::common::MessageSegment node_segment;
+          node_segment.type = "text";
+          node_segment.data["text"] =
+              fmt::format("👤 {}: {}\n", node_sender, node_content);
+          message_to_send.push_back(node_segment);
         }
       }
-
-      // 合并转发收集到的图片同样走 sendMediaGroup（每批最多10张）。
-      if (!forward_images.empty()) {
-        OBCX_INFO("合并转发消息中发现 {} 张图片，准备使用MediaGroup发送",
-                  forward_images.size());
-
-        std::vector<std::pair<std::string, std::string>> all_media;
-        for (const auto &img_seg : forward_images) {
-          std::string url =
-              img_seg.data.value("url", img_seg.data.value("file", ""));
-          if (!url.empty()) {
-            all_media.emplace_back("photo", url);
-            OBCX_DEBUG("添加图片到MediaGroup: {}", url);
-          }
-        }
-
-        if (!all_media.empty()) {
-          std::optional<int64_t> opt_topic_id =
-              (topic_id == -1) ? std::nullopt
-                               : std::optional<int64_t>(topic_id);
-          size_t total_batches = (all_media.size() + 9) / 10;
-          size_t sent_count = 0;
-          size_t total_replaced_count = 0;
-          size_t total_normalized_count = 0;
-
-          size_t batch_start = 0;
-          for (size_t batch = 0; batch < total_batches; ++batch) {
-            const size_t remaining = all_media.size() - batch_start;
-            // Telegram media groups require at least two items. When eleven
-            // remain, send 9 + 2 instead of 10 + 1.
-            const size_t batch_size =
-                remaining == 11 ? 9
-                                : std::min(static_cast<size_t>(10), remaining);
-
-            std::vector<std::pair<std::string, std::string>> batch_media(
-                all_media.begin() + batch_start,
-                all_media.begin() + batch_start + batch_size);
-            const auto original_batch_media = batch_media;
-
-            std::vector<std::string> replaced;
-            batch_media =
-                co_await image_sanitizer_(*config_, batch_media, replaced);
-
-            std::vector<PreparedMedia> prepared;
-            prepared.reserve(batch_media.size());
-            for (std::size_t index = 0; index < batch_media.size(); ++index) {
-              prepared.push_back(PreparedMedia{
-                  .type = batch_media[index].first,
-                  .url = batch_media[index].second,
-                  .original_index = batch_start + index,
-                  .replaced = batch_media[index].second !=
-                              original_batch_media[index].second,
-              });
-            }
-
-            try {
-              const std::string caption = fmt::format(
-                  "📸 合并转发消息中的图片 ({}/{})", batch + 1, total_batches);
-              const auto send_result = co_await send_media_group_with_fallback(
-                  telegram_bot, telegram_group_id, prepared, caption,
-                  opt_topic_id, std::nullopt);
-
-              OBCX_INFO("成功通过MediaGroup发送第 {}/{} 批 {} 张图片{}",
-                        batch + 1, total_batches, batch_media.size(),
-                        send_result.used_multipart ? "（multipart兜底）" : "");
-              sent_count += batch_media.size();
-              total_replaced_count += send_result.replaced_count;
-              total_normalized_count += send_result.normalized_count;
-            } catch (const MediaFallbackError &error) {
-              OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批整体发送失败: "
-                         "stage={}, category={}, normalized={}, replaced={}/{}",
-                         batch + 1, total_batches, error.stage(),
-                         error.category(), error.normalized_count(),
-                         error.replaced_count(), error.item_count());
-              obcx::common::MessageSegment error_segment;
-              error_segment.type = "text";
-              error_segment.data["text"] = fmt::format(
-                  "\n[第{}/{}批（{}张）整体发送失败：阶段={}，原因={}，"
-                  "已调整={}，已替换={}/{}]",
-                  batch + 1, total_batches, batch_media.size(), error.stage(),
-                  error.category(), error.normalized_count(),
-                  error.replaced_count(), error.item_count());
-              message_to_send.push_back(error_segment);
-            } catch (const std::exception &) {
-              OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批整体发送失败: "
-                         "stage=unexpected, category=unclassified",
-                         batch + 1, total_batches);
-              obcx::common::MessageSegment error_segment;
-              error_segment.type = "text";
-              error_segment.data["text"] = fmt::format(
-                  "\n[第{}/{}批（{}张）整体发送失败：阶段=unexpected，"
-                  "原因=unclassified]",
-                  batch + 1, total_batches, batch_media.size());
-              message_to_send.push_back(error_segment);
-            }
-            batch_start += batch_size;
-          }
-
-          if (sent_count > 0) {
-            OBCX_INFO("合并转发消息图片发送完成，共成功发送 {}/{} 张 "
-                      "(已调整 {} 张，已用占位图替换 {} 张)",
-                      sent_count, all_media.size(), total_normalized_count,
-                      total_replaced_count);
-          }
-        }
-      }
-
-      OBCX_INFO("成功处理合并转发消息，包含 {} 条消息，{} 张图片",
-                forward_data.value("messages", nlohmann::json::array()).size(),
-                forward_images.size());
-    } else {
-      OBCX_WARN("获取合并转发内容失败: {}", forward_response);
-      obcx::common::MessageSegment error_segment;
-      error_segment.type = "text";
-      error_segment.data["text"] = "[合并转发消息获取失败]";
-      message_to_send.push_back(error_segment);
     }
+
+    // 合并转发收集到的图片同样走 sendMediaGroup（每批最多10张）。
+    if (!forward_images.empty()) {
+      OBCX_INFO("合并转发消息中发现 {} 张图片，准备使用MediaGroup发送",
+                forward_images.size());
+
+      std::vector<std::pair<std::string, std::string>> all_media;
+      for (const auto &img_seg : forward_images) {
+        std::string url =
+            img_seg.data.value("url", img_seg.data.value("file", ""));
+        if (!url.empty()) {
+          all_media.emplace_back("photo", url);
+          OBCX_DEBUG("添加图片到MediaGroup: {}", url);
+        }
+      }
+
+      if (!all_media.empty()) {
+        std::optional<int64_t> opt_topic_id =
+            (topic_id == -1) ? std::nullopt : std::optional<int64_t>(topic_id);
+        size_t total_batches = (all_media.size() + 9) / 10;
+        size_t sent_count = 0;
+        size_t total_replaced_count = 0;
+        size_t total_normalized_count = 0;
+
+        size_t batch_start = 0;
+        for (size_t batch = 0; batch < total_batches; ++batch) {
+          const size_t remaining = all_media.size() - batch_start;
+          // Telegram media groups require at least two items. When eleven
+          // remain, send 9 + 2 instead of 10 + 1.
+          const size_t batch_size =
+              remaining == 11 ? 9
+                              : std::min(static_cast<size_t>(10), remaining);
+
+          std::vector<std::pair<std::string, std::string>> batch_media(
+              all_media.begin() + batch_start,
+              all_media.begin() + batch_start + batch_size);
+          const auto original_batch_media = batch_media;
+
+          std::vector<std::string> replaced;
+          batch_media =
+              co_await image_sanitizer_(*config_, batch_media, replaced);
+
+          std::vector<PreparedMedia> prepared;
+          prepared.reserve(batch_media.size());
+          for (std::size_t index = 0; index < batch_media.size(); ++index) {
+            prepared.push_back(PreparedMedia{
+                .type = batch_media[index].first,
+                .url = batch_media[index].second,
+                .original_index = batch_start + index,
+                .replaced = batch_media[index].second !=
+                            original_batch_media[index].second,
+            });
+          }
+
+          try {
+            const std::string caption = fmt::format(
+                "📸 合并转发消息中的图片 ({}/{})", batch + 1, total_batches);
+            const auto send_result = co_await send_media_group_with_fallback(
+                telegram_group_id, prepared, caption, opt_topic_id,
+                std::nullopt);
+
+            OBCX_INFO("成功通过MediaGroup发送第 {}/{} 批 {} 张图片{}",
+                      batch + 1, total_batches, batch_media.size(),
+                      send_result.used_multipart ? "（multipart兜底）" : "");
+            sent_count += batch_media.size();
+            total_replaced_count += send_result.replaced_count;
+            total_normalized_count += send_result.normalized_count;
+          } catch (const MediaFallbackError &error) {
+            OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批整体发送失败: "
+                       "stage={}, category={}, normalized={}, replaced={}/{}",
+                       batch + 1, total_batches, error.stage(),
+                       error.category(), error.normalized_count(),
+                       error.replaced_count(), error.item_count());
+            obcx::common::MessageSegment error_segment;
+            error_segment.type = "text";
+            error_segment.data["text"] = fmt::format(
+                "\n[第{}/{}批（{}张）整体发送失败：阶段={}，原因={}，"
+                "已调整={}，已替换={}/{}]",
+                batch + 1, total_batches, batch_media.size(), error.stage(),
+                error.category(), error.normalized_count(),
+                error.replaced_count(), error.item_count());
+            message_to_send.push_back(error_segment);
+          } catch (const std::exception &) {
+            OBCX_ERROR("合并转发 MediaGroup 第 {}/{} 批整体发送失败: "
+                       "stage=unexpected, category=unclassified",
+                       batch + 1, total_batches);
+            obcx::common::MessageSegment error_segment;
+            error_segment.type = "text";
+            error_segment.data["text"] = fmt::format(
+                "\n[第{}/{}批（{}张）整体发送失败：阶段=unexpected，"
+                "原因=unclassified]",
+                batch + 1, total_batches, batch_media.size());
+            message_to_send.push_back(error_segment);
+          }
+          batch_start += batch_size;
+        }
+
+        if (sent_count > 0) {
+          OBCX_INFO("合并转发消息图片发送完成，共成功发送 {}/{} 张 "
+                    "(已调整 {} 张，已用占位图替换 {} 张)",
+                    sent_count, all_media.size(), total_normalized_count,
+                    total_replaced_count);
+        }
+      }
+    }
+
+    OBCX_INFO("成功处理合并转发消息，包含 {} 条消息，{} 张图片",
+              forward_data.value("messages", nlohmann::json::array()).size(),
+              forward_images.size());
   } catch (const std::exception &e) {
     OBCX_ERROR("处理合并转发消息时出错: {}", e.what());
     obcx::common::MessageSegment error_segment;
@@ -1027,7 +1035,6 @@ auto QQMessageFormatter::process_node_message(
 }
 
 auto QQMessageFormatter::send_media_group(
-    obcx::core::IBot &telegram_bot,
     const std::vector<obcx::common::MessageSegment> &image_segments,
     const std::vector<obcx::common::MessageSegment> &other_segments,
     const std::string &telegram_group_id, int64_t topic_id,
@@ -1083,7 +1090,7 @@ auto QQMessageFormatter::send_media_group(
     if (!media_list.empty()) {
       try {
         std::string caption;
-        std::vector<obcx::core::TelegramTextEntity> caption_entities;
+        std::vector<obcx::bot::TelegramTextEntity> caption_entities;
 
         bool show_sender = false;
         if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
@@ -1124,8 +1131,8 @@ auto QQMessageFormatter::send_media_group(
         }
 
         const auto send_result = co_await send_media_group_with_fallback(
-            telegram_bot, telegram_group_id, prepared, caption, opt_topic_id,
-            opt_reply_id, caption_entities);
+            telegram_group_id, prepared, caption, opt_topic_id, opt_reply_id,
+            caption_entities);
 
         OBCX_INFO("成功通过MediaGroup发送 {} 张图片{}，已调整 {} 张，"
                   "已替换 {} 张",
@@ -1133,28 +1140,14 @@ auto QQMessageFormatter::send_media_group(
                   send_result.used_multipart ? "（multipart兜底）" : "",
                   send_result.normalized_count, send_result.replaced_count);
 
-        if (!send_result.response.empty()) {
-          try {
-            nlohmann::json response_json =
-                nlohmann::json::parse(send_result.response);
-            if (response_json.contains("result") &&
-                response_json["result"].is_array() &&
-                !response_json["result"].empty()) {
-              // MediaGroup 会返回多条消息ID，这里只用第一条建立映射。
-              auto first_msg = response_json["result"][0];
-              if (first_msg.contains("message_id")) {
-                std::string tg_msg_id =
-                    std::to_string(first_msg["message_id"].get<int64_t>());
-                if (!result.primary_target_message_id.has_value()) {
-                  result.primary_target_message_id = tg_msg_id;
-                }
-                OBCX_DEBUG("MediaGroup主消息: QQ {} -> TG {}", event.message_id,
-                           tg_msg_id);
-              }
-            }
-          } catch (const std::exception &e) {
-            OBCX_WARN("解析MediaGroup响应失败: {}", e.what());
+        if (send_result.send_result.has_value() &&
+            !send_result.send_result->messages.empty()) {
+          const auto &target = send_result.send_result->messages.front();
+          if (!result.primary_target_message_id.has_value()) {
+            result.primary_target_message_id = target.native_message_id;
           }
+          OBCX_DEBUG("MediaGroup主消息: QQ {} -> TG {}", event.message_id,
+                     target.native_message_id);
         }
 
         result.sent = true;
@@ -1173,8 +1166,7 @@ auto QQMessageFormatter::send_media_group(
   co_return result;
 }
 
-auto QQMessageFormatter::get_user_display_name(obcx::core::IBot &qq_bot,
-                                               const std::string &user_id,
+auto QQMessageFormatter::get_user_display_name(const std::string &user_id,
                                                const std::string &group_id)
     -> boost::asio::awaitable<std::string> {
 
@@ -1187,7 +1179,7 @@ auto QQMessageFormatter::get_user_display_name(obcx::core::IBot &qq_bot,
   }
 
   if (!display_name.has_value()) {
-    co_await fetch_user_info(qq_bot, user_id, group_id);
+    co_await fetch_user_info(user_id, group_id);
     if (state_repository_) {
       display_name = co_await blocking_executor_->run(
           [repository = state_repository_, user_id, group_id] {
@@ -1199,79 +1191,38 @@ auto QQMessageFormatter::get_user_display_name(obcx::core::IBot &qq_bot,
   co_return display_name.value_or(user_id);
 }
 
-auto QQMessageFormatter::fetch_user_info(obcx::core::IBot &qq_bot,
-                                         const std::string &user_id,
+auto QQMessageFormatter::fetch_user_info(const std::string &user_id,
                                          const std::string &group_id)
     -> boost::asio::awaitable<void> {
-  co_await fetch_and_save_user_info(state_repository_, blocking_executor_,
-                                    qq_bot, user_id, group_id);
+  co_await fetch_and_save_user_info(operations_, state_repository_,
+                                    blocking_executor_, user_id, group_id);
 }
 
 auto QQMessageFormatter::fetch_and_save_user_info(
+    std::shared_ptr<BridgeBotOperations> operations,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor,
-    obcx::core::IBot &qq_bot, const std::string &user_id,
-    const std::string &group_id) -> boost::asio::awaitable<void> {
+    const std::string &user_id, const std::string &group_id)
+    -> boost::asio::awaitable<void> {
   try {
-    std::string response =
-        co_await qq_bot.get_group_member_info(group_id, user_id, false);
-    nlohmann::json response_json = nlohmann::json::parse(response);
-
-    OBCX_DEBUG("QQ群成员信息API响应: {}", response);
-
-    if (response_json.contains("status") && response_json["status"] == "ok" &&
-        response_json.contains("data") && response_json["data"].is_object()) {
-
-      auto data = response_json["data"];
-      OBCX_DEBUG("QQ群成员信息详细数据: {}", data.dump());
-
-      storage::UserInfo user_info;
-      user_info.platform = "qq";
-      user_info.user_id = user_id;
-      user_info.group_id = group_id;
-      user_info.last_updated = std::chrono::system_clock::now();
-
-      std::string general_nickname, card, title;
-
-      if (data.contains("nickname") && data["nickname"].is_string()) {
-        general_nickname = data["nickname"];
-      }
-
-      if (data.contains("card") && data["card"].is_string()) {
-        card = data["card"];
-      }
-
-      if (data.contains("title") && data["title"].is_string()) {
-        title = data["title"];
-      }
-
-      // 显示名优先级：群名片 > 群头衔 > 一般昵称
-      if (!card.empty()) {
-        user_info.nickname = card;
-        OBCX_DEBUG("使用QQ群名片作为显示名称: {} -> {}", user_id, card);
-      } else if (!title.empty()) {
-        user_info.nickname = title;
-        OBCX_DEBUG("使用QQ群头衔作为显示名称: {} -> {}", user_id, title);
-      } else if (!general_nickname.empty()) {
-        user_info.nickname = general_nickname;
-        OBCX_DEBUG("使用QQ一般昵称作为显示名称: {} -> {}", user_id,
-                   general_nickname);
-      }
-
-      // title 单独保留一份，供需要群头衔的逻辑使用。
-      if (!title.empty()) {
-        user_info.title = title;
-      }
-
-      if (state_repository) {
-        (void)co_await blocking_executor->run([state_repository, user_info] {
-          return state_repository->save_or_update_user(user_info, true);
-        });
-      }
-      OBCX_DEBUG("获取QQ用户信息成功：{} -> {}", user_id, user_info.nickname);
+    const auto member =
+        co_await operations->get_onebot11_group_member(group_id, user_id);
+    storage::UserInfo user_info;
+    user_info.platform = "qq";
+    user_info.user_id = user_id;
+    user_info.group_id = group_id;
+    user_info.nickname = !member.card.empty()    ? member.card
+                         : !member.title.empty() ? member.title
+                                                 : member.nickname;
+    user_info.title = member.title;
+    user_info.last_updated = std::chrono::system_clock::now();
+    if (state_repository) {
+      (void)co_await blocking_executor->run([state_repository, user_info] {
+        return state_repository->save_or_update_user(user_info, true);
+      });
     }
-  } catch (const std::exception &e) {
-    OBCX_DEBUG("获取QQ用户信息失败：{}", e.what());
+  } catch (const std::exception &error) {
+    OBCX_DEBUG("获取QQ用户信息失败：{}", error.what());
   }
 }
 

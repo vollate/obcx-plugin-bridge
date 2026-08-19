@@ -5,7 +5,7 @@
 #include "received_message_repository.hpp"
 
 #include <common/json_utils.hpp>
-#include <core/bot_registry.hpp>
+#include <core/bot_operation_client.hpp>
 
 #include <chrono>
 #include <stdexcept>
@@ -147,8 +147,8 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
     return forwarder_;
   }
 
-  auto bot_registry = context.get_service<obcx::core::BotRegistry>();
-  if (!bot_registry) {
+  auto operation_client = context.get_service<obcx::bot::BotOperationClient>();
+  if (!operation_client) {
     return nullptr;
   }
 
@@ -169,7 +169,7 @@ auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
       *db_manager, db_instance, "message_store");
 
   forwarder_ = std::make_shared<BridgeForwardingRuntime>(
-      std::move(bot_registry), resolve_config(context),
+      std::move(operation_client), resolve_config(context),
       resolve_repository(context), received_message_repository_,
       std::move(executor), std::move(blocking_executor));
   return forwarder_;
@@ -267,17 +267,25 @@ auto BridgeActor::handle(
               -> asio::awaitable<BridgeForwardResult> {
             co_return co_await forwarder->forward_message(forwarded);
           });
-      auto mapping = mapping_from_forward_result(forward_result);
       if (forward_result.disposition ==
           DirectForwardDisposition::NotForwarded) {
+        co_return obcx::core::ActorResult::success();
+      }
+      if (forward_result.disposition ==
+          DirectForwardDisposition::DeliveryFailed) {
+        const auto failure_message = forward_result.failure_message.empty()
+                                         ? std::string{"bridge delivery failed"}
+                                         : forward_result.failure_message;
         auto result = obcx::core::ActorResult::failed(
-            "bridge_not_forwarded",
-            "bridge handler did not produce a direct delivery", true);
-        result.emit(build_failed_event(
-            message, "bridge_not_forwarded",
-            "bridge handler did not produce a direct delivery", true));
+            "bridge_delivery_failed", failure_message,
+            forward_result.failure_retryable);
+        result.emit(build_failed_event(message, "bridge_delivery_failed",
+                                       failure_message,
+                                       forward_result.failure_retryable));
         co_return result;
       }
+
+      auto mapping = mapping_from_forward_result(forward_result);
       if (mapping.source_platform.empty() ||
           mapping.source_message_id.empty() ||
           mapping.target_platform.empty() ||

@@ -8,21 +8,20 @@
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
-#include <interfaces/telegram_bot.hpp>
 #include <media_converter.hpp>
 
 namespace bridge::telegram {
 
 auto TelegramMediaProcessor::process_animation(
-    obcx::core::IBot &telegram_bot, const obcx::core::MediaFileInfo &media_info,
+    const obcx::bot::TelegramFileRef &media_info,
     const nlohmann::json &media_data, const std::string &filename)
     -> boost::asio::awaitable<obcx::common::MessageSegment> {
 
   obcx::common::MessageSegment file_segment;
 
   try {
-    auto cached_path_opt = co_await download_animation_with_cache(
-        telegram_bot, media_info, "/tmp/bridge_files");
+    auto cached_path_opt =
+        co_await download_animation_with_cache(media_info, "/tmp/bridge_files");
 
     if (cached_path_opt.has_value()) {
       std::string container_file_path = cached_path_opt.value();
@@ -38,19 +37,16 @@ auto TelegramMediaProcessor::process_animation(
       throw std::runtime_error("缓存下载失败");
     }
   } catch (const std::exception &e) {
-    OBCX_WARN("缓存系统处理动画失败: {}, 回退到URL方式", e.what());
-    auto [final_url, _] = MediaProcessor::get_qq_file_info("", "animation");
-    file_segment.type = "file";
-    file_segment.data["file"] = final_url;
-    file_segment.data["name"] = filename;
-    file_segment.data["proxy"] = 1;
+    OBCX_WARN("缓存系统处理动画失败: {}", e.what());
+    file_segment.type = "text";
+    file_segment.data["text"] = "[动画暂时无法获取]";
   }
 
   co_return file_segment;
 }
 
 auto TelegramMediaProcessor::download_animation_with_cache(
-    obcx::core::IBot &telegram_bot, const obcx::core::MediaFileInfo &media_info,
+    const obcx::bot::TelegramFileRef &media_info,
     const std::string &bridge_files_dir)
     -> boost::asio::awaitable<std::optional<std::string>> {
 
@@ -101,16 +97,6 @@ auto TelegramMediaProcessor::download_animation_with_cache(
 
     OBCX_INFO("动画缓存未命中，开始下载: {}", media_info.file_id);
 
-    auto download_urls =
-        co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
-            .get_media_download_urls({media_info});
-    if (download_urls.empty() || !download_urls[0].has_value()) {
-      OBCX_ERROR("获取动画下载URL失败: {}", media_info.file_id);
-      co_return std::nullopt;
-    }
-
-    std::string download_url = download_urls[0].value();
-
     const std::string &host_bridge_files_dir = config_->bridge_files_dir;
     std::string original_dir = host_bridge_files_dir + "/animations/original";
     std::string converted_dir = host_bridge_files_dir + "/animations/converted";
@@ -144,17 +130,9 @@ auto TelegramMediaProcessor::download_animation_with_cache(
     std::string original_filename = filename_prefix + file_extension;
     std::string original_file_path = original_dir + "/" + original_filename;
 
-    auto *tg_bot = dynamic_cast<obcx::core::ITelegramBot *>(&telegram_bot);
-    if (!tg_bot) {
-      OBCX_ERROR("当前 bot 不支持 Telegram 扩展能力");
-      co_return std::nullopt;
-    }
-
-    auto file_content = co_await tg_bot->download_file_content(download_url);
-    if (file_content.empty()) {
-      OBCX_ERROR("下载文件内容为空: {}", download_url);
-      co_return std::nullopt;
-    }
+    const auto fetched = co_await operations_->fetch_telegram_file(
+        media_info, config_->qq_media_download_max_bytes);
+    std::string file_content(fetched.bytes.begin(), fetched.bytes.end());
 
     const auto downloaded_size = file_content.size();
     co_await blocking_executor_->run([original_dir, converted_dir,

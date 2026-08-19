@@ -9,7 +9,7 @@
 namespace bridge::qq {
 
 auto QQMediaProcessor::process_at_segment(
-    obcx::core::IBot &qq_bot, const obcx::common::MessageSegment &segment,
+    const obcx::common::MessageSegment &segment,
     const obcx::common::MessageEvent &event,
     const std::string &telegram_group_id, int64_t topic_id,
     const GroupBridgeConfig *bridge_config)
@@ -32,7 +32,7 @@ auto QQMediaProcessor::process_at_segment(
 
   if (!at_display_name.has_value()) {
     co_await QQMessageFormatter::fetch_and_save_user_info(
-        state_repository_, blocking_executor_, qq_bot, qq_user_id,
+        operations_, state_repository_, blocking_executor_, qq_user_id,
         event.group_id.value());
 
     if (state_repository_) {

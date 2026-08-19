@@ -1,55 +1,50 @@
 #include "telegram/command_handler.hpp"
+
 #include "bridge_state_repository.hpp"
 #include "received_message_repository.hpp"
 
 #include <common/logger.hpp>
-#include <interfaces/qq_bot.hpp>
+#include <fmt/format.h>
 
-#include <nlohmann/json.hpp>
+#include <chrono>
+#include <optional>
 #include <utility>
 
 namespace bridge::telegram {
 
 TelegramCommandHandler::TelegramCommandHandler(
+    std::shared_ptr<BridgeBotOperations> operations,
     std::shared_ptr<bridge::BridgeStateRepository> state_repository,
     std::shared_ptr<bridge::ReceivedMessageRepository>
         received_message_repository,
     std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor)
-    : state_repository_(std::move(state_repository)),
+    : operations_(std::move(operations)),
+      state_repository_(std::move(state_repository)),
       received_message_repository_(std::move(received_message_repository)),
-      blocking_executor_(std::move(blocking_executor)) {}
+      blocking_executor_(std::move(blocking_executor)) {
+  if (!operations_) {
+    throw std::invalid_argument(
+        "TelegramCommandHandler requires bot operations");
+  }
+}
 
 auto TelegramCommandHandler::handle_recall_command(
-    obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
-    obcx::common::MessageEvent event, std::string_view qq_group_id)
+    obcx::common::MessageEvent event, const std::string_view qq_group_id)
     -> boost::asio::awaitable<void> {
-
   try {
-    const std::string telegram_group_id = event.group_id.value();
-
-    if (!event.data.contains("reply_to_message")) {
+    const auto telegram_group_id = event.group_id.value();
+    if (!event.data.contains("reply_to_message") ||
+        !event.data["reply_to_message"].contains("message_id")) {
       co_await send_reply_message(
-          telegram_bot, telegram_group_id, event.message_id,
+          telegram_group_id, event.message_id,
           "⚠️ 请回复一条消息后使用 /recall 命令来撤回对应的QQ消息");
       co_return;
     }
-
-    auto reply_to_message = event.data["reply_to_message"];
-    if (!reply_to_message.contains("message_id")) {
-      OBCX_WARN("/recall 命令：无法获取被回复消息的ID");
-      co_return;
-    }
-
-    std::string replied_message_id =
-        std::to_string(reply_to_message["message_id"].get<int64_t>());
-    OBCX_INFO("/recall 命令：尝试撤回回复的Telegram消息 {} 对应的QQ消息",
-              replied_message_id);
-
-    // 查找被回复消息对应的QQ消息ID：先看是否曾转发到QQ，再看是否来源于QQ
-    std::optional<std::string> target_qq_message_id;
-
+    const auto replied_message_id = std::to_string(
+        event.data["reply_to_message"]["message_id"].get<std::int64_t>());
+    std::optional<std::string> target_message_id;
     if (state_repository_) {
-      target_qq_message_id = co_await blocking_executor_->run(
+      target_message_id = co_await blocking_executor_->run(
           [repository = state_repository_, replied_message_id] {
             auto target = repository->get_target_message_id(
                 "telegram", replied_message_id, "qq");
@@ -59,106 +54,52 @@ auto TelegramCommandHandler::handle_recall_command(
                              "telegram", replied_message_id, "qq");
           });
     }
-
-    if (!target_qq_message_id.has_value()) {
+    if (!target_message_id.has_value()) {
       co_await send_reply_message(
-          telegram_bot, telegram_group_id, event.message_id,
+          telegram_group_id, event.message_id,
           "❌ 未找到该消息对应的QQ消息，可能不是转发消息或已过期");
       co_return;
     }
 
-    OBCX_INFO("/recall 命令：找到对应的QQ消息ID: {}",
-              target_qq_message_id.value());
-
-    std::string result_message;
+    std::string reply;
     try {
-      std::string recall_response =
-          co_await qq_bot.delete_message(target_qq_message_id.value());
-
-      nlohmann::json recall_json = nlohmann::json::parse(recall_response);
-
-      if (recall_json.contains("status") && recall_json["status"] == "ok") {
-        result_message = "✅ 撤回成功";
-        OBCX_INFO("/recall 命令：成功在QQ撤回消息 {}",
-                  target_qq_message_id.value());
-
-        if (state_repository_) {
-          (void)co_await blocking_executor_->run(
-              [repository = state_repository_, replied_message_id] {
-                return repository->delete_message_mapping(
-                    "telegram", replied_message_id, "qq");
-              });
-        }
-        OBCX_DEBUG("已删除消息映射: telegram:{} -> qq:{}", replied_message_id,
-                   target_qq_message_id.value());
-
-      } else {
-        result_message = "❌ 撤回失败";
-        if (recall_json.contains("message")) {
-          std::string error_msg = recall_json["message"];
-          if (error_msg.find("超时") != std::string::npos ||
-              error_msg.find("timeout") != std::string::npos ||
-              error_msg.find("时间") != std::string::npos) {
-            result_message += "：消息发送时间过久，无法撤回";
-          } else if (error_msg.find("权限") != std::string::npos ||
-                     error_msg.find("permission") != std::string::npos) {
-            result_message += "：没有撤回权限";
-          } else {
-            result_message += "：" + error_msg;
-          }
-        }
-        OBCX_WARN("/recall 命令：QQ撤回消息失败: {}", recall_response);
+      co_await operations_->delete_onebot11_message(qq_group_id,
+                                                    *target_message_id);
+      reply = "✅ 撤回成功";
+      if (state_repository_) {
+        (void)co_await blocking_executor_->run([repository = state_repository_,
+                                                replied_message_id] {
+          return repository->delete_message_mapping("telegram",
+                                                    replied_message_id, "qq");
+        });
       }
-
-    } catch (const std::exception &e) {
-      OBCX_ERROR("/recall 命令：QQ撤回操作异常: {}", e.what());
-      result_message = "❌ 撤回操作发生异常，请稍后重试";
+    } catch (const std::exception &error) {
+      OBCX_WARN("/recall typed QQ delete failed: {}", error.what());
+      reply = "❌ 撤回操作失败，请稍后重试";
     }
-
-    try {
-      co_await send_reply_message(telegram_bot, telegram_group_id,
-                                  event.message_id, result_message);
-    } catch (const std::exception &send_e) {
-      OBCX_ERROR("/recall 命令：发送结果消息失败: {}", send_e.what());
-    }
-
-  } catch (const std::exception &e) {
-    OBCX_ERROR("处理 /recall 命令时出错: {}", e.what());
+    co_await send_reply_message(telegram_group_id, event.message_id, reply);
+  } catch (const std::exception &error) {
+    OBCX_ERROR("处理 /recall 命令时出错: {}", error.what());
   }
 }
 
 auto TelegramCommandHandler::send_reply_message(
-    obcx::core::IBot &telegram_bot, const std::string &telegram_group_id,
+    const std::string &telegram_group_id,
     const std::string &reply_to_message_id, const std::string &text)
     -> boost::asio::awaitable<void> {
-
-  try {
-    obcx::common::Message message;
-
-    obcx::common::MessageSegment reply_segment;
-    reply_segment.type = "reply";
-    reply_segment.data["id"] = reply_to_message_id;
-    message.push_back(reply_segment);
-
-    obcx::common::MessageSegment text_segment;
-    text_segment.type = "text";
-    text_segment.data["text"] = text;
-    message.push_back(text_segment);
-
-    co_await telegram_bot.send_group_message(telegram_group_id, message);
-  } catch (const std::exception &e) {
-    OBCX_ERROR("发送回复消息失败: {}", e.what());
-  }
+  obcx::common::Message message{
+      {.type = "reply", .data = {{"id", reply_to_message_id}}},
+      {.type = "text", .data = {{"text", text}}},
+  };
+  (void)co_await operations_->send_telegram_group(telegram_group_id, message);
 }
 
 auto TelegramCommandHandler::handle_checkalive_command(
-    obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
-    obcx::common::MessageEvent event, std::string_view qq_group_id)
+    obcx::common::MessageEvent event, const std::string_view qq_group_id)
     -> boost::asio::awaitable<void> {
-
+  (void)qq_group_id;
   try {
-    const std::string telegram_group_id = event.group_id.value();
-
+    const auto telegram_group_id = event.group_id.value();
     std::optional<storage::PlatformHeartbeatInfo> qq_heartbeat;
     std::optional<storage::PlatformHeartbeatInfo> telegram_heartbeat;
     if (state_repository_) {
@@ -169,101 +110,50 @@ auto TelegramCommandHandler::handle_checkalive_command(
           });
     }
 
-    std::string response_text;
-
+    const auto now = std::chrono::system_clock::now();
+    std::string response;
     if (qq_heartbeat.has_value()) {
-      auto qq_time_point = qq_heartbeat->last_heartbeat_at;
-      auto qq_timestamp = std::chrono::duration_cast<std::chrono::seconds>(
-                              qq_time_point.time_since_epoch())
-                              .count();
-
-      auto now = std::chrono::system_clock::now();
-      auto qq_duration =
-          std::chrono::duration_cast<std::chrono::seconds>(now - qq_time_point)
-              .count();
-
-      response_text += fmt::format("🤖 QQ平台状态:\n");
-      response_text +=
-          fmt::format("最后心跳: {} ({} 秒前)\n", qq_timestamp, qq_duration);
-
-      if (qq_duration > 60) {
-        response_text += "⚠️ QQ平台可能离线\n";
-      } else {
-        response_text += "✅ QQ平台正常\n";
-      }
+      const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                           now - qq_heartbeat->last_heartbeat_at)
+                           .count();
+      response += fmt::format("🤖 QQ平台状态:\n最后心跳: {} 秒前\n{}\n", age,
+                              age > 60 ? "⚠️ QQ平台可能离线" : "✅ QQ平台正常");
     } else {
-      response_text += "🤖 QQ平台状态: ❌ 无心跳记录\n";
+      response += "🤖 QQ平台状态: ❌ 无心跳记录\n";
     }
-
-    response_text += "\n";
-
     if (telegram_heartbeat.has_value()) {
-      auto tg_time_point = telegram_heartbeat->last_heartbeat_at;
-      auto tg_timestamp = std::chrono::duration_cast<std::chrono::seconds>(
-                              tg_time_point.time_since_epoch())
-                              .count();
-
-      auto now = std::chrono::system_clock::now();
-      auto tg_duration =
-          std::chrono::duration_cast<std::chrono::seconds>(now - tg_time_point)
-              .count();
-
-      response_text += fmt::format("💬 Telegram平台状态:\n");
-      response_text +=
-          fmt::format("最后活动: {} ({} 秒前)\n", tg_timestamp, tg_duration);
-
-      if (tg_duration > 40) {
-        response_text += "⚠️ Telegram平台可能离线";
-      } else {
-        response_text += "✅ Telegram平台正常";
-      }
+      const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                           now - telegram_heartbeat->last_heartbeat_at)
+                           .count();
+      response += fmt::format(
+          "\n💬 Telegram平台状态:\n最后活动: {} 秒前\n{}", age,
+          age > 40 ? "⚠️ Telegram平台可能离线" : "✅ Telegram平台正常");
     } else {
-      response_text += "💬 Telegram平台状态: ❌ 无活动记录";
+      response += "\n💬 Telegram平台状态: ❌ 无活动记录";
     }
-
-    co_await send_reply_message(telegram_bot, telegram_group_id,
-                                event.message_id, response_text);
-
-    OBCX_INFO("/checkalive 命令处理完成");
-
-  } catch (const std::exception &e) {
-    OBCX_ERROR("处理 /checkalive 命令时出错: {}", e.what());
-    // 这里记录错误但不发送消息，因为co_await不能在catch块中使用
+    co_await send_reply_message(telegram_group_id, event.message_id, response);
+  } catch (const std::exception &error) {
+    OBCX_ERROR("处理 /checkalive 命令时出错: {}", error.what());
   }
 }
 
 auto TelegramCommandHandler::handle_poke_command(
-    obcx::core::IBot &telegram_bot, obcx::core::IBot &qq_bot,
-    obcx::common::MessageEvent event, std::string_view qq_group_id)
+    obcx::common::MessageEvent event, const std::string_view qq_group_id)
     -> boost::asio::awaitable<void> {
-
   try {
-    const std::string telegram_group_id = event.group_id.value();
-
-    if (!event.data.contains("reply_to_message")) {
+    const auto telegram_group_id = event.group_id.value();
+    if (!event.data.contains("reply_to_message") ||
+        !event.data["reply_to_message"].contains("message_id")) {
       co_await send_reply_message(
-          telegram_bot, telegram_group_id, event.message_id,
+          telegram_group_id, event.message_id,
           "⚠️ 请回复一条消息后使用 /poke 命令来戳对应的QQ用户");
       co_return;
     }
-
-    auto reply_to_message = event.data["reply_to_message"];
-    if (!reply_to_message.contains("message_id")) {
-      OBCX_WARN("/poke 命令：无法获取被回复消息的ID");
-      co_return;
-    }
-
-    std::string replied_message_id =
-        std::to_string(reply_to_message["message_id"].get<int64_t>());
-    OBCX_INFO("/poke 命令：尝试戳回复的Telegram消息 {} 对应的QQ用户",
-              replied_message_id);
-
-    // 查找被回复消息对应的QQ用户ID：
-    // 1. 该TG消息记录在DB（来源于QQ），直接拿其发送者
-    // 2. 否则查 target/source 映射，再去取对应QQ消息的发送者
-    std::string target_qq_user_id;
+    const auto replied_message_id = std::to_string(
+        event.data["reply_to_message"]["message_id"].get<std::int64_t>());
+    std::string target_user_id;
     if (state_repository_ || received_message_repository_) {
-      target_qq_user_id = co_await blocking_executor_->run(
+      target_user_id = co_await blocking_executor_->run(
           [state = state_repository_, received = received_message_repository_,
            replied_message_id] {
             if (received) {
@@ -275,77 +165,42 @@ auto TelegramCommandHandler::handle_poke_command(
             if (!state || !received) {
               return std::string{};
             }
-            auto message_id = state->get_target_message_id(
-                "telegram", replied_message_id, "qq");
-            if (message_id.has_value()) {
-              if (auto message = received->get_message("qq", *message_id)) {
+            auto id = state->get_target_message_id("telegram",
+                                                   replied_message_id, "qq");
+            if (id.has_value()) {
+              if (auto message = received->get_message("qq", *id)) {
                 return message->user_id;
               }
             }
-            message_id = state->get_source_message_id("telegram",
-                                                      replied_message_id, "qq");
-            if (message_id.has_value()) {
-              if (auto message = received->get_message("qq", *message_id)) {
+            id = state->get_source_message_id("telegram", replied_message_id,
+                                              "qq");
+            if (id.has_value()) {
+              if (auto message = received->get_message("qq", *id)) {
                 return message->user_id;
               }
             }
             return std::string{};
           });
     }
-
-    if (target_qq_user_id.empty()) {
+    if (target_user_id.empty()) {
       co_await send_reply_message(
-          telegram_bot, telegram_group_id, event.message_id,
+          telegram_group_id, event.message_id,
           "❌ 未找到该消息对应的QQ用户，可能不是从QQ转发的消息或已过期");
       co_return;
     }
-
-    OBCX_INFO("/poke 命令：准备戳QQ群 {} 的用户 {}", std::string(qq_group_id),
-              target_qq_user_id);
-
-    auto *qq_bot_ptr = dynamic_cast<obcx::core::IQQBot *>(&qq_bot);
-    if (!qq_bot_ptr) {
-      OBCX_ERROR("/poke 命令：当前 bot 不支持 QQ 扩展能力");
-      co_await send_reply_message(telegram_bot, telegram_group_id,
-                                  event.message_id,
-                                  "❌ 内部错误：无法获取QQ机器人实例");
-      co_return;
-    }
-
-    std::string result_message;
+    bool poke_failed = false;
     try {
-      std::string poke_response =
-          co_await qq_bot_ptr->group_poke(qq_group_id, target_qq_user_id);
-
-      nlohmann::json poke_json = nlohmann::json::parse(poke_response);
-
-      if (poke_json.contains("status") && poke_json["status"] == "ok") {
-        OBCX_INFO("/poke 命令：成功在QQ群 {} 戳了用户 {}",
-                  std::string(qq_group_id), target_qq_user_id);
-        co_return;
-      } else {
-        result_message = "❌ 戳一戳失败";
-        if (poke_json.contains("message")) {
-          std::string error_msg = poke_json["message"];
-          result_message += "：" + error_msg;
-        }
-        OBCX_WARN("/poke 命令：戳一戳失败: {}", poke_response);
-      }
-
-    } catch (const std::exception &e) {
-      OBCX_ERROR("/poke 命令：戳一戳操作异常: {}", e.what());
-      result_message = "❌ 戳一戳操作发生异常，请稍后重试";
+      co_await operations_->poke_onebot11_group(qq_group_id, target_user_id);
+    } catch (const std::exception &error) {
+      OBCX_WARN("/poke typed OneBot operation failed: {}", error.what());
+      poke_failed = true;
     }
-
-    try {
-      co_await send_reply_message(telegram_bot, telegram_group_id,
-                                  event.message_id, result_message);
-    } catch (const std::exception &send_e) {
-      OBCX_ERROR("/poke 命令：发送结果消息失败: {}", send_e.what());
+    if (poke_failed) {
+      co_await send_reply_message(telegram_group_id, event.message_id,
+                                  "❌ 戳一戳操作失败，请稍后重试");
     }
-
-  } catch (const std::exception &e) {
-    OBCX_ERROR("处理 /poke 命令时出错: {}", e.what());
+  } catch (const std::exception &error) {
+    OBCX_ERROR("处理 /poke 命令时出错: {}", error.what());
   }
 }
 

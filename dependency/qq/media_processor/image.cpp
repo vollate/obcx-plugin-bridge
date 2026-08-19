@@ -9,15 +9,37 @@
 #include <boost/asio/io_context.hpp>
 #include <common/logger.hpp>
 #include <fmt/format.h>
-#include <interfaces/telegram_bot.hpp>
 #include <iomanip>
 #include <network/http_client.hpp>
 #include <sstream>
 
 namespace bridge::qq {
+namespace {
+
+auto telegram_utf16_units(const std::string_view text) -> std::size_t {
+  std::size_t units = 0;
+  for (std::size_t index = 0; index < text.size();) {
+    const auto lead = static_cast<unsigned char>(text[index]);
+    std::size_t width = 1;
+    if ((lead & 0xE0U) == 0xC0U) {
+      width = 2;
+    } else if ((lead & 0xF0U) == 0xE0U) {
+      width = 3;
+    } else if ((lead & 0xF8U) == 0xF0U) {
+      width = 4;
+    }
+    if (index + width > text.size()) {
+      width = 1;
+    }
+    units += width == 4 ? 2U : 1U;
+    index += width;
+  }
+  return units;
+}
+
+} // namespace
 
 auto QQMediaProcessor::process_image_segment(
-    obcx::core::IBot &qq_bot, obcx::core::IBot &telegram_bot,
     const obcx::common::MessageSegment &segment,
     const obcx::common::MessageEvent &event,
     const std::string &telegram_group_id, int64_t topic_id,
@@ -67,9 +89,9 @@ auto QQMediaProcessor::process_image_segment(
   }
 
   if (is_sticker(segment)) {
-    bool handled = co_await handle_sticker_cache(
-        telegram_bot, segment, telegram_group_id, topic_id, sender_display_name,
-        bridge_config);
+    bool handled =
+        co_await handle_sticker_cache(segment, telegram_group_id, topic_id,
+                                      sender_display_name, bridge_config);
     if (handled) {
       co_return std::nullopt; // 已直接发送，不再加进普通消息
     }
@@ -113,7 +135,7 @@ auto QQMediaProcessor::is_sticker(const obcx::common::MessageSegment &segment)
 }
 
 auto QQMediaProcessor::handle_sticker_cache(
-    obcx::core::IBot &telegram_bot, const obcx::common::MessageSegment &segment,
+    const obcx::common::MessageSegment &segment,
     const std::string &telegram_group_id, int64_t topic_id,
     const std::string &sender_display_name,
     const GroupBridgeConfig *bridge_config) -> boost::asio::awaitable<bool> {
@@ -147,21 +169,18 @@ auto QQMediaProcessor::handle_sticker_cache(
       const std::string sender_label = fmt::format("[{}]", sender_display_name);
       std::string caption_info =
           show_sender_for_sticker ? fmt::format("{}\t", sender_label) : "";
-      std::vector<obcx::core::TelegramTextEntity> caption_entities;
+      std::vector<obcx::bot::TelegramTextEntity> caption_entities;
       if (show_sender_for_sticker) {
-        caption_entities.push_back(obcx::core::TelegramTextEntity{
+        caption_entities.push_back(obcx::bot::TelegramTextEntity{
             .type = "italic",
             .offset = 0,
-            .length = obcx::core::telegram_utf16_code_units(sender_label)});
+            .length = telegram_utf16_units(sender_label)});
       }
 
-      std::string response;
       if (topic_id == -1) {
-        response =
-            co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
-                .send_group_photo_with_entities(
-                    telegram_group_id, cached_mapping->telegram_file_id,
-                    caption_info, caption_entities);
+        (void)co_await operations_->send_telegram_photo(
+            telegram_group_id, cached_mapping->telegram_file_id, caption_info,
+            caption_entities);
       } else {
         obcx::common::Message sticker_message;
         obcx::common::MessageSegment img_segment;
@@ -175,10 +194,8 @@ auto QQMediaProcessor::handle_sticker_cache(
               .type = "text", .data = {{"text", "\t"}}});
         }
         sticker_message.push_back(img_segment);
-        response =
-            co_await dynamic_cast<obcx::core::ITelegramBot &>(telegram_bot)
-                .send_topic_message(telegram_group_id, topic_id,
-                                    sticker_message);
+        (void)co_await operations_->send_telegram_topic(
+            telegram_group_id, topic_id, sticker_message);
       }
 
       OBCX_INFO("使用缓存的QQ表情包发送成功: {} -> {}", qq_sticker_hash,

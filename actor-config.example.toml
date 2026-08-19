@@ -61,6 +61,9 @@ db = "main"
 db_namespace = "bridge"
 
 [actors.bridge.config]
+# This migration slice supports one explicit Telegram/OneBot installation pair.
+telegram_installation = "telegram_bot"
+onebot11_installation = "qq_bot"
 database_file = "bridge_bot.db"
 enable_retry_queue = true
 message_retry_max_attempts = 5

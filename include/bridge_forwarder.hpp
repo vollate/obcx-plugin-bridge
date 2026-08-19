@@ -11,6 +11,7 @@ namespace bridge {
 
 enum class DirectForwardDisposition {
   NotForwarded,
+  DeliveryFailed,
   NewDelivery,
   AlreadyPersisted,
 };
@@ -21,6 +22,8 @@ struct DirectForwardOutcome {
   std::string source_message_id;
   std::string target_platform;
   std::string target_message_id;
+  std::string failure_message;
+  bool failure_retryable = false;
 };
 
 struct BridgeForwardResult {
@@ -30,6 +33,8 @@ struct BridgeForwardResult {
   std::string target_platform;
   std::string target_bot;
   std::string target_message_id;
+  std::string failure_message;
+  bool failure_retryable = false;
 };
 
 class IBridgeForwarder {

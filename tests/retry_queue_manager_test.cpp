@@ -167,8 +167,8 @@ TEST(RetryQueueManagerTest, ConfiguredBackoffIsAppliedAndCapped) {
   manager.register_message_send_callback(
       "telegram",
       [](const bridge::MessageRetryEntry &, const obcx::common::Message &)
-          -> boost::asio::awaitable<std::optional<std::string>> {
-        co_return std::nullopt;
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
+        co_return bridge::MessageSendOutcome::retryable("test failure");
       });
   manager.start();
 
@@ -228,8 +228,8 @@ TEST(RetryQueueManagerTest, ExhaustedMessageRetryIsRemoved) {
   manager.register_message_send_callback(
       "qq",
       [](const bridge::MessageRetryEntry &, const obcx::common::Message &)
-          -> boost::asio::awaitable<std::optional<std::string>> {
-        co_return std::nullopt;
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
+        co_return bridge::MessageSendOutcome::retryable("test failure");
       });
   manager.start();
 
@@ -285,9 +285,9 @@ TEST(RetryQueueManagerTest, RemovesPersistedMessageRetryAfterSuccess) {
       "telegram",
       [&callback_called](const bridge::MessageRetryEntry &,
                          const obcx::common::Message &)
-          -> boost::asio::awaitable<std::optional<std::string>> {
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
         callback_called = true;
-        co_return std::string{"tg-sent"};
+        co_return bridge::MessageSendOutcome::completed("tg-sent");
       });
 
   manager.start();
@@ -342,8 +342,8 @@ TEST(RetryQueueManagerTest, PersistsMappingAfterSuccessfulMessageRetry) {
   manager.register_message_send_callback(
       "telegram",
       [](const bridge::MessageRetryEntry &, const obcx::common::Message &)
-          -> boost::asio::awaitable<std::optional<std::string>> {
-        co_return std::string{"tg-retry-success"};
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
+        co_return bridge::MessageSendOutcome::completed("tg-retry-success");
       });
 
   manager.start();
@@ -364,7 +364,7 @@ TEST(RetryQueueManagerTest, PersistsMappingAfterSuccessfulMessageRetry) {
 }
 
 TEST(RetryQueueManagerTest,
-     MappingPersistenceFailureKeepsRetryPendingForRecovery) {
+     MappingPersistenceFailureTerminalizesWithoutResend) {
   const auto db_path = temp_db_path("mapping_persistence_failure");
 
   obcx::core::DbManager db_manager;
@@ -381,7 +381,7 @@ TEST(RetryQueueManagerTest,
       "telegram",
       [&db_manager](const bridge::MessageRetryEntry &,
                     const obcx::common::Message &)
-          -> boost::asio::awaitable<std::optional<std::string>> {
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
         db_manager.run_write<void>("main",
                                    [](obcx::core::IDbConnection &connection) {
                                      connection.execute(R"(
@@ -392,7 +392,7 @@ TEST(RetryQueueManagerTest,
                 END;
               )");
                                    });
-        co_return std::string{"tg-uncommitted"};
+        co_return bridge::MessageSendOutcome::completed("tg-uncommitted");
       });
   manager.start();
 
@@ -406,14 +406,29 @@ TEST(RetryQueueManagerTest,
   });
   ioc.run();
 
-  EXPECT_TRUE(pending_before_stop);
+  EXPECT_FALSE(pending_before_stop);
   EXPECT_FALSE(
       repository->get_target_message_id("qq", "qq-map-failure", "telegram")
           .has_value());
-  const auto pending = repository->get_pending_message_retries(
-      std::chrono::system_clock::now() + std::chrono::hours{1}, 10);
-  ASSERT_EQ(pending.size(), 1);
-  EXPECT_EQ(pending.front().failure_reason, "retry mapping persistence failed");
+  EXPECT_TRUE(
+      repository
+          ->get_pending_message_retries(
+              std::chrono::system_clock::now() + std::chrono::hours{1}, 10)
+          .empty());
+  const auto terminal = db_manager.run_read<bool>(
+      "main", [](obcx::core::IDbConnection &connection) {
+        const auto rows = connection.query(R"(
+          SELECT retry_count, max_retry_count, failure_reason
+          FROM bridge_message_retry_queue
+          WHERE source_message_id = 'qq-map-failure';
+        )");
+        return rows.size() == 1 &&
+               std::get<std::int64_t>(rows.front().at("retry_count")) ==
+                   std::get<std::int64_t>(rows.front().at("max_retry_count")) &&
+               std::get<std::string>(rows.front().at("failure_reason")) ==
+                   "retry mapping persistence failed";
+      });
+  EXPECT_TRUE(terminal);
 
   std::filesystem::remove(db_path);
 }
@@ -435,7 +450,7 @@ TEST(RetryQueueManagerTest, CleanupFailureKeepsMappingAndRetryPending) {
       "telegram",
       [&db_manager](const bridge::MessageRetryEntry &,
                     const obcx::common::Message &)
-          -> boost::asio::awaitable<std::optional<std::string>> {
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
         db_manager.run_write<void>("main",
                                    [](obcx::core::IDbConnection &connection) {
                                      connection.execute(R"(
@@ -446,7 +461,8 @@ TEST(RetryQueueManagerTest, CleanupFailureKeepsMappingAndRetryPending) {
                 END;
               )");
                                    });
-        co_return std::string{"tg-mapped-before-cleanup"};
+        co_return bridge::MessageSendOutcome::completed(
+            "tg-mapped-before-cleanup");
       });
   manager.start();
 
@@ -468,6 +484,63 @@ TEST(RetryQueueManagerTest, CleanupFailureKeepsMappingAndRetryPending) {
       std::chrono::system_clock::now() + std::chrono::hours{1}, 10);
   ASSERT_EQ(pending.size(), 1);
   EXPECT_EQ(pending.front().failure_reason, "retry row cleanup failed");
+
+  std::filesystem::remove(db_path);
+}
+
+TEST(RetryQueueManagerTest, OutcomeUnknownIsTerminalizedWithoutAnotherAttempt) {
+  const auto db_path = temp_db_path("outcome_unknown");
+  obcx::core::DbManager db_manager;
+  db_manager.configure({sqlite_config(db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      db_manager, "main", "bridge");
+  repository->initialize_schema();
+  ASSERT_TRUE(repository->add_message_retry(ready_retry("qq-unknown")));
+
+  boost::asio::io_context ioc;
+  bridge::RetryQueueManager manager(
+      ioc, repository,
+      bridge::RetryQueuePolicy{.message_retry_base_interval_sec = 1,
+                               .media_retry_base_interval_sec = 1,
+                               .retry_queue_check_interval_sec = 1,
+                               .max_retry_interval_sec = 2});
+  manager.restore_persisted_message_retries();
+  int calls = 0;
+  manager.register_message_send_callback(
+      "telegram",
+      [&calls](const bridge::MessageRetryEntry &, const obcx::common::Message &)
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
+        ++calls;
+        co_return bridge::MessageSendOutcome::unknown("transport_failure");
+      });
+  manager.start();
+
+  boost::asio::steady_timer stop_timer(ioc);
+  stop_timer.expires_after(std::chrono::milliseconds{50});
+  stop_timer.async_wait([&](const boost::system::error_code &) {
+    manager.stop();
+    ioc.stop();
+  });
+  ioc.run();
+
+  EXPECT_EQ(calls, 1);
+  EXPECT_EQ(manager.get_pending_message_retry_count(), 0U);
+  EXPECT_TRUE(
+      repository
+          ->get_pending_message_retries(
+              std::chrono::system_clock::now() + std::chrono::hours{1}, 10)
+          .empty());
+  const auto reason = db_manager.run_read<std::string>(
+      "main", [](obcx::core::IDbConnection &connection) {
+        const auto rows = connection.query(R"(
+          SELECT failure_reason FROM bridge_message_retry_queue
+          WHERE source_message_id = 'qq-unknown';
+        )");
+        return rows.empty()
+                   ? std::string{}
+                   : std::get<std::string>(rows.front().at("failure_reason"));
+      });
+  EXPECT_EQ(reason, "outcome_unknown:transport_failure");
 
   std::filesystem::remove(db_path);
 }
@@ -512,14 +585,14 @@ TEST(RetryQueueManagerTest, StopWaitsForInFlightResendToRetire) {
       "telegram",
       [&callback_started, &callback_completed](
           const bridge::MessageRetryEntry &, const obcx::common::Message &)
-          -> boost::asio::awaitable<std::optional<std::string>> {
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
         callback_started = true;
         boost::asio::steady_timer suspended(
             co_await boost::asio::this_coro::executor);
         suspended.expires_after(std::chrono::milliseconds{50});
         co_await suspended.async_wait(boost::asio::use_awaitable);
         callback_completed = true;
-        co_return std::nullopt;
+        co_return bridge::MessageSendOutcome::retryable("test failure");
       });
   manager->start();
 

@@ -110,6 +110,8 @@ db = "main"
 db_namespace = "bridge"
 
 [actors.bridge.config]
+telegram_installation = "telegram_bot"
+onebot11_installation = "qq_bot"
 enable_retry_queue = true
 message_retry_max_attempts = 5
 message_retry_base_interval_sec = 2
@@ -192,7 +194,11 @@ publishes `MessageForwarded` only after that write succeeds. For
 target id, so the actor emits the existing completion without another bot send
 or mapping write. An incomplete result or failed upsert emits
 `MessageForwardFailed`; it does not blindly repeat a bot send whose remote side
-effect may already have succeeded.
+effect may already have succeeded. A message outside configured mappings, a
+route disabled for that direction, a loop-suppressed message, or an accepted
+deferred media-group item is a successful no-op rather than a
+`bridge_not_forwarded` failure. An attempted delivery failure remains explicit
+as `bridge_delivery_failed`.
 
 Retry completion and deferred Telegram media-group flush remain specialized
 persistence owners because they update retry state or fan one target id out to
@@ -203,17 +209,22 @@ upsert.
 ### Message retry operations
 
 When `enable_retry_queue` is `true`, one worker belongs to the active bridge
-actor generation. A failed QQ-to-Telegram or Telegram-to-QQ send is stored in
-`bridge_message_retry_queue`; the worker resends through the process-owned
-`BotRegistry`, writes the source-to-target message mapping, and removes the
-queue row only after both persistence operations succeed. Pending rows survive
-process restart and actor reload. Reload stops the retired generation's worker
-before post-cutover ingress can initialize the candidate worker.
+actor generation. A definitely-not-submitted, retryable QQ-to-Telegram or
+Telegram-to-QQ failure is stored in `bridge_message_retry_queue`; the worker
+resends through the exact-installation `BotOperationClient`, writes the
+source-to-target mapping, and removes the queue row only after both persistence
+operations succeed. Pending runnable rows survive process restart and actor
+reload. Reload stops the retired generation's worker before post-cutover
+ingress can initialize the candidate worker.
 
-Message delivery is at-least-once. A target platform may accept a send before
-the local mapping or queue cleanup fails, so recovery first checks for an
-existing mapping and operators should not assume exactly-once delivery.
-Duplicate enqueue identity is `(source_platform, source_message_id,
+DNS/connect, proxy-tunnel, and TLS-handshake failures before HTTP request
+writing are definitely not submitted and may be retried. Once request writing
+begins, a timeout or disconnect remains possibly submitted. A possibly
+submitted send is never automatically retried and creates no fabricated
+mapping. The existing retry row is terminalized with its finite
+attempt fields; no new outbox or reconciliation table is introduced. A process
+crash at the provider boundary still cannot prove exactly-once delivery.
+Duplicate enqueue identity remains `(source_platform, source_message_id,
 target_platform)`.
 
 The defaults are 5 maximum attempts, a 2-second base backoff, a 10-second queue
@@ -228,8 +239,9 @@ contain platform direction, source identity, and attempt outcome, but not
 message bodies, bot tokens, proxy credentials, or complete API responses.
 
 [`actor-config.example.toml`](actor-config.example.toml) lists the bot,
-media, and group-mapping options. Use the actor dependency and database block
-above as the current runtime contract.
+media, and group-mapping options. `telegram_installation` and
+`onebot11_installation` are required and select the one supported pair. Use the
+actor dependency and database block above as the current runtime contract.
 
 ## Features
 
