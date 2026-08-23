@@ -25,6 +25,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -364,12 +365,38 @@ auto start_reload(
   return completed;
 }
 
+auto bridge_schema_version(obcx::core::DbManager &database) -> std::int64_t {
+  return database.run_read<std::int64_t>(
+      "main", [](obcx::core::IDbConnection &connection) {
+        const auto rows = connection.query(
+            "SELECT MAX(version) AS version FROM bridge_schema_version;");
+        return std::get<std::int64_t>(rows.front().at("version"));
+      });
+}
+
 auto retry_row_count(obcx::core::DbManager &database) -> std::int64_t {
   return database.run_read<std::int64_t>(
       "main", [](obcx::core::IDbConnection &connection) {
         const auto rows = connection.query(
             "SELECT COUNT(*) AS count FROM bridge_message_retry_queue;");
         return std::get<std::int64_t>(rows.front().at("count"));
+      });
+}
+
+auto terminal_retry_reason(obcx::core::DbManager &database,
+                           const std::string &source_message_id)
+    -> std::optional<std::string> {
+  return database.run_read<std::optional<std::string>>(
+      "main", [&source_message_id](obcx::core::IDbConnection &connection) {
+        const auto rows = connection.query(
+            "SELECT failure_reason FROM bridge_message_retry_queue WHERE "
+            "source_message_id = ? AND retry_count >= max_retry_count;",
+            {source_message_id});
+        if (rows.size() != 1) {
+          return std::optional<std::string>{};
+        }
+        return std::optional<std::string>{
+            std::get<std::string>(rows.front().at("failure_reason"))};
       });
 }
 
@@ -384,14 +411,18 @@ auto has_mapping(obcx::core::DbManager &database,
                  const std::string &source_message_id) -> bool {
   return database.run_read<bool>(
       "main", [&source_message_id](obcx::core::IDbConnection &connection) {
-        return !connection
-                    .query("SELECT target_message_id FROM "
-                           "bridge_message_mappings WHERE source_platform = ? "
-                           "AND source_message_id = ? AND target_platform = ? "
-                           "LIMIT 1;",
-                           {std::string{"qq"}, source_message_id,
-                            std::string{"telegram"}})
-                    .empty();
+        const auto rows = connection.query(
+            "SELECT target_message_id, target_conversation_id FROM "
+            "bridge_message_mappings WHERE source_installation = ? AND "
+            "source_platform = ? AND source_conversation_id = ? AND "
+            "source_message_id = ? AND target_installation = ? AND "
+            "target_platform = ?;",
+            {std::string{"qq_live"}, std::string{"qq"},
+             std::string{"group:qq-source-group"}, source_message_id,
+             std::string{"telegram_live"}, std::string{"telegram"}});
+        return rows.size() == 1 &&
+               std::get<std::string>(rows.front().at("target_conversation_id"))
+                   .starts_with("chat:");
       });
 }
 
@@ -468,6 +499,8 @@ auto main(int argc, char **argv) -> int {
             initial.failure
                 ? initial.failure->code + ": " + initial.failure->message
                 : "initial actor generation was not ready");
+    require(bridge_schema_version(*database) == 3,
+            "Bridge schema was not prepared before generation activation");
     controller = std::make_shared<obcx::core::ActorRuntimeReloadController>(
         std::move(initial.generation));
     auto ingress_probe = std::make_shared<IngressProbe>();
@@ -510,7 +543,8 @@ auto main(int argc, char **argv) -> int {
             "cold reload sequence did not reach generation 4");
 
     telegram->fail_next_group_send();
-    require(!process(io, controller, 1).ok(),
+    const auto pre_reload_failure = process(io, controller, 1);
+    require(!pre_reload_failure.ok(),
             "pre-reload send failure did not reach the retry queue");
     require(retry_row_count(*database) == 1,
             "pre-reload send failure was not persisted for retry");
@@ -608,17 +642,21 @@ auto main(int argc, char **argv) -> int {
                   std::to_string(sequence));
     }
     const auto retry_deadline = std::chrono::steady_clock::now() + 20s;
-    while (!has_mapping(*database, "reload-message-1") &&
+    auto terminal_reason = terminal_retry_reason(*database, "reload-message-1");
+    while (!terminal_reason &&
            std::chrono::steady_clock::now() < retry_deadline) {
       std::this_thread::sleep_for(10ms);
+      terminal_reason = terminal_retry_reason(*database, "reload-message-1");
     }
-    require(has_mapping(*database, "reload-message-1") &&
-                retry_row_count(*database) == 0,
-            "candidate generation did not restore and finish the pending "
-            "retry");
+    require(terminal_reason ==
+                    "terminal_failure:target_conversation_unavailable" &&
+                !has_mapping(*database, "reload-message-1") &&
+                retry_row_count(*database) == 1,
+            "candidate generation did not terminalize the unavailable exact "
+            "retry without remapping it");
     const auto destinations = telegram->destinations();
     require(std::ranges::count(destinations, std::string{"telegram-old"}) ==
-                    2 &&
+                    1 &&
                 std::ranges::count(destinations, std::string{"telegram-new"}) ==
                     3 &&
                 std::ranges::count(destinations,

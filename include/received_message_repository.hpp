@@ -16,6 +16,8 @@ public:
                             std::string db_namespace = "message_store");
 
   auto get_message(const std::string &source_platform,
+                   const std::string &source_bot,
+                   const std::string &conversation_id,
                    const std::string &message_id) const
       -> std::optional<storage::MessageInfo>;
 

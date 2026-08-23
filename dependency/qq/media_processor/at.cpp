@@ -23,10 +23,12 @@ auto QQMediaProcessor::process_at_segment(
   const auto group_id = event.group_id.value_or("");
   std::optional<std::string> at_display_name;
   if (state_repository_) {
+    const auto installation =
+        operations_->onebot11_installation().installation_id;
     at_display_name = co_await blocking_executor_->run(
-        [repository = state_repository_, qq_user_id, group_id] {
-          return repository->query_user_display_name("qq", qq_user_id,
-                                                     group_id);
+        [repository = state_repository_, installation, qq_user_id, group_id] {
+          return repository->query_user_display_name(installation, "qq",
+                                                     qq_user_id, group_id);
         });
   }
 
@@ -36,10 +38,12 @@ auto QQMediaProcessor::process_at_segment(
         event.group_id.value());
 
     if (state_repository_) {
+      const auto installation =
+          operations_->onebot11_installation().installation_id;
       at_display_name = co_await blocking_executor_->run(
-          [repository = state_repository_, qq_user_id, group_id] {
-            return repository->query_user_display_name("qq", qq_user_id,
-                                                       group_id);
+          [repository = state_repository_, installation, qq_user_id, group_id] {
+            return repository->query_user_display_name(installation, "qq",
+                                                       qq_user_id, group_id);
           });
     }
   }
@@ -48,8 +52,8 @@ auto QQMediaProcessor::process_at_segment(
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
     show_sender = bridge_config->show_qq_to_tg_sender;
   } else {
-    const TopicBridgeConfig *topic_config =
-        config_->topic_config(telegram_group_id, topic_id);
+    const TopicBridgeConfig *topic_config = config_->topic_config(
+        operations_->pair_id(), telegram_group_id, topic_id);
     show_sender = topic_config ? topic_config->show_qq_to_tg_sender : false;
   }
 

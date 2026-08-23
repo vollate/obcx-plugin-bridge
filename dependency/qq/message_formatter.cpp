@@ -2,6 +2,7 @@
 
 #include "bridge_state_repository.hpp"
 #include "qq/image_url_validator.hpp"
+#include "received_message_repository.hpp"
 
 #include <common/json_utils.hpp>
 #include <common/logger.hpp>
@@ -689,8 +690,8 @@ auto QQMessageFormatter::format_sender_info(
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
     show_sender = bridge_config->show_qq_to_tg_sender;
   } else {
-    const TopicBridgeConfig *topic_config =
-        config_->topic_config(telegram_group_id, topic_id);
+    const TopicBridgeConfig *topic_config = config_->topic_config(
+        operations_->pair_id(), telegram_group_id, topic_id);
     show_sender = topic_config ? topic_config->show_qq_to_tg_sender : false;
   }
 
@@ -726,15 +727,71 @@ auto QQMessageFormatter::format_reply_message(
     // 被回复的 QQ 消息可能有两种来源：原生 QQ 消息（之前转发到 TG 过），
     // 或本身是从 TG 转发来的。先查 qq->tg 映射，没命中再查 tg 原始消息。
     if (state_repository_) {
-      target_telegram_message_id = co_await blocking_executor_->run(
-          [repository = state_repository_,
-           reply_message_id = *reply_message_id] {
-            auto target = repository->get_target_message_id(
-                "qq", reply_message_id, "telegram");
-            return target.has_value() ? target
-                                      : repository->get_source_message_id(
-                                            "qq", reply_message_id, "telegram");
-          });
+      const auto onebot_installation =
+          operations_->onebot11_installation().installation_id;
+      const auto telegram_installation =
+          operations_->telegram_installation().installation_id;
+      const auto qq_group_id = event.group_id.value_or("");
+      const auto [telegram_group_id, topic_id] =
+          config_->tg_group_and_topic_id(operations_->pair_id(), qq_group_id);
+      (void)topic_id;
+      if (!qq_group_id.empty() && !telegram_group_id.empty()) {
+        const auto source_conversation = qq_conversation_id(qq_group_id);
+        const auto target_conversation =
+            telegram_conversation_id(telegram_group_id);
+        target_telegram_message_id = co_await blocking_executor_->run(
+            [repository = state_repository_,
+             received = received_message_repository_, onebot_installation,
+             telegram_installation, source_conversation, target_conversation,
+             reply_message_id = *reply_message_id] {
+              const auto direct = repository->resolve_target_mapping(
+                  {.installation_id = onebot_installation,
+                   .platform = "qq",
+                   .conversation_id = source_conversation,
+                   .message_id = reply_message_id},
+                  {.installation_id = telegram_installation,
+                   .platform = "telegram",
+                   .conversation_id = target_conversation});
+              if (direct.unique()) {
+                if (received && !received->get_message(
+                                    "qq", onebot_installation,
+                                    source_conversation, reply_message_id)) {
+                  return std::optional<std::string>{};
+                }
+                return std::optional<std::string>{
+                    direct.mapping->target_message_id};
+              }
+              if (!direct.missing()) {
+                throw std::runtime_error(direct.diagnostic.empty()
+                                             ? "ambiguous_message_mapping"
+                                             : direct.diagnostic);
+              }
+              const auto reverse = repository->resolve_source_mapping(
+                  {.installation_id = onebot_installation,
+                   .platform = "qq",
+                   .conversation_id = source_conversation,
+                   .message_id = reply_message_id},
+                  {.installation_id = telegram_installation,
+                   .platform = "telegram",
+                   .conversation_id = target_conversation});
+              if (reverse.unique()) {
+                if (received &&
+                    !received->get_message(
+                        "telegram", telegram_installation, target_conversation,
+                        reverse.mapping->source_message_id)) {
+                  return std::optional<std::string>{};
+                }
+                return std::optional<std::string>{
+                    reverse.mapping->source_message_id};
+              }
+              if (!reverse.missing()) {
+                throw std::runtime_error(reverse.diagnostic.empty()
+                                             ? "ambiguous_message_mapping"
+                                             : reverse.diagnostic);
+              }
+              return std::optional<std::string>{};
+            });
+      }
     }
 
     OBCX_DEBUG("QQ回复消息映射查找: QQ消息ID {} -> TG消息ID {}",
@@ -1096,8 +1153,8 @@ auto QQMessageFormatter::send_media_group(
         if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
           show_sender = bridge_config->show_qq_to_tg_sender;
         } else {
-          const TopicBridgeConfig *topic_config =
-              config_->topic_config(telegram_group_id, topic_id);
+          const TopicBridgeConfig *topic_config = config_->topic_config(
+              operations_->pair_id(), telegram_group_id, topic_id);
           show_sender =
               topic_config ? topic_config->show_qq_to_tg_sender : false;
         }
@@ -1172,18 +1229,24 @@ auto QQMessageFormatter::get_user_display_name(const std::string &user_id,
 
   std::optional<std::string> display_name;
   if (state_repository_) {
+    const auto installation =
+        operations_->onebot11_installation().installation_id;
     display_name = co_await blocking_executor_->run(
-        [repository = state_repository_, user_id, group_id] {
-          return repository->query_user_display_name("qq", user_id, group_id);
+        [repository = state_repository_, installation, user_id, group_id] {
+          return repository->query_user_display_name(installation, "qq",
+                                                     user_id, group_id);
         });
   }
 
   if (!display_name.has_value()) {
     co_await fetch_user_info(user_id, group_id);
     if (state_repository_) {
+      const auto installation =
+          operations_->onebot11_installation().installation_id;
       display_name = co_await blocking_executor_->run(
-          [repository = state_repository_, user_id, group_id] {
-            return repository->query_user_display_name("qq", user_id, group_id);
+          [repository = state_repository_, installation, user_id, group_id] {
+            return repository->query_user_display_name(installation, "qq",
+                                                       user_id, group_id);
           });
     }
   }
@@ -1208,6 +1271,8 @@ auto QQMessageFormatter::fetch_and_save_user_info(
     const auto member =
         co_await operations->get_onebot11_group_member(group_id, user_id);
     storage::UserInfo user_info;
+    user_info.installation_id =
+        operations->onebot11_installation().installation_id;
     user_info.platform = "qq";
     user_info.user_id = user_id;
     user_info.group_id = group_id;

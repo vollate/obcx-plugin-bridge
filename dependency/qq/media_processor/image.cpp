@@ -68,11 +68,17 @@ auto QQMediaProcessor::process_image_segment(
       !url.empty()) {
     try {
       std::string qq_sticker_hash = bridge::calculate_hash(url);
+      const auto source_installation =
+          operations_->onebot11_installation().installation_id;
+      const auto target_installation =
+          operations_->telegram_installation().installation_id;
       std::optional<storage::QQStickerMapping> cached_mapping;
       if (state_repository_) {
         cached_mapping = co_await blocking_executor_->run(
-            [repository = state_repository_, qq_sticker_hash] {
-              return repository->get_qq_sticker_mapping(qq_sticker_hash);
+            [repository = state_repository_, source_installation,
+             target_installation, qq_sticker_hash] {
+              return repository->get_qq_sticker_mapping(
+                  source_installation, target_installation, qq_sticker_hash);
             });
       }
 
@@ -144,13 +150,20 @@ auto QQMediaProcessor::handle_sticker_cache(
     std::string qq_sticker_hash = bridge::calculate_hash(
         segment.data.value("file", "") + "_" + segment.data.value("url", ""));
 
+    const auto source_installation =
+        operations_->onebot11_installation().installation_id;
+    const auto target_installation =
+        operations_->telegram_installation().installation_id;
     std::optional<storage::QQStickerMapping> cached_mapping;
     if (state_repository_) {
       cached_mapping = co_await blocking_executor_->run(
-          [repository = state_repository_, qq_sticker_hash] {
-            auto cached = repository->get_qq_sticker_mapping(qq_sticker_hash);
+          [repository = state_repository_, source_installation,
+           target_installation, qq_sticker_hash] {
+            auto cached = repository->get_qq_sticker_mapping(
+                source_installation, target_installation, qq_sticker_hash);
             if (cached.has_value()) {
-              (void)repository->update_qq_sticker_last_used(qq_sticker_hash);
+              (void)repository->update_qq_sticker_last_used(
+                  source_installation, target_installation, qq_sticker_hash);
             }
             return cached;
           });
@@ -160,8 +173,8 @@ auto QQMediaProcessor::handle_sticker_cache(
       if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
         show_sender_for_sticker = bridge_config->show_qq_to_tg_sender;
       } else {
-        const TopicBridgeConfig *topic_config =
-            config_->topic_config(telegram_group_id, topic_id);
+        const TopicBridgeConfig *topic_config = config_->topic_config(
+            operations_->pair_id(), telegram_group_id, topic_id);
         show_sender_for_sticker =
             topic_config ? topic_config->show_qq_to_tg_sender : false;
       }
@@ -278,6 +291,10 @@ auto QQMediaProcessor::detect_gif_format(const std::string &url)
 
         std::string qq_sticker_hash = bridge::calculate_hash(url);
         storage::QQStickerMapping new_mapping;
+        new_mapping.source_installation =
+            operations_->onebot11_installation().installation_id;
+        new_mapping.target_installation =
+            operations_->telegram_installation().installation_id;
         new_mapping.qq_sticker_hash = qq_sticker_hash;
         new_mapping.telegram_file_id = "";
         new_mapping.file_type = is_gif ? "animation" : "photo";

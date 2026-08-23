@@ -43,8 +43,12 @@ auto text_message(const std::string &text) -> obcx::common::Message {
 
 auto ready_retry(std::string source_message_id) -> storage::MessageRetryInfo {
   storage::MessageRetryInfo retry;
+  retry.source_installation = "qq";
   retry.source_platform = "qq";
+  retry.source_conversation_id = "group:qq-group";
+  retry.target_installation = "telegram";
   retry.target_platform = "telegram";
+  retry.target_conversation_id = "chat:tg-group";
   retry.source_message_id = std::move(source_message_id);
   retry.message_content = R"([{"type":"text","data":{"text":"hello"}}])";
   retry.group_id = "tg-group";
@@ -60,6 +64,26 @@ auto ready_retry(std::string source_message_id) -> storage::MessageRetryInfo {
   return retry;
 }
 
+auto mapped_target(bridge::BridgeStateRepository &repository,
+                   const std::string &source_installation,
+                   const std::string &source_conversation,
+                   const std::string &source_message_id,
+                   const std::string &target_installation,
+                   const std::string &target_conversation)
+    -> std::optional<std::string> {
+  const auto result = repository.resolve_target_mapping(
+      {.installation_id = source_installation,
+       .platform = "qq",
+       .conversation_id = source_conversation,
+       .message_id = source_message_id},
+      {.installation_id = target_installation,
+       .platform = "telegram",
+       .conversation_id = target_conversation});
+  return result.unique()
+             ? std::optional<std::string>{result.mapping->target_message_id}
+             : std::nullopt;
+}
+
 } // namespace
 
 TEST(RetryQueueManagerTest, RestoresMessageRetriesFromBridgeStateRepository) {
@@ -73,7 +97,8 @@ TEST(RetryQueueManagerTest, RestoresMessageRetriesFromBridgeStateRepository) {
 
   boost::asio::io_context first_ioc;
   bridge::RetryQueueManager first_manager(first_ioc, first_repository);
-  first_manager.add_message_retry("qq", "telegram", "qq-restore-1",
+  first_manager.add_message_retry("qq", "qq", "group:qq-group", "telegram",
+                                  "telegram", "chat:tg-group", "qq-restore-1",
                                   text_message("hello"), "tg-group", "qq-group",
                                   7, 5, "timeout");
   EXPECT_EQ(first_manager.get_pending_message_retry_count(), 1);
@@ -111,18 +136,20 @@ TEST(RetryQueueManagerTest,
                                .retry_queue_check_interval_sec = 1,
                                .max_retry_interval_sec = 30});
   const auto before = std::chrono::system_clock::now();
-  manager.add_message_retry("qq", "telegram", "qq-duplicate-1",
-                            text_message("first"), "tg-old", "qq-group", -1, 5,
-                            "first failure");
-  manager.add_message_retry("qq", "telegram", "qq-duplicate-1",
-                            text_message("second"), "tg-new", "qq-group", 42, 6,
-                            "second failure");
+  manager.add_message_retry("qq", "qq", "group:qq-group", "telegram",
+                            "telegram", "chat:tg-group", "qq-duplicate-1",
+                            text_message("first"), "tg-group", "qq-group", -1,
+                            5, "first failure");
+  manager.add_message_retry("qq", "qq", "group:qq-group", "telegram",
+                            "telegram", "chat:tg-group", "qq-duplicate-1",
+                            text_message("second"), "tg-group", "qq-group", 42,
+                            6, "second failure");
 
   EXPECT_EQ(manager.get_pending_message_retry_count(), 1);
   const auto persisted = repository->get_pending_message_retries(
       std::chrono::system_clock::now() + std::chrono::hours{1}, 10);
   ASSERT_EQ(persisted.size(), 1);
-  EXPECT_EQ(persisted.front().group_id, "tg-new");
+  EXPECT_EQ(persisted.front().group_id, "tg-group");
   EXPECT_EQ(persisted.front().target_topic_id, 42);
   EXPECT_EQ(persisted.front().max_retry_count, 6);
   EXPECT_GE(persisted.front().next_retry_at, before + std::chrono::seconds{6});
@@ -140,8 +167,12 @@ TEST(RetryQueueManagerTest, ConfiguredBackoffIsAppliedAndCapped) {
   repository->initialize_schema();
 
   storage::MessageRetryInfo retry;
+  retry.source_installation = "qq";
   retry.source_platform = "qq";
+  retry.source_conversation_id = "group:qq-group";
+  retry.target_installation = "telegram";
   retry.target_platform = "telegram";
+  retry.target_conversation_id = "chat:tg-group";
   retry.source_message_id = "qq-backoff-1";
   retry.message_content = R"([{"type":"text","data":{"text":"hello"}}])";
   retry.group_id = "tg-group";
@@ -201,8 +232,12 @@ TEST(RetryQueueManagerTest, ExhaustedMessageRetryIsRemoved) {
   repository->initialize_schema();
 
   storage::MessageRetryInfo retry;
+  retry.source_installation = "telegram";
   retry.source_platform = "telegram";
+  retry.source_conversation_id = "chat:tg-group";
+  retry.target_installation = "qq";
   retry.target_platform = "qq";
+  retry.target_conversation_id = "group:qq-group";
   retry.source_message_id = "tg-exhausted-1";
   retry.message_content = R"([{"type":"text","data":{"text":"hello"}}])";
   retry.group_id = "qq-group";
@@ -260,8 +295,12 @@ TEST(RetryQueueManagerTest, RemovesPersistedMessageRetryAfterSuccess) {
   repository->initialize_schema();
 
   storage::MessageRetryInfo retry;
+  retry.source_installation = "qq";
   retry.source_platform = "qq";
+  retry.source_conversation_id = "group:qq-group";
+  retry.target_installation = "telegram";
   retry.target_platform = "telegram";
+  retry.target_conversation_id = "chat:tg-group";
   retry.source_message_id = "qq-success-1";
   retry.message_content = R"([{"type":"text","data":{"text":"hello"}}])";
   retry.group_id = "tg-group";
@@ -320,8 +359,12 @@ TEST(RetryQueueManagerTest, PersistsMappingAfterSuccessfulMessageRetry) {
   repository->initialize_schema();
 
   storage::MessageRetryInfo retry;
+  retry.source_installation = "qq";
   retry.source_platform = "qq";
+  retry.source_conversation_id = "group:qq-group";
+  retry.target_installation = "telegram";
   retry.target_platform = "telegram";
+  retry.target_conversation_id = "chat:tg-group";
   retry.source_message_id = "qq-success-map";
   retry.message_content = R"([{"type":"text","data":{"text":"hello"}}])";
   retry.group_id = "tg-group";
@@ -356,9 +399,9 @@ TEST(RetryQueueManagerTest, PersistsMappingAfterSuccessfulMessageRetry) {
   });
   ioc.run();
 
-  EXPECT_EQ(
-      repository->get_target_message_id("qq", "qq-success-map", "telegram"),
-      "tg-retry-success");
+  EXPECT_EQ(mapped_target(*repository, "qq", "group:qq-group", "qq-success-map",
+                          "telegram", "chat:tg-group"),
+            "tg-retry-success");
 
   std::filesystem::remove(db_path);
 }
@@ -407,9 +450,9 @@ TEST(RetryQueueManagerTest,
   ioc.run();
 
   EXPECT_FALSE(pending_before_stop);
-  EXPECT_FALSE(
-      repository->get_target_message_id("qq", "qq-map-failure", "telegram")
-          .has_value());
+  EXPECT_FALSE(mapped_target(*repository, "qq", "group:qq-group",
+                             "qq-map-failure", "telegram", "chat:tg-group")
+                   .has_value());
   EXPECT_TRUE(
       repository
           ->get_pending_message_retries(
@@ -477,9 +520,9 @@ TEST(RetryQueueManagerTest, CleanupFailureKeepsMappingAndRetryPending) {
   ioc.run();
 
   EXPECT_TRUE(pending_before_stop);
-  EXPECT_EQ(
-      repository->get_target_message_id("qq", "qq-cleanup-failure", "telegram"),
-      "tg-mapped-before-cleanup");
+  EXPECT_EQ(mapped_target(*repository, "qq", "group:qq-group",
+                          "qq-cleanup-failure", "telegram", "chat:tg-group"),
+            "tg-mapped-before-cleanup");
   const auto pending = repository->get_pending_message_retries(
       std::chrono::system_clock::now() + std::chrono::hours{1}, 10);
   ASSERT_EQ(pending.size(), 1);
@@ -620,6 +663,172 @@ TEST(RetryQueueManagerTest, StopWaitsForInFlightResendToRetire) {
                 .size(),
             1);
 
+  std::filesystem::remove(db_path);
+}
+
+TEST(RetryQueueManagerTest,
+     UnavailableTargetInstallationTerminalizesWithoutPlatformFallback) {
+  const auto db_path = temp_db_path("unavailable_installation");
+  obcx::core::DbManager db_manager;
+  db_manager.configure({sqlite_config(db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      db_manager, "main", "bridge");
+  repository->initialize_schema();
+  auto retry = ready_retry("unavailable");
+  retry.target_installation = "tg-missing";
+  ASSERT_TRUE(repository->add_message_retry(retry));
+
+  boost::asio::io_context ioc;
+  bridge::RetryQueueManager manager(ioc, repository);
+  manager.restore_persisted_message_retries();
+  int fallback_calls = 0;
+  manager.register_message_send_callback(
+      "tg-other",
+      [&fallback_calls](const bridge::MessageRetryEntry &,
+                        const obcx::common::Message &)
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
+        ++fallback_calls;
+        co_return bridge::MessageSendOutcome::completed("wrong-target");
+      });
+  manager.start();
+  boost::asio::steady_timer stop(ioc);
+  stop.expires_after(std::chrono::milliseconds{50});
+  stop.async_wait([&](const boost::system::error_code &) {
+    manager.stop();
+    ioc.stop();
+  });
+  ioc.run();
+
+  EXPECT_EQ(fallback_calls, 0);
+  EXPECT_TRUE(repository
+                  ->get_pending_message_retries(
+                      std::chrono::system_clock::time_point::max(), 10)
+                  .empty());
+  std::filesystem::remove(db_path);
+}
+
+TEST(RetryQueueManagerTest,
+     CollidingNativeRetriesDispatchAndPersistByExactInstallation) {
+  const auto db_path = temp_db_path("installation_collisions");
+  obcx::core::DbManager db_manager;
+  db_manager.configure({sqlite_config(db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      db_manager, "main", "bridge");
+  repository->initialize_schema();
+
+  auto first = ready_retry("same-native");
+  first.source_installation = "qq-a";
+  first.target_installation = "tg-a";
+  auto second = first;
+  second.source_installation = "qq-b";
+  second.target_installation = "tg-b";
+  ASSERT_TRUE(repository->add_message_retry(first));
+  ASSERT_TRUE(repository->add_message_retry(second));
+
+  boost::asio::io_context ioc;
+  bridge::RetryQueueManager manager(ioc, repository);
+  manager.restore_persisted_message_retries();
+  int first_calls = 0;
+  int second_calls = 0;
+  manager.register_message_send_callback(
+      "tg-a",
+      [&first_calls](const bridge::MessageRetryEntry &entry,
+                     const obcx::common::Message &)
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
+        EXPECT_EQ(entry.source_installation, "qq-a");
+        EXPECT_EQ(entry.target_installation, "tg-a");
+        ++first_calls;
+        co_return bridge::MessageSendOutcome::completed("target-a");
+      });
+  manager.register_message_send_callback(
+      "tg-b",
+      [&second_calls](const bridge::MessageRetryEntry &entry,
+                      const obcx::common::Message &)
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
+        EXPECT_EQ(entry.source_installation, "qq-b");
+        EXPECT_EQ(entry.target_installation, "tg-b");
+        ++second_calls;
+        co_return bridge::MessageSendOutcome::completed("target-b");
+      });
+  manager.start();
+  boost::asio::steady_timer stop(ioc);
+  stop.expires_after(std::chrono::milliseconds{50});
+  stop.async_wait([&](const boost::system::error_code &) {
+    manager.stop();
+    ioc.stop();
+  });
+  ioc.run();
+
+  EXPECT_EQ(first_calls, 1);
+  EXPECT_EQ(second_calls, 1);
+  EXPECT_EQ(mapped_target(*repository, "qq-a", "group:qq-group", "same-native",
+                          "tg-a", "chat:tg-group"),
+            "target-a");
+  EXPECT_EQ(mapped_target(*repository, "qq-b", "group:qq-group", "same-native",
+                          "tg-b", "chat:tg-group"),
+            "target-b");
+  EXPECT_TRUE(repository
+                  ->get_pending_message_retries(
+                      std::chrono::system_clock::time_point::max(), 10)
+                  .empty());
+  std::filesystem::remove(db_path);
+}
+
+TEST(RetryQueueManagerTest,
+     CollidingNativeRetriesRemainIndependentByConversation) {
+  const auto db_path = temp_db_path("conversation_collisions");
+  obcx::core::DbManager db_manager;
+  db_manager.configure({sqlite_config(db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      db_manager, "main", "bridge");
+  repository->initialize_schema();
+
+  auto first = ready_retry("same-native");
+  first.source_conversation_id = "group:qq-a";
+  first.source_group_id = "qq-a";
+  first.target_conversation_id = "chat:tg-a";
+  first.group_id = "tg-a";
+  auto second = first;
+  second.source_conversation_id = "group:qq-b";
+  second.source_group_id = "qq-b";
+  second.target_conversation_id = "chat:tg-b";
+  second.group_id = "tg-b";
+  ASSERT_TRUE(repository->add_message_retry(first));
+  ASSERT_TRUE(repository->add_message_retry(second));
+
+  boost::asio::io_context ioc;
+  bridge::RetryQueueManager manager(ioc, repository);
+  manager.restore_persisted_message_retries();
+  int calls = 0;
+  manager.register_message_send_callback(
+      "telegram",
+      [&calls](const bridge::MessageRetryEntry &entry,
+               const obcx::common::Message &)
+          -> boost::asio::awaitable<bridge::MessageSendOutcome> {
+        ++calls;
+        co_return bridge::MessageSendOutcome::completed("target-" +
+                                                        entry.group_id);
+      });
+  manager.start();
+  boost::asio::steady_timer stop(ioc);
+  stop.expires_after(std::chrono::milliseconds{50});
+  stop.async_wait([&](const boost::system::error_code &) {
+    manager.stop();
+    ioc.stop();
+  });
+  ioc.run();
+
+  EXPECT_EQ(calls, 2);
+  EXPECT_EQ(mapped_target(*repository, "qq", "group:qq-a", "same-native",
+                          "telegram", "chat:tg-a"),
+            "target-tg-a");
+  EXPECT_EQ(mapped_target(*repository, "qq", "group:qq-b", "same-native",
+                          "telegram", "chat:tg-b"),
+            "target-tg-b");
+  EXPECT_TRUE(repository
+                  ->get_pending_message_retries(
+                      std::chrono::system_clock::time_point::max(), 10)
+                  .empty());
   std::filesystem::remove(db_path);
 }
 

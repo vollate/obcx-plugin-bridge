@@ -5,6 +5,7 @@
 #include <common/message_type.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace bridge::telegram {
@@ -27,7 +28,8 @@ public:
       const BridgeConfig &config, const obcx::common::MessageEvent &event,
       const GroupBridgeConfig *bridge_config,
       const std::string &telegram_group_id,
-      std::vector<obcx::common::MessageSegment> &message_to_send) -> void;
+      std::vector<obcx::common::MessageSegment> &message_to_send,
+      std::string_view pair_id = "legacy") -> void;
 
   /**
    * @brief 处理回复消息格式化

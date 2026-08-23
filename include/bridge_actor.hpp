@@ -55,8 +55,44 @@ public:
            {{"default", 10}, {"minimum", 1}}}}},
         {"required_strings", obcx::common::json::array({"bridge_files_dir"})},
         {"bot_installations",
-         {{"onebot11_installation", "qq"},
-          {"telegram_installation", "telegram"}}},
+         {{"onebot11_installation",
+           {{"types", "qq"}, {"alternative_group", "bridge_pairs"}}},
+          {"telegram_installation",
+           {{"types", "telegram"}, {"alternative_group", "bridge_pairs"}}}}},
+        {"bot_installation_collections",
+         {{"installation_pairs",
+           {{"minimum_items", 1},
+            {"identity", "id"},
+            {"bot_installations",
+             {{"onebot11_installation", "qq"},
+              {"telegram_installation", "telegram"}}},
+            {"unique_fields",
+             obcx::common::json::array(
+                 {"onebot11_installation", "telegram_installation"})},
+            {"alternative_group", "bridge_pairs"}}}}},
+        {"collection_identity_references",
+         obcx::common::json::array(
+             {{{"source_key", "legacy_state_pair"},
+               {"target_collection", "installation_pairs"},
+               {"target_identity", "id"},
+               {"optional", true}},
+              {{"source_key", "pair"},
+               {"root_section", "group_mappings"},
+               {"source_collections",
+                obcx::common::json::array(
+                    {"group_to_group", "topic_to_group", "topics"})},
+               {"target_collection", "installation_pairs"},
+               {"target_identity", "id"},
+               {"optional", true},
+               {"required_when_target_multiple", true}},
+              {{"source_key", "pair"},
+               {"root_section", "actors.bridge.config"},
+               {"source_collections",
+                obcx::common::json::array({"legacy_mapping_routes"})},
+               {"target_collection", "installation_pairs"},
+               {"target_identity", "id"},
+               {"optional", true},
+               {"required_when_target_multiple", true}}})},
         {"less_equal",
          obcx::common::json::array(
              {obcx::common::json::array({"message_retry_base_interval_sec",
@@ -67,6 +103,9 @@ public:
   }
 
   BridgeActor() = default;
+
+  [[nodiscard]] auto prepare_generation(obcx::core::ActorContext &context)
+      -> obcx::core::ActorPreparationResult;
 
   auto handle(const obcx::message_store::events::MessageStored &stored,
               const obcx::core::MessageEnvelope &message,

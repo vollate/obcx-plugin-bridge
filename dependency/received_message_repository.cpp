@@ -176,9 +176,12 @@ ReceivedMessageRepository::ReceivedMessageRepository(
 }
 
 auto ReceivedMessageRepository::get_message(const std::string &source_platform,
+                                            const std::string &source_bot,
+                                            const std::string &conversation_id,
                                             const std::string &message_id) const
     -> std::optional<storage::MessageInfo> {
-  if (source_platform.empty() || message_id.empty()) {
+  if (source_platform.empty() || source_bot.empty() ||
+      conversation_id.empty() || message_id.empty()) {
     return std::nullopt;
   }
 
@@ -192,12 +195,12 @@ auto ReceivedMessageRepository::get_message(const std::string &source_platform,
         }
 
         const auto rows = connection.query(
-            "SELECT message_id, source_platform, sender, group_id,"
-            " message_type, payload, raw, timestamp FROM " +
+            "SELECT message_id, source_platform, source_bot, conversation_id,"
+            " sender, group_id, message_type, payload, raw, timestamp FROM " +
                 quote_identifier(table) +
-                " WHERE source_platform = ? AND message_id = ?"
-                " ORDER BY updated_at DESC LIMIT 1;",
-            {source_platform, message_id});
+                " WHERE source_platform = ? AND source_bot = ? AND"
+                " conversation_id = ? AND message_id = ? LIMIT 1;",
+            {source_platform, source_bot, conversation_id, message_id});
         if (rows.empty()) {
           return std::nullopt;
         }
@@ -206,6 +209,8 @@ auto ReceivedMessageRepository::get_message(const std::string &source_platform,
         const auto payload = parse_json_or_object(db_string(row, "payload"));
         storage::MessageInfo message;
         message.platform = db_string(row, "source_platform");
+        message.source_bot = db_string(row, "source_bot");
+        message.conversation_id = db_string(row, "conversation_id");
         message.message_id = db_string(row, "message_id");
         message.group_id = db_string(row, "group_id");
         message.user_id = db_string(row, "sender");

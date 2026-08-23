@@ -10,6 +10,7 @@
 namespace storage {
 
 struct UserInfo {
+  std::string installation_id;
   std::string platform;
   std::string user_id;
   std::string group_id;
@@ -23,6 +24,8 @@ struct UserInfo {
 
 struct MessageInfo {
   std::string platform;
+  std::string source_bot;
+  std::string conversation_id;
   std::string message_id;
   std::string group_id;
   std::string user_id;
@@ -37,14 +40,20 @@ struct MessageInfo {
 };
 
 struct MessageMapping {
+  std::string source_installation;
   std::string source_platform;
+  std::string source_conversation_id;
   std::string source_message_id;
+  std::string target_installation;
   std::string target_platform;
+  std::string target_conversation_id;
   std::string target_message_id;
+  bool is_primary = true;
   std::chrono::system_clock::time_point created_at;
 };
 
 struct StickerCacheInfo {
+  std::string installation_id;
   std::string platform;
   std::string sticker_id;
   std::string sticker_hash;
@@ -61,6 +70,8 @@ struct StickerCacheInfo {
 };
 
 struct QQStickerMapping {
+  std::string source_installation;
+  std::string target_installation;
   std::string qq_sticker_hash;
   std::string telegram_file_id;
   std::string file_type;
@@ -72,8 +83,12 @@ struct QQStickerMapping {
 };
 
 struct MessageRetryInfo {
+  std::string source_installation;
   std::string source_platform;
+  std::string source_conversation_id;
+  std::string target_installation;
   std::string target_platform;
+  std::string target_conversation_id;
   std::string source_message_id;
   std::string message_content;
   std::string group_id;
@@ -89,6 +104,7 @@ struct MessageRetryInfo {
 };
 
 struct MediaDownloadRetryInfo {
+  std::string installation_id;
   std::string platform;
   std::string file_id;
   std::string file_type;
@@ -104,6 +120,7 @@ struct MediaDownloadRetryInfo {
 };
 
 struct PlatformHeartbeatInfo {
+  std::string installation_id;
   std::string platform;
   std::chrono::system_clock::time_point last_heartbeat_at;
   std::chrono::system_clock::time_point updated_at;

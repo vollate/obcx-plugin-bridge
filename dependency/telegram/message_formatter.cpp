@@ -10,7 +10,8 @@ auto TelegramMessageFormatter::format_sender_info(
     const BridgeConfig &config, const obcx::common::MessageEvent &event,
     const GroupBridgeConfig *bridge_config,
     const std::string &telegram_group_id,
-    std::vector<obcx::common::MessageSegment> &message_to_send) -> void {
+    std::vector<obcx::common::MessageSegment> &message_to_send,
+    const std::string_view pair_id) -> void {
 
   bool show_sender = false;
   if (bridge_config->mode == BridgeMode::GROUP_TO_GROUP) {
@@ -21,7 +22,7 @@ auto TelegramMessageFormatter::format_sender_info(
       message_thread_id = event.data["message_thread_id"].get<int64_t>();
     }
     const TopicBridgeConfig *topic_config =
-        config.topic_config(telegram_group_id, message_thread_id);
+        config.topic_config(pair_id, telegram_group_id, message_thread_id);
     show_sender = topic_config ? topic_config->show_tg_to_qq_sender : false;
   }
 

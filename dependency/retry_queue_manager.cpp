@@ -47,8 +47,12 @@ auto deserialize_message(const std::string &payload) -> obcx::common::Message {
 auto to_retry_info(const MessageRetryEntry &entry)
     -> storage::MessageRetryInfo {
   storage::MessageRetryInfo retry_info;
+  retry_info.source_installation = entry.source_installation;
   retry_info.source_platform = entry.source_platform;
+  retry_info.source_conversation_id = entry.source_conversation_id;
+  retry_info.target_installation = entry.target_installation;
   retry_info.target_platform = entry.target_platform;
+  retry_info.target_conversation_id = entry.target_conversation_id;
   retry_info.source_message_id = entry.source_message_id;
   retry_info.message_content = serialize_message(entry.message);
   retry_info.group_id = entry.group_id;
@@ -67,8 +71,12 @@ auto to_retry_info(const MessageRetryEntry &entry)
 auto to_retry_entry(const storage::MessageRetryInfo &retry_info)
     -> MessageRetryEntry {
   MessageRetryEntry entry;
+  entry.source_installation = retry_info.source_installation;
   entry.source_platform = retry_info.source_platform;
+  entry.source_conversation_id = retry_info.source_conversation_id;
+  entry.target_installation = retry_info.target_installation;
   entry.target_platform = retry_info.target_platform;
+  entry.target_conversation_id = retry_info.target_conversation_id;
   entry.source_message_id = retry_info.source_message_id;
   entry.message = deserialize_message(retry_info.message_content);
   entry.group_id = retry_info.group_id;
@@ -91,7 +99,13 @@ auto remove_persisted_message_retry(
 
   try {
     return repository->remove_message_retry(
-        entry.source_platform, entry.source_message_id, entry.target_platform);
+        {.installation_id = entry.source_installation,
+         .platform = entry.source_platform,
+         .conversation_id = entry.source_conversation_id,
+         .message_id = entry.source_message_id},
+        {.installation_id = entry.target_installation,
+         .platform = entry.target_platform,
+         .conversation_id = entry.target_conversation_id});
   } catch (const std::exception &e) {
     OBCX_ERROR("Failed to remove persisted message retry after {}: {}", outcome,
                e.what());
@@ -108,7 +122,13 @@ auto update_persisted_message_retry(
 
   try {
     return repository->update_message_retry(
-        entry.source_platform, entry.source_message_id, entry.target_platform,
+        {.installation_id = entry.source_installation,
+         .platform = entry.source_platform,
+         .conversation_id = entry.source_conversation_id,
+         .message_id = entry.source_message_id},
+        {.installation_id = entry.target_installation,
+         .platform = entry.target_platform,
+         .conversation_id = entry.target_conversation_id},
         entry.retry_count, entry.next_retry_at, entry.failure_reason);
   } catch (const std::exception &e) {
     OBCX_ERROR("Failed to update persisted message retry after {}: {}", outcome,
@@ -139,9 +159,13 @@ auto persist_successful_message_mapping(
 
   try {
     storage::MessageMapping mapping;
+    mapping.source_installation = entry.source_installation;
     mapping.source_platform = entry.source_platform;
+    mapping.source_conversation_id = entry.source_conversation_id;
     mapping.source_message_id = entry.source_message_id;
+    mapping.target_installation = entry.target_installation;
     mapping.target_platform = entry.target_platform;
+    mapping.target_conversation_id = entry.target_conversation_id;
     mapping.target_message_id = target_message_id;
     mapping.created_at = std::chrono::system_clock::now();
     return repository->add_message_mapping(
@@ -155,9 +179,13 @@ auto persist_successful_message_mapping(
 
 auto same_retry_identity(const MessageRetryEntry &left,
                          const MessageRetryEntry &right) -> bool {
-  return left.source_platform == right.source_platform &&
+  return left.source_installation == right.source_installation &&
+         left.source_platform == right.source_platform &&
+         left.source_conversation_id == right.source_conversation_id &&
          left.source_message_id == right.source_message_id &&
-         left.target_platform == right.target_platform;
+         left.target_installation == right.target_installation &&
+         left.target_platform == right.target_platform &&
+         left.target_conversation_id == right.target_conversation_id;
 }
 
 } // namespace
@@ -261,15 +289,22 @@ auto RetryQueueManager::stopped() const -> std::shared_future<void> {
 }
 
 void RetryQueueManager::add_message_retry(
-    const std::string &source_platform, const std::string &target_platform,
+    const std::string &source_installation, const std::string &source_platform,
+    const std::string &source_conversation_id,
+    const std::string &target_installation, const std::string &target_platform,
+    const std::string &target_conversation_id,
     const std::string &source_message_id, const obcx::common::Message &message,
     const std::string &group_id, const std::string &source_group_id,
     int64_t target_topic_id, int max_retries,
     const std::string &failure_reason) {
 
   MessageRetryEntry entry;
+  entry.source_installation = source_installation;
   entry.source_platform = source_platform;
+  entry.source_conversation_id = source_conversation_id;
+  entry.target_installation = target_installation;
   entry.target_platform = target_platform;
+  entry.target_conversation_id = target_conversation_id;
   entry.source_message_id = source_message_id;
   entry.message = message;
   entry.group_id = group_id;
@@ -305,17 +340,19 @@ void RetryQueueManager::add_message_retry(
     }
   }
 
-  OBCX_INFO("Added message retry: {} -> {} (msg_id: {})", source_platform,
+  OBCX_INFO("Added message retry: {}/{} -> {}/{} (msg_id: {})",
+            source_installation, source_platform, target_installation,
             target_platform, source_message_id);
 }
 
 void RetryQueueManager::add_media_download_retry(
-    const std::string &platform, const std::string &file_id,
-    const std::string &file_type, const std::string &download_url,
-    const std::string &local_path, bool use_proxy, int max_retries,
-    const std::string &failure_reason) {
+    const std::string &installation_id, const std::string &platform,
+    const std::string &file_id, const std::string &file_type,
+    const std::string &download_url, const std::string &local_path,
+    bool use_proxy, int max_retries, const std::string &failure_reason) {
 
   MediaDownloadRetryEntry entry;
+  entry.installation_id = installation_id;
   entry.platform = platform;
   entry.file_id = file_id;
   entry.file_type = file_type;
@@ -339,16 +376,17 @@ void RetryQueueManager::add_media_download_retry(
 }
 
 void RetryQueueManager::register_message_send_callback(
-    const std::string &target_platform, MessageSendCallback callback) {
-  message_send_callbacks_[target_platform] = std::move(callback);
-  OBCX_DEBUG("Registered message send callback for platform: {}",
-             target_platform);
+    const std::string &target_installation, MessageSendCallback callback) {
+  message_send_callbacks_[target_installation] = std::move(callback);
+  OBCX_DEBUG("Registered message send callback for installation: {}",
+             target_installation);
 }
 
 void RetryQueueManager::register_media_download_callback(
-    const std::string &platform, MediaDownloadCallback callback) {
-  media_download_callbacks_[platform] = std::move(callback);
-  OBCX_DEBUG("Registered media download callback for platform: {}", platform);
+    const std::string &installation_id, MediaDownloadCallback callback) {
+  media_download_callbacks_[installation_id] = std::move(callback);
+  OBCX_DEBUG("Registered media download callback for installation: {}",
+             installation_id);
 }
 
 auto RetryQueueManager::process_retry_queues() -> boost::asio::awaitable<void> {
@@ -418,33 +456,35 @@ auto RetryQueueManager::process_message_retries()
 
   for (auto &entry : ready_entries) {
     try {
-      auto callback_it = message_send_callbacks_.find(entry.target_platform);
+      auto callback_it =
+          message_send_callbacks_.find(entry.target_installation);
       if (callback_it == message_send_callbacks_.end()) {
-        OBCX_WARN("No callback registered for target platform: {}",
-                  entry.target_platform);
-        // No handler yet - keep entry alive so it can be retried later
-        entry.next_retry_at = calculate_next_retry_time(
-            entry.retry_count, policy_.message_retry_base_interval_sec);
-        update_persisted_message_retry(state_repository_, entry,
-                                       "missing callback");
-        std::scoped_lock lock(message_retry_mutex_);
-        message_retry_queue_.push_back(std::move(entry));
+        OBCX_WARN("No callback registered for target installation: {}",
+                  entry.target_installation);
+        terminalize_persisted_message_retry(state_repository_, entry,
+                                            "target_installation_unavailable");
         continue;
       }
 
-      OBCX_INFO("Retrying message send: {} -> {} (attempt {})",
-                entry.source_platform, entry.target_platform,
+      OBCX_INFO("Retrying message send: {}/{} -> {}/{} (attempt {})",
+                entry.source_installation, entry.source_platform,
+                entry.target_installation, entry.target_platform,
                 entry.retry_count + 1);
 
       if (state_repository_) {
-        const auto mapped = state_repository_->get_target_message_id(
-            entry.source_platform, entry.source_message_id,
-            entry.target_platform);
-        if (mapped.has_value()) {
+        const auto mapped = state_repository_->resolve_target_mapping(
+            {.installation_id = entry.source_installation,
+             .platform = entry.source_platform,
+             .conversation_id = entry.source_conversation_id,
+             .message_id = entry.source_message_id},
+            {.installation_id = entry.target_installation,
+             .platform = entry.target_platform,
+             .conversation_id = entry.target_conversation_id});
+        if (mapped.unique()) {
           if (remove_persisted_message_retry(state_repository_, entry,
                                              "existing mapping")) {
             OBCX_INFO("Removed completed retry with existing mapping: {} -> {}",
-                      entry.source_platform, entry.target_platform);
+                      entry.source_installation, entry.target_installation);
           } else if (running_) {
             entry.failure_reason = "retry row cleanup failed";
             entry.next_retry_at = calculate_next_retry_time(
@@ -452,6 +492,13 @@ auto RetryQueueManager::process_message_retries()
             std::scoped_lock lock(message_retry_mutex_);
             message_retry_queue_.push_back(std::move(entry));
           }
+          continue;
+        }
+        if (!mapped.missing()) {
+          terminalize_persisted_message_retry(state_repository_, entry,
+                                              mapped.diagnostic.empty()
+                                                  ? "ambiguous_message_mapping"
+                                                  : mapped.diagnostic);
           continue;
         }
       }
@@ -472,7 +519,7 @@ auto RetryQueueManager::process_message_retries()
             remove_persisted_message_retry(state_repository_, entry, "success");
         if (mapping_persisted && retry_removed) {
           OBCX_INFO("Message retry successful: {} -> {} (msg_id: {})",
-                    entry.source_platform, entry.target_platform,
+                    entry.source_installation, entry.target_installation,
                     *result.target_message_id);
         } else if (mapping_persisted && running_) {
           // The mapping makes a future pre-send check safe; retain only for
@@ -498,8 +545,8 @@ auto RetryQueueManager::process_message_retries()
                                    : result.diagnostic;
         if (entry.retry_count >= entry.max_retry_count) {
           OBCX_WARN("Message retry failed after {} attempts: {} -> {}",
-                    entry.max_retry_count, entry.source_platform,
-                    entry.target_platform);
+                    entry.max_retry_count, entry.source_installation,
+                    entry.target_installation);
           remove_persisted_message_retry(state_repository_, entry,
                                          "max attempts");
         } else {
@@ -522,7 +569,7 @@ auto RetryQueueManager::process_message_retries()
             result.diagnostic.empty() ? reason
                                       : reason + ":" + result.diagnostic);
         OBCX_WARN("Message retry stopped with {}: {} -> {}", reason,
-                  entry.source_platform, entry.target_platform);
+                  entry.source_installation, entry.target_installation);
       }
 
     } catch (const std::exception &e) {
@@ -563,9 +610,10 @@ auto RetryQueueManager::process_media_download_retries()
 
   for (auto &entry : ready_entries) {
     try {
-      auto callback_it = media_download_callbacks_.find(entry.platform);
+      auto callback_it = media_download_callbacks_.find(entry.installation_id);
       if (callback_it == media_download_callbacks_.end()) {
-        OBCX_WARN("No callback registered for platform: {}", entry.platform);
+        OBCX_WARN("No callback registered for installation: {}",
+                  entry.installation_id);
         entry.next_retry_at = calculate_next_retry_time(
             entry.retry_count, policy_.media_retry_base_interval_sec);
         std::scoped_lock lock(media_retry_mutex_);

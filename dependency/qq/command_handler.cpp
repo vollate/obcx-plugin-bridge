@@ -29,10 +29,17 @@ auto QQCommandHandler::handle_checkalive_command(
     std::optional<storage::PlatformHeartbeatInfo> qq_heartbeat;
     std::optional<storage::PlatformHeartbeatInfo> telegram_heartbeat;
     if (state_repository_) {
+      const auto telegram_installation =
+          operations_->telegram_installation().installation_id;
+      const auto onebot_installation =
+          operations_->onebot11_installation().installation_id;
       std::tie(qq_heartbeat, telegram_heartbeat) =
-          co_await blocking_executor_->run([repository = state_repository_] {
-            return std::pair{repository->get_platform_heartbeat("qq"),
-                             repository->get_platform_heartbeat("telegram")};
+          co_await blocking_executor_->run([repository = state_repository_,
+                                            telegram_installation,
+                                            onebot_installation] {
+            return std::pair{
+                repository->get_platform_heartbeat(onebot_installation),
+                repository->get_platform_heartbeat(telegram_installation)};
           });
     }
 

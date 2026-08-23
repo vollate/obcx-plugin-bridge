@@ -56,14 +56,19 @@ db_namespace = "message_store"
 [actors.bridge]
 library = "bridge"
 enabled = true
-partition = "source_platform:conversation_id"
+partition = "source_bot:conversation_id"
 db = "main"
 db_namespace = "bridge"
 
 [actors.bridge.config]
-# This migration slice supports one explicit Telegram/OneBot installation pair.
-telegram_installation = "telegram_bot"
-onebot11_installation = "qq_bot"
+# Named pairs are required for multi-account routing. Existing single-pair
+# deployments may instead keep telegram_installation/onebot11_installation;
+# never mix the scalar and collection forms.
+legacy_state_pair = "primary"
+# Schema-v3 migration stops on unresolved v2 mappings by default. Set this to
+# "archive" only after inspecting the migration report and accepting that the
+# archived rows cannot be used by replies, deduplication, edits, or recalls.
+legacy_unresolved_mapping_policy = "fail"
 database_file = "bridge_bot.db"
 enable_retry_queue = true
 message_retry_max_attempts = 5
@@ -82,6 +87,26 @@ gif_max_colors = 256
 qq_media_download_max_bytes = 10485760
 # Direct PNG used when a QQ image is unavailable.
 image_placeholder_url = "https://placehold.co/512x512/e9ecef/495057/png?text=NOT+FOUND"
+
+[[actors.bridge.config.installation_pairs]]
+id = "primary"
+telegram_installation = "telegram_bot"
+onebot11_installation = "qq_bot"
+
+# Add another disjoint pair with a unique id and two additional enabled bots:
+# [[actors.bridge.config.installation_pairs]]
+# id = "secondary"
+# telegram_installation = "telegram_bot_2"
+# onebot11_installation = "qq_bot_2"
+
+# Migration-only history for a route removed or changed before schema v3.
+# Omit entries already represented by current group_mappings. These values are
+# ignored after version 3 is published and contain no bot credentials.
+# [[actors.bridge.config.legacy_mapping_routes]]
+# pair = "primary"
+# telegram_conversation_id = "chat:-1001234567890"
+# telegram_topic_id = -1
+# qq_conversation_id = "group:123456789"
 
 [command_runtime]
 timeout_ms = 5000
@@ -128,6 +153,7 @@ after = ["persist"]
 mode = "await"
 
 [[group_mappings.group_to_group]]
+pair = "primary"
 telegram_group_id = "YOUR_TG_GROUP_ID"
 qq_group_id = "YOUR_QQ_GROUP_ID"
 mode = "group_to_group"
@@ -137,12 +163,14 @@ enable_qq_to_tg = true
 enable_tg_to_qq = true
 
 [[group_mappings.topic_to_group]]
+pair = "primary"
 telegram_group_id = "YOUR_TG_GROUP_ID"
 mode = "topic_to_group"
 show_qq_to_tg_sender = true
 show_tg_to_qq_sender = true
 
 [[group_mappings.topics]]
+pair = "primary"
 telegram_group_id = "YOUR_TG_GROUP_ID"
 telegram_topic_id = 33
 qq_group_id = "YOUR_QQ_GROUP_ID"

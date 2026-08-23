@@ -1,5 +1,7 @@
 #pragma once
 
+#include "bridge_state_migration.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -66,14 +68,40 @@ struct GroupBridgeConfig {
         enable_tg_to_qq{enable_tg_qq} {}
 };
 
+struct BridgeInstallationPair final {
+  std::string id;
+  std::string telegram_installation;
+  std::string onebot11_installation;
+  std::unordered_map<std::string, GroupBridgeConfig> group_map;
+
+  [[nodiscard]] auto qq_group_id_for_topic(std::string_view tg_group_id,
+                                           int64_t topic_id) const
+      -> std::string;
+  [[nodiscard]] auto tg_group_and_topic_id(std::string_view qq_group_id) const
+      -> std::pair<std::string, int64_t>;
+  [[nodiscard]] auto bridge_config(std::string_view tg_group_id) const
+      -> const GroupBridgeConfig *;
+  [[nodiscard]] auto topic_config(std::string_view tg_group_id,
+                                  int64_t topic_id) const
+      -> const TopicBridgeConfig *;
+};
+
 /**
  * Immutable after construction and owned by one bridge actor generation.
  * Bot endpoints and credentials intentionally do not live here: they remain
  * process-owned behind BotOperationClient and are restart-required.
  */
 struct BridgeConfig final {
-  std::unordered_map<std::string, GroupBridgeConfig> group_map;
+  std::unordered_map<std::string, BridgeInstallationPair> installation_pairs;
+  std::string legacy_state_pair;
+  std::vector<LegacyConversationRoute> legacy_mapping_routes;
+  LegacyUnresolvedMappingPolicy legacy_unresolved_mapping_policy =
+      LegacyUnresolvedMappingPolicy::Fail;
+  bool legacy_scalar_form = false;
 
+  // Compatibility projections for existing single-pair consumers and tests.
+  // Production routing resolves an explicit BridgeInstallationPair.
+  std::unordered_map<std::string, GroupBridgeConfig> group_map;
   std::string telegram_installation;
   std::string onebot11_installation;
 
@@ -106,14 +134,28 @@ struct BridgeConfig final {
   std::string image_placeholder_url =
       "https://placehold.co/512x512/e9ecef/495057/png?text=NOT+FOUND";
 
-  [[nodiscard]] auto qq_group_id_for_topic(std::string_view tg_group_id,
+  [[nodiscard]] auto pair(std::string_view pair_id) const
+      -> const BridgeInstallationPair *;
+  [[nodiscard]] auto pair_for_source(std::string_view source_platform,
+                                     std::string_view source_installation) const
+      -> const BridgeInstallationPair *;
+  [[nodiscard]] auto legacy_migration_pair() const
+      -> const BridgeInstallationPair *;
+  [[nodiscard]] auto migration_context(bool allow_migration) const
+      -> BridgeStateMigrationContext;
+
+  [[nodiscard]] auto qq_group_id_for_topic(std::string_view pair_id,
+                                           std::string_view tg_group_id,
                                            int64_t topic_id) const
       -> std::string;
-  [[nodiscard]] auto tg_group_and_topic_id(std::string_view qq_group_id) const
+  [[nodiscard]] auto tg_group_and_topic_id(std::string_view pair_id,
+                                           std::string_view qq_group_id) const
       -> std::pair<std::string, int64_t>;
-  [[nodiscard]] auto bridge_config(std::string_view tg_group_id) const
+  [[nodiscard]] auto bridge_config(std::string_view pair_id,
+                                   std::string_view tg_group_id) const
       -> const GroupBridgeConfig *;
-  [[nodiscard]] auto topic_config(std::string_view tg_group_id,
+  [[nodiscard]] auto topic_config(std::string_view pair_id,
+                                  std::string_view tg_group_id,
                                   int64_t topic_id) const
       -> const TopicBridgeConfig *;
 };
@@ -123,6 +165,9 @@ struct BridgeConfig final {
 
 /** Validate bridge-owned values after loading one immutable generation. */
 void validate_bridge_config(const BridgeConfig &config);
+[[nodiscard]] auto resolve_bridge_source_pair(
+    const BridgeConfig &config, std::string_view source_platform,
+    std::string_view source_installation) -> const BridgeInstallationPair &;
 void validate_bridge_source(const BridgeConfig &config,
                             std::string_view source_platform,
                             std::string_view source_installation);

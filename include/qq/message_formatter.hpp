@@ -12,10 +12,12 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bridge {
 class BridgeStateRepository;
+class ReceivedMessageRepository;
 struct BridgeConfig;
 } // namespace bridge
 
@@ -81,6 +83,11 @@ public:
   auto process_node_message(const obcx::common::MessageSegment &segment,
                             obcx::common::Message &message_to_send)
       -> boost::asio::awaitable<void>;
+  void set_received_message_repository(
+      std::shared_ptr<bridge::ReceivedMessageRepository> repository) {
+    received_message_repository_ = std::move(repository);
+  }
+
   auto send_media_group(
       const std::vector<obcx::common::MessageSegment> &image_segments,
       const std::vector<obcx::common::MessageSegment> &other_segments,
@@ -115,6 +122,8 @@ private:
   std::shared_ptr<BridgeBotOperations> operations_;
   std::shared_ptr<const bridge::BridgeConfig> config_;
   std::shared_ptr<bridge::BridgeStateRepository> state_repository_;
+  std::shared_ptr<bridge::ReceivedMessageRepository>
+      received_message_repository_;
   std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
   ImageDownloader image_downloader_;
   ImageSanitizer image_sanitizer_;

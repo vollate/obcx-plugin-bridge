@@ -11,6 +11,8 @@
 #include <atomic>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 
 namespace bridge {
 
@@ -18,6 +20,9 @@ class QQHandler;
 class RetryQueueWorker;
 class TelegramHandler;
 struct BridgeConfig;
+namespace telegram {
+class TGMediaGroupBuffer;
+}
 
 class BridgeRetryUnavailable final : public std::runtime_error {
 public:
@@ -45,14 +50,15 @@ public:
   void shutdown() noexcept;
 
 private:
-  std::shared_ptr<BridgeBotOperations> operations_;
+  struct PairRuntime;
+
   std::shared_ptr<const BridgeConfig> config_;
   std::shared_ptr<BridgeStateRepository> state_repository_;
   std::shared_ptr<ReceivedMessageRepository> received_message_repository_;
   std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor_;
   std::unique_ptr<RetryQueueWorker> retry_worker_;
-  std::shared_ptr<QQHandler> qq_handler_;
-  std::shared_ptr<TelegramHandler> telegram_handler_;
+  std::shared_ptr<telegram::TGMediaGroupBuffer> media_group_buffer_;
+  std::unordered_map<std::string, std::unique_ptr<PairRuntime>> pair_runtimes_;
   std::atomic_bool shutting_down_{false};
 };
 

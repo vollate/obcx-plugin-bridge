@@ -35,9 +35,12 @@ public:
     co_return bridge::BridgeForwardResult{
         .disposition = bridge::DirectForwardDisposition::NewDelivery,
         .source_platform = message.source_platform,
+        .source_bot = message.source_bot,
+        .source_conversation_id = message.conversation_id,
         .source_message_id = message.payload.value("message_id", ""),
         .target_platform = "telegram",
         .target_bot = "tg-conformance",
+        .target_conversation_id = "chat:conformance",
         .target_message_id = "tg-conformance-1",
     };
   }
@@ -226,6 +229,11 @@ auto main(int argc, char **argv) -> int {
               "message-store did not emit MessageStored");
       require(result.emitted[1].type == "bridge::events::MessageForwarded",
               "bridge did not emit MessageForwarded");
+      require(result.emitted[1].payload.value("source_conversation_id", "") ==
+                      "group:conformance" &&
+                  result.emitted[1].payload.value("target_conversation_id",
+                                                  "") == "chat:conformance",
+              "bridge did not emit complete conversation identity");
       require(forwarder->seen_messages.size() == sequence,
               "bridge forwarder received an unexpected message count");
       require(forwarder->seen_messages.back().raw == input.raw,

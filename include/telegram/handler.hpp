@@ -32,7 +32,8 @@ public:
       std::shared_ptr<BridgeStateRepository> state_repository = nullptr,
       std::shared_ptr<ReceivedMessageRepository> received_message_repository =
           nullptr,
-      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor =
+      std::shared_ptr<obcx::core::BlockingExecutor> blocking_executor = nullptr,
+      std::shared_ptr<telegram::TGMediaGroupBuffer> media_group_buffer =
           nullptr);
 
   auto forward_to_qq(obcx::common::MessageEvent event)

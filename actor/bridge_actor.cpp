@@ -34,12 +34,12 @@ auto payload_string(const obcx::common::json &payload, const char *key)
 }
 
 auto build_forwarded_event(const obcx::core::MessageEnvelope &message,
-                           const storage::MessageMapping &mapping,
-                           const std::string &target_bot)
+                           const storage::MessageMapping &mapping)
     -> obcx::core::MessageEnvelope {
   obcx::core::MessageEnvelope envelope;
-  envelope.id =
-      "forwarded-" + mapping.source_platform + "-" + mapping.source_message_id;
+  envelope.id = "forwarded-" + mapping.source_installation + "-" +
+                mapping.source_platform + "-" + mapping.source_conversation_id +
+                "-" + mapping.source_message_id;
   envelope.type = "bridge::events::MessageForwarded";
   envelope.source_platform = mapping.source_platform;
   envelope.source_bot = message.source_bot;
@@ -48,10 +48,12 @@ auto build_forwarded_event(const obcx::core::MessageEnvelope &message,
   envelope.timestamp = std::chrono::system_clock::now();
   envelope.payload = {
       {"source_platform", mapping.source_platform},
-      {"source_bot", message.source_bot},
+      {"source_bot", mapping.source_installation},
+      {"source_conversation_id", mapping.source_conversation_id},
       {"source_message_id", mapping.source_message_id},
       {"target_platform", mapping.target_platform},
-      {"target_bot", target_bot},
+      {"target_bot", mapping.target_installation},
+      {"target_conversation_id", mapping.target_conversation_id},
       {"target_message_id", mapping.target_message_id},
   };
   return envelope;
@@ -60,9 +62,13 @@ auto build_forwarded_event(const obcx::core::MessageEnvelope &message,
 auto mapping_from_forward_result(const BridgeForwardResult &forward_result)
     -> storage::MessageMapping {
   return storage::MessageMapping{
+      .source_installation = forward_result.source_bot,
       .source_platform = forward_result.source_platform,
+      .source_conversation_id = forward_result.source_conversation_id,
       .source_message_id = forward_result.source_message_id,
+      .target_installation = forward_result.target_bot,
       .target_platform = forward_result.target_platform,
+      .target_conversation_id = forward_result.target_conversation_id,
       .target_message_id = forward_result.target_message_id,
       .created_at = std::chrono::system_clock::now(),
   };
@@ -85,6 +91,7 @@ auto build_failed_event(const obcx::core::MessageEnvelope &message,
       {"message", error_message},
       {"retryable", retryable},
       {"source_platform", message.source_platform},
+      {"source_bot", message.source_bot},
       {"source_message_id", payload_string(message.payload, "message_id")},
   };
   return envelope;
@@ -108,6 +115,8 @@ auto BridgeActor::resolve_repository(obcx::core::ActorContext &context)
     return repository_;
   }
   if (auto injected = context.get_service<BridgeStateRepository>()) {
+    // An injected repository is an explicit test/embedding seam and is
+    // expected to have completed its own initialization before registration.
     repository_ = std::move(injected);
     return repository_;
   }
@@ -121,9 +130,28 @@ auto BridgeActor::resolve_repository(obcx::core::ActorContext &context)
                                                    : context.db_instance();
   auto db_namespace = context.db_namespace().empty() ? context.actor_id()
                                                      : context.db_namespace();
-  repository_ = std::make_shared<BridgeStateRepository>(
+  auto candidate = std::make_shared<BridgeStateRepository>(
       *db_manager, std::move(db_instance), std::move(db_namespace));
-  repository_->initialize_schema();
+
+  const auto generation =
+      context.get_service<obcx::core::ActorGenerationInfo>();
+  const auto reload_candidate =
+      generation && generation->purpose ==
+                        obcx::core::ActorGenerationPurpose::ReloadCandidate;
+  std::optional<BridgeStateMigrationContext> migration;
+  if (context.config().available()) {
+    const auto config = resolve_config(context);
+    migration = config->migration_context(!reload_candidate);
+  }
+  if (reload_candidate) {
+    candidate->validate_schema();
+  } else {
+    candidate->initialize_schema(std::move(migration));
+  }
+  // Publish only a repository whose schema initialization committed. Keeping a
+  // failed candidate here would make the next event bypass migration and issue
+  // version-3 SQL against the still-transactionally-intact version-2 schema.
+  repository_ = std::move(candidate);
   return repository_;
 }
 
@@ -134,6 +162,28 @@ auto BridgeActor::resolve_config(obcx::core::ActorContext &context)
     config_ = load_bridge_config(context.config());
   }
   return config_;
+}
+
+auto BridgeActor::prepare_generation(obcx::core::ActorContext &context)
+    -> obcx::core::ActorPreparationResult {
+  try {
+    (void)resolve_config(context);
+    const auto generation =
+        context.get_service<obcx::core::ActorGenerationInfo>();
+    if (generation && generation->purpose ==
+                          obcx::core::ActorGenerationPurpose::ValidationOnly) {
+      return obcx::core::ActorPreparationResult::ready();
+    }
+    (void)resolve_repository(context);
+    return obcx::core::ActorPreparationResult::ready();
+  } catch (const BridgeSchemaMigrationRequiresRestart &error) {
+    return obcx::core::ActorPreparationResult::restart_required(error.what());
+  } catch (const std::exception &error) {
+    return obcx::core::ActorPreparationResult::failed(error.what());
+  } catch (...) {
+    return obcx::core::ActorPreparationResult::failed(
+        "bridge generation preparation failed with an unknown exception");
+  }
 }
 
 auto BridgeActor::resolve_forwarder(obcx::core::ActorContext &context,
@@ -286,9 +336,13 @@ auto BridgeActor::handle(
       }
 
       auto mapping = mapping_from_forward_result(forward_result);
-      if (mapping.source_platform.empty() ||
+      if (mapping.source_installation.empty() ||
+          mapping.source_platform.empty() ||
+          mapping.source_conversation_id.empty() ||
           mapping.source_message_id.empty() ||
+          mapping.target_installation.empty() ||
           mapping.target_platform.empty() ||
+          mapping.target_conversation_id.empty() ||
           mapping.target_message_id.empty()) {
         auto result = obcx::core::ActorResult::failed(
             "missing_forward_mapping",
@@ -324,8 +378,7 @@ auto BridgeActor::handle(
         }
       }
       auto result = obcx::core::ActorResult::success();
-      result.emit(
-          build_forwarded_event(message, mapping, forward_result.target_bot));
+      result.emit(build_forwarded_event(message, mapping));
       co_return result;
     }
 
@@ -335,6 +388,9 @@ auto BridgeActor::handle(
         payload_string(message.payload, "target_message_id");
     const auto source_id = source_message_id(message);
     if (target_platform.empty() || target_message_id.empty() ||
+        payload_string(message.payload, "target_bot").empty() ||
+        payload_string(message.payload, "target_conversation_id").empty() ||
+        message.source_bot.empty() || message.conversation_id.empty() ||
         source_id.empty()) {
       auto result = obcx::core::ActorResult::failed(
           "missing_forward_mapping",
@@ -347,9 +403,14 @@ auto BridgeActor::handle(
     }
 
     storage::MessageMapping mapping{
+        .source_installation = message.source_bot,
         .source_platform = message.source_platform,
+        .source_conversation_id = message.conversation_id,
         .source_message_id = source_id,
+        .target_installation = payload_string(message.payload, "target_bot"),
         .target_platform = target_platform,
+        .target_conversation_id =
+            payload_string(message.payload, "target_conversation_id"),
         .target_message_id = target_message_id,
         .created_at = std::chrono::system_clock::now(),
     };
@@ -377,8 +438,7 @@ auto BridgeActor::handle(
     }
 
     auto result = obcx::core::ActorResult::success();
-    result.emit(build_forwarded_event(
-        message, mapping, payload_string(message.payload, "target_bot")));
+    result.emit(build_forwarded_event(message, mapping));
     co_return result;
   } catch (const BridgeRetryUnavailable &error) {
     auto result = obcx::core::ActorResult::failed("bridge_retry_unavailable",

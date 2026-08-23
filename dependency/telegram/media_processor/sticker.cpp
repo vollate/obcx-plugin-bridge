@@ -84,14 +84,16 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
       std::string cache_key = media_info.file_unique_id;
       OBCX_DEBUG("表情包缓存查找，使用file_unique_id: {}", cache_key);
 
+      const auto installation =
+          operations_->telegram_installation().installation_id;
       auto cached_path = co_await blocking_executor_->run(
-          [repository = state_repository_,
+          [repository = state_repository_, installation,
            cache_key] -> std::optional<std::string> {
             if (!repository) {
               return std::nullopt;
             }
-            auto cache_info =
-                repository->get_sticker_cache("telegram", cache_key);
+            auto cache_info = repository->get_sticker_cache(
+                installation, "telegram", cache_key);
             if (!cache_info.has_value()) {
               return std::nullopt;
             }
@@ -222,6 +224,8 @@ auto TelegramMediaProcessor::download_sticker_with_cache(
     // 缓存条目以 file_unique_id 作为查询键；没有它就跳过持久化
     if (!media_info.file_unique_id.empty()) {
       storage::StickerCacheInfo new_cache_info;
+      new_cache_info.installation_id =
+          operations_->telegram_installation().installation_id;
       new_cache_info.platform = "telegram";
       new_cache_info.sticker_id = media_info.file_id;
       new_cache_info.sticker_hash = media_info.file_unique_id;

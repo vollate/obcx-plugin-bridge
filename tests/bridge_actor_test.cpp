@@ -10,6 +10,7 @@
 #include "qq/message_formatter.hpp"
 #include "qq/photo_normalizer.hpp"
 #include "telegram/handler.hpp"
+#include "telegram/media_group_buffer.hpp"
 #if __has_include("core/bot_operation_dispatcher.hpp") &&                      \
                   __has_include("core/qq_telegram_bot_endpoints.hpp")
 #if __has_include("core/qq_bot.hpp") && __has_include("core/tg_bot.hpp")
@@ -90,6 +91,53 @@ auto run_actor(std::shared_ptr<obcx::core::ActorServices> services,
   return result;
 }
 
+auto run_actor_sequence(std::shared_ptr<obcx::core::ActorServices> services,
+                        std::vector<obcx::core::MessageEnvelope> messages)
+    -> std::vector<obcx::core::ActorResult> {
+  using namespace std::chrono_literals;
+
+  asio::io_context ioc;
+  auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(2);
+  services->register_service<obcx::core::BlockingExecutor>(blocking_executor);
+  services->register_service<asio::any_io_executor>(
+      std::make_shared<asio::any_io_executor>(ioc.get_executor()));
+  auto work = asio::make_work_guard(ioc);
+  std::jthread io_thread([&ioc] { ioc.run(); });
+
+  obcx::core::NativeActorScheduler scheduler(
+      obcx::core::NativeActorSchedulerOptions{.worker_count = 2}, services);
+  scheduler.register_actor(std::make_shared<bridge::BridgeActor>());
+
+  std::vector<obcx::core::ActorResult> results;
+  results.reserve(messages.size());
+  for (auto &message : messages) {
+    std::promise<obcx::core::ActorResult> completion;
+    auto future = completion.get_future();
+    if (!scheduler.enqueue(
+            obcx::core::ActorInvocation{.actor_id = "bridge",
+                                        .partition_key = "test",
+                                        .db_instance = "main",
+                                        .db_namespace = "bridge",
+                                        .message = std::move(message)},
+            [&completion](obcx::core::ActorResult result) {
+              completion.set_value(std::move(result));
+            })) {
+      throw std::runtime_error("native bridge scheduler rejected invocation");
+    }
+    if (future.wait_for(5s) != std::future_status::ready) {
+      scheduler.shutdown(obcx::core::ActorExecutorShutdownMode::Cancel);
+      throw std::runtime_error("native bridge invocation timed out");
+    }
+    results.push_back(future.get());
+  }
+
+  scheduler.shutdown();
+  blocking_executor->shutdown();
+  work.reset();
+  ioc.stop();
+  return results;
+}
+
 auto temp_db_path(const std::string &name) -> std::filesystem::path {
   return std::filesystem::temp_directory_path() /
          ("obcx_bridge_actor_" + name + "_" +
@@ -127,9 +175,13 @@ auto message_stored(const std::string &source_message_id,
   envelope.source_platform = "qq";
   envelope.source_bot = "qq-main";
   envelope.correlation_id = "corr-" + source_message_id;
+  envelope.conversation_id = "group:group-7";
   envelope.payload = {
-      {"message_id", source_message_id},        {"group_id", "group-7"},
-      {"target_platform", "telegram"},          {"target_bot", "tg-main"},
+      {"message_id", source_message_id},
+      {"group_id", "group-7"},
+      {"target_platform", "telegram"},
+      {"target_bot", "tg-main"},
+      {"target_conversation_id", "chat:tg-group"},
       {"target_message_id", target_message_id},
   };
   return envelope;
@@ -199,7 +251,53 @@ auto raw_poke_notice() -> obcx::core::MessageEnvelope {
   return envelope;
 }
 
+auto installation_for(const std::string_view platform) -> std::string {
+  return platform == "qq" ? "qq-main" : "tg-main";
+}
+
+auto mapped_target(bridge::BridgeStateRepository &repository,
+                   const std::string &source_platform,
+                   const std::string &source_message_id,
+                   const std::string &target_platform)
+    -> std::optional<std::string> {
+  const auto result = repository.resolve_target_mapping(
+      {.installation_id = installation_for(source_platform),
+       .platform = source_platform,
+       .conversation_id =
+           source_platform == "qq" ? "group:qq-group" : "chat:tg-group",
+       .message_id = source_message_id},
+      {.installation_id = installation_for(target_platform),
+       .platform = target_platform,
+       .conversation_id =
+           target_platform == "qq" ? "group:qq-group" : "chat:tg-group"});
+  return result.unique()
+             ? std::optional<std::string>{result.mapping->target_message_id}
+             : std::nullopt;
+}
+
 #if OBCX_BRIDGE_HAS_CONCRETE_BOT_TESTS
+auto mapped_target_scoped(bridge::BridgeStateRepository &repository,
+                          const std::string &source_installation,
+                          const std::string &source_platform,
+                          const std::string &source_conversation,
+                          const std::string &source_message_id,
+                          const std::string &target_installation,
+                          const std::string &target_platform,
+                          const std::string &target_conversation)
+    -> std::optional<std::string> {
+  const auto result = repository.resolve_target_mapping(
+      {.installation_id = source_installation,
+       .platform = source_platform,
+       .conversation_id = source_conversation,
+       .message_id = source_message_id},
+      {.installation_id = target_installation,
+       .platform = target_platform,
+       .conversation_id = target_conversation});
+  return result.unique()
+             ? std::optional<std::string>{result.mapping->target_message_id}
+             : std::nullopt;
+}
+
 auto bridge_message_stored(std::string source_platform,
                            std::string source_message_id, std::string group_id)
     -> obcx::core::MessageEnvelope {
@@ -210,7 +308,9 @@ auto bridge_message_stored(std::string source_platform,
   envelope.source_bot =
       envelope.source_platform == "qq" ? "qq-main" : "tg-main";
   envelope.correlation_id = "corr-" + source_message_id;
-  envelope.conversation_id = "group:" + group_id;
+  envelope.conversation_id = envelope.source_platform == "qq"
+                                 ? "group:" + group_id
+                                 : "chat:" + group_id;
   envelope.payload = {
       {"message_id", source_message_id},
       {"conversation_id", envelope.conversation_id},
@@ -287,6 +387,14 @@ auto bridge_config_service(const bool enable_retry,
                 "show_qq_to_tg_sender = false\n"
                 "show_tg_to_qq_sender = false\n"
                 "enable_qq_to_tg = true\n"
+                "enable_tg_to_qq = true\n\n"
+                "[[group_mappings.group_to_group]]\n"
+                "telegram_group_id = \"tg-history\"\n"
+                "qq_group_id = \"qq-history\"\n"
+                "mode = \"group_to_group\"\n"
+                "show_qq_to_tg_sender = false\n"
+                "show_tg_to_qq_sender = false\n"
+                "enable_qq_to_tg = true\n"
                 "enable_tg_to_qq = true\n";
     }
   }
@@ -306,6 +414,7 @@ public:
                           const obcx::common::Message &message)
       -> asio::awaitable<std::string> override {
     last_group_id = group_id;
+    sent_group_ids.emplace_back(group_id);
     last_message = message;
     const auto call = send_group_calls.fetch_add(1);
     if (force_malformed_send.load(std::memory_order_acquire)) {
@@ -324,8 +433,9 @@ public:
         std::string{user_id} + "\",\"nickname\":\"retry-user\",\"card\":\"\"}}";
   }
 
-  auto delete_message(std::string_view)
+  auto delete_message(std::string_view message_id)
       -> asio::awaitable<std::string> override {
+    last_deleted_message_id = message_id;
     delete_message_calls.fetch_add(1, std::memory_order_relaxed);
     co_return R"({"status":"ok","retcode":0,"data":null})";
   }
@@ -338,6 +448,8 @@ public:
   std::atomic_int send_group_calls = 0;
   std::atomic_int delete_message_calls = 0;
   std::string last_group_id;
+  std::string last_deleted_message_id;
+  std::vector<std::string> sent_group_ids;
   obcx::common::Message last_message;
   std::atomic_bool always_succeed = false;
   std::atomic_bool succeed_after_first = false;
@@ -549,6 +661,58 @@ auto bridge_operations_for_onebot(obcx::core::IBot &qq_bot)
   return bridge_operations(qq_bot, telegram_stub);
 }
 
+auto bridge_multi_pair_config_service()
+    -> std::shared_ptr<obcx::common::ActorConfigService> {
+  const auto path = temp_db_path("multi_pair").replace_extension(".toml");
+  {
+    std::ofstream config(path);
+    config << R"(
+[bots.qq-a]
+type = "qq"
+enabled = true
+[bots.tg-a]
+type = "telegram"
+enabled = true
+[bots.qq-b]
+type = "qq"
+enabled = true
+[bots.tg-b]
+type = "telegram"
+enabled = true
+
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+enable_retry_queue = false
+
+[[actors.bridge.config.installation_pairs]]
+id = "a"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-a"
+
+[[actors.bridge.config.installation_pairs]]
+id = "b"
+telegram_installation = "tg-b"
+onebot11_installation = "qq-b"
+
+[[group_mappings.group_to_group]]
+pair = "a"
+telegram_group_id = "tg-group"
+qq_group_id = "qq-group"
+
+[[group_mappings.group_to_group]]
+pair = "b"
+telegram_group_id = "tg-group"
+qq_group_id = "qq-group"
+)";
+  }
+  auto built = obcx::common::ConfigLoader::build_snapshot(path.string());
+  std::filesystem::remove(path);
+  if (!built) {
+    throw std::runtime_error("failed to build multi-pair config");
+  }
+  return std::make_shared<obcx::common::ActorConfigService>(built.snapshot);
+}
+
 auto bridge_retry_services(
     const std::shared_ptr<obcx::core::DbManager> &db_manager,
     const std::shared_ptr<RetryTestQQBot> &qq_bot,
@@ -573,6 +737,31 @@ auto bridge_retry_services(
   services->register_service<obcx::common::ActorConfigService>(
       bridge_config_service(enable_retry, retry_interval_seconds,
                             topic_mapping));
+  return services;
+}
+
+auto bridge_multi_pair_services(
+    const std::shared_ptr<obcx::core::DbManager> &db_manager,
+    const std::shared_ptr<RetryTestQQBot> &qq_a,
+    const std::shared_ptr<RetryTestTelegramBot> &tg_a,
+    const std::shared_ptr<RetryTestQQBot> &qq_b,
+    const std::shared_ptr<RetryTestTelegramBot> &tg_b)
+    -> std::shared_ptr<obcx::core::ActorServices> {
+  auto dispatcher =
+      std::make_shared<obcx::core::QQTelegramOperationDispatcher>();
+  obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "qq-a",
+                                                       "qq", qq_a);
+  obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "tg-a",
+                                                       "telegram", tg_a);
+  obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "qq-b",
+                                                       "qq", qq_b);
+  obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "tg-b",
+                                                       "telegram", tg_b);
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  services->register_service<obcx::core::DbManager>(db_manager);
+  services->register_service<obcx::bot::BotOperationClient>(dispatcher);
+  services->register_service<obcx::common::ActorConfigService>(
+      bridge_multi_pair_config_service());
   return services;
 }
 
@@ -623,8 +812,8 @@ auto run_actor_until_retry(
 
     const auto deadline = std::chrono::steady_clock::now() + 5s;
     while (std::chrono::steady_clock::now() < deadline) {
-      result.target_message_id = repository->get_target_message_id(
-          source_platform, source_message_id, target_platform);
+      result.target_message_id = mapped_target(
+          *repository, source_platform, source_message_id, target_platform);
       if (result.target_message_id.has_value()) {
         break;
       }
@@ -688,13 +877,23 @@ enable_tg_to_qq = true
 
 class RecordingForwarder final : public bridge::IBridgeForwarder {
 public:
-  explicit RecordingForwarder(bridge::BridgeForwardResult result)
-      : result_(std::move(result)) {}
+  explicit RecordingForwarder(bridge::BridgeForwardResult result,
+                              const bool infer_conversations = true)
+      : result_(std::move(result)), infer_conversations_(infer_conversations) {}
 
   auto forward_message(const obcx::core::MessageEnvelope &message)
       -> asio::awaitable<bridge::BridgeForwardResult> override {
     seen_messages.push_back(message);
-    co_return result_;
+    auto result = result_;
+    if (infer_conversations_ && result.source_conversation_id.empty()) {
+      result.source_conversation_id = message.conversation_id;
+    }
+    if (infer_conversations_ && result.target_conversation_id.empty() &&
+        !result.target_platform.empty()) {
+      result.target_conversation_id =
+          result.target_platform == "qq" ? "group:qq-group" : "chat:tg-group";
+    }
+    co_return result;
   }
 
   auto handle_command(const obcx::command::CommandInvocation &invocation)
@@ -715,6 +914,7 @@ public:
 
 private:
   bridge::BridgeForwardResult result_;
+  bool infer_conversations_ = true;
 };
 
 class SuspendingForwarder final : public bridge::IBridgeForwarder {
@@ -728,9 +928,12 @@ public:
     co_return bridge::BridgeForwardResult{
         .disposition = bridge::DirectForwardDisposition::NewDelivery,
         .source_platform = "qq",
+        .source_bot = "qq-main",
+        .source_conversation_id = "group:qq-group",
         .source_message_id = "qq-media-1",
         .target_platform = "telegram",
         .target_bot = "tg-main",
+        .target_conversation_id = "chat:tg-group",
         .target_message_id = "tg-media-1",
     };
   }
@@ -780,12 +983,24 @@ TEST(BridgeActorTest, DeclaresTypedCommandsWithoutHandlerMetadata) {
   ASSERT_TRUE(contract.contains("configuration"));
   EXPECT_EQ(contract["configuration"]["required_strings"],
             obcx::common::json::array({"bridge_files_dir"}));
-  EXPECT_EQ(
-      contract["configuration"]["bot_installations"]["telegram_installation"],
-      "telegram");
-  EXPECT_EQ(
-      contract["configuration"]["bot_installations"]["onebot11_installation"],
-      "qq");
+  EXPECT_EQ(contract["configuration"]["bot_installations"]
+                    ["telegram_installation"]["types"],
+            "telegram");
+  EXPECT_EQ(contract["configuration"]["bot_installations"]
+                    ["onebot11_installation"]["types"],
+            "qq");
+  const auto &pairs = contract["configuration"]["bot_installation_collections"]
+                              ["installation_pairs"];
+  EXPECT_EQ(pairs["identity"], "id");
+  EXPECT_EQ(pairs["minimum_items"], 1);
+  EXPECT_EQ(pairs["bot_installations"]["telegram_installation"], "telegram");
+  EXPECT_TRUE(std::ranges::any_of(
+      contract["configuration"]["collection_identity_references"],
+      [](const auto &reference) {
+        return reference.value("root_section", std::string{}) ==
+                   "actors.bridge.config" &&
+               reference.value("source_key", std::string{}) == "pair";
+      }));
   EXPECT_TRUE(
       std::ranges::any_of(contract["accepted_inputs"], [](const auto &input) {
         return input == "obcx::core::events::RawNoticeEvent";
@@ -963,6 +1178,7 @@ TEST(BridgeActorTest, DeliveryFailureKeepsTypedDiagnosticWithoutMapping) {
       std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{
           .disposition = bridge::DirectForwardDisposition::DeliveryFailed,
           .source_platform = "qq",
+          .source_bot = "qq-main",
           .source_message_id = "qq-failed-1",
           .target_platform = "telegram",
           .target_bot = "tg-main",
@@ -999,6 +1215,7 @@ TEST(BridgeActorTest, ForwardsMessageStoredThroughRuntimeForwarder) {
       std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{
           .disposition = bridge::DirectForwardDisposition::NewDelivery,
           .source_platform = "qq",
+          .source_bot = "qq-main",
           .source_message_id = "qq-actor-1",
           .target_platform = "telegram",
           .target_bot = "tg-main",
@@ -1052,6 +1269,7 @@ TEST(BridgeActorTest, RejectsIncompleteDirectForwardOutcomeWithoutWriting) {
       std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{
           .disposition = bridge::DirectForwardDisposition::NewDelivery,
           .source_platform = "qq",
+          .source_bot = "qq-main",
           .source_message_id = "qq-incomplete-1",
           .target_platform = "telegram",
           .target_bot = "tg-main",
@@ -1072,6 +1290,39 @@ TEST(BridgeActorTest, RejectsIncompleteDirectForwardOutcomeWithoutWriting) {
   EXPECT_EQ(
       repository->message_mapping_operation_counts().direct_forward_writes, 0U);
 
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, RejectsDeliveredOutcomeWithoutConversations) {
+  const auto db_path = temp_db_path("missing_conversations");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      *db_manager, "main", "bridge");
+  repository->initialize_schema();
+  repository->reset_message_mapping_operation_counts();
+  auto services = std::make_shared<obcx::core::ActorServices>();
+  services->register_service<obcx::core::DbManager>(db_manager);
+  services->register_service<bridge::BridgeStateRepository>(repository);
+  services->register_service<bridge::IBridgeForwarder>(
+      std::make_shared<RecordingForwarder>(
+          bridge::BridgeForwardResult{
+              .disposition = bridge::DirectForwardDisposition::NewDelivery,
+              .source_platform = "qq",
+              .source_bot = "qq-main",
+              .source_message_id = "source",
+              .target_platform = "telegram",
+              .target_bot = "tg-main",
+              .target_message_id = "target"},
+          false));
+
+  const auto result = run_actor(services, message_stored("source", "unused"));
+
+  ASSERT_FALSE(result.ok());
+  ASSERT_TRUE(result.failure.has_value());
+  EXPECT_EQ(result.failure->code, "missing_forward_mapping");
+  EXPECT_EQ(
+      repository->message_mapping_operation_counts().direct_forward_writes, 0U);
   std::filesystem::remove(db_path);
 }
 
@@ -1102,6 +1353,7 @@ TEST(BridgeActorTest,
       std::make_shared<RecordingForwarder>(bridge::BridgeForwardResult{
           .disposition = bridge::DirectForwardDisposition::NewDelivery,
           .source_platform = "qq",
+          .source_bot = "qq-main",
           .source_message_id = "qq-persist-failure-1",
           .target_platform = "telegram",
           .target_bot = "tg-main",
@@ -1125,8 +1377,7 @@ TEST(BridgeActorTest,
   EXPECT_EQ(
       repository->message_mapping_operation_counts().direct_forward_writes, 1U);
   EXPECT_FALSE(
-      repository
-          ->get_target_message_id("qq", "qq-persist-failure-1", "telegram")
+      mapped_target(*repository, "qq", "qq-persist-failure-1", "telegram")
           .has_value());
 
   std::filesystem::remove(db_path);
@@ -1227,6 +1478,38 @@ TEST(BridgeActorTest, ForwardsQqPokeNoticeToTelegramThroughRuntime) {
   std::filesystem::remove(db_path);
 }
 
+TEST(BridgeActorTest,
+     TelegramMediaGroupBufferScopesEqualIdsByInstallationAndChat) {
+  asio::io_context context;
+  auto buffer = std::make_shared<bridge::telegram::TGMediaGroupBuffer>(
+      context.get_executor());
+  obcx::common::MessageEvent first;
+  first.group_id = "chat-a";
+  first.message_id = "same-message";
+  first.data["media_group_id"] = "same-album";
+  auto second = first;
+  second.group_id = "chat-b";
+  auto third = first;
+
+  std::vector<obcx::common::MessageEvent> first_batch;
+  std::vector<obcx::common::MessageEvent> second_batch;
+  std::vector<obcx::common::MessageEvent> third_batch;
+  buffer->add("tg-a", std::move(first),
+              [&](auto events) { first_batch = std::move(events); });
+  buffer->add("tg-a", std::move(second),
+              [&](auto events) { second_batch = std::move(events); });
+  buffer->add("tg-b", std::move(third),
+              [&](auto events) { third_batch = std::move(events); });
+  buffer->flush_all_now();
+
+  ASSERT_EQ(first_batch.size(), 1U);
+  ASSERT_EQ(second_batch.size(), 1U);
+  ASSERT_EQ(third_batch.size(), 1U);
+  EXPECT_EQ(first_batch.front().group_id, "chat-a");
+  EXPECT_EQ(second_batch.front().group_id, "chat-b");
+  EXPECT_EQ(third_batch.front().group_id, "chat-a");
+}
+
 TEST(BridgeActorTest, QqSenderPrefixStylesWholeBracketedLabelForTelegram) {
   auto config = std::make_shared<bridge::BridgeConfig>();
   RetryTestQQBot qq_bot;
@@ -1287,6 +1570,165 @@ TEST(BridgeActorTest, RejectsMissingOrMismatchedSourceBotBeforeProviderIo) {
   std::filesystem::remove(db_path);
 }
 
+TEST(BridgeActorTest,
+     GenerationPreparationCreatesStartupSchemaButValidationIsReadOnly) {
+  const auto validation_path = temp_db_path("validation_preparation");
+  auto validation_db = std::make_shared<obcx::core::DbManager>();
+  validation_db->configure({sqlite_config(validation_path)});
+  auto validation_services =
+      bridge_retry_services(validation_db, std::make_shared<RetryTestQQBot>(),
+                            std::make_shared<RetryTestTelegramBot>(), false);
+  validation_services->register_service<obcx::core::ActorGenerationInfo>(
+      std::make_shared<obcx::core::ActorGenerationInfo>(
+          obcx::core::ActorGenerationInfo{
+              .purpose = obcx::core::ActorGenerationPurpose::ValidationOnly,
+              .generation_id = 1}));
+  obcx::core::ActorContext validation_context("bridge", validation_services,
+                                              "main", "bridge");
+  bridge::BridgeActor validation_actor;
+  EXPECT_TRUE(validation_actor.prepare_generation(validation_context).ok());
+  EXPECT_FALSE(validation_db->run_read<bool>(
+      "main", [](obcx::core::IDbConnection &connection) {
+        return !connection
+                    .query("SELECT name FROM sqlite_master WHERE type='table' "
+                           "AND name='bridge_schema_version';")
+                    .empty();
+      }));
+
+  const auto startup_path = temp_db_path("startup_preparation");
+  auto startup_db = std::make_shared<obcx::core::DbManager>();
+  startup_db->configure({sqlite_config(startup_path)});
+  auto startup_services =
+      bridge_retry_services(startup_db, std::make_shared<RetryTestQQBot>(),
+                            std::make_shared<RetryTestTelegramBot>(), false);
+  startup_services->register_service<obcx::core::ActorGenerationInfo>(
+      std::make_shared<obcx::core::ActorGenerationInfo>(
+          obcx::core::ActorGenerationInfo{
+              .purpose = obcx::core::ActorGenerationPurpose::Startup,
+              .generation_id = 2}));
+  obcx::core::ActorContext startup_context("bridge", startup_services, "main",
+                                           "bridge");
+  bridge::BridgeActor startup_actor;
+  EXPECT_TRUE(startup_actor.prepare_generation(startup_context).ok());
+  bridge::BridgeStateRepository repository(*startup_db, "main", "bridge");
+  EXPECT_EQ(repository.schema_version(), 3);
+
+  std::filesystem::remove(validation_path);
+  std::filesystem::remove(startup_path);
+}
+
+TEST(BridgeActorTest, ReloadCandidateCannotMigrateVersionTwoBridgeState) {
+  const auto db_path = temp_db_path("reload_version_two_schema");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  db_manager->run_write<void>(
+      "main", [](obcx::core::IDbConnection &connection) {
+        connection.execute(R"(
+          CREATE TABLE bridge_schema_version(version INTEGER NOT NULL);
+        )");
+        connection.execute("INSERT INTO bridge_schema_version VALUES "
+                           "(2);");
+      });
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  auto services =
+      bridge_retry_services(db_manager, qq_bot, telegram_bot, false);
+  services->register_service<obcx::core::ActorGenerationInfo>(
+      std::make_shared<obcx::core::ActorGenerationInfo>(
+          obcx::core::ActorGenerationInfo{
+              .purpose = obcx::core::ActorGenerationPurpose::ReloadCandidate,
+              .generation_id = 2}));
+
+  obcx::core::ActorContext preparation_context("bridge", services, "main",
+                                               "bridge");
+  bridge::BridgeActor candidate;
+  const auto preparation = candidate.prepare_generation(preparation_context);
+  EXPECT_EQ(preparation.status,
+            obcx::core::ActorPreparationStatus::RestartRequired);
+  EXPECT_NE(preparation.message.find("requires process restart"),
+            std::string::npos);
+
+  const auto result = run_actor(
+      services, bridge_message_stored("qq", "new-message", "qq-group"));
+
+  ASSERT_FALSE(result.ok());
+  ASSERT_TRUE(result.failure.has_value());
+  EXPECT_EQ(result.failure->code, "bridge_error");
+  EXPECT_NE(result.failure->message.find("requires process restart"),
+            std::string::npos);
+  EXPECT_EQ(telegram_bot->send_group_calls.load(), 0);
+  EXPECT_EQ(
+      db_manager->run_read<std::int64_t>(
+          "main",
+          [](obcx::core::IDbConnection &connection) {
+            return std::get<std::int64_t>(
+                connection.query("SELECT version FROM bridge_schema_version;")
+                    .front()
+                    .at("version"));
+          }),
+      2);
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, FailedMigrationDoesNotCacheUninitializedRepository) {
+  const auto db_path = temp_db_path("failed_migration_repository_cache");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  bridge::BridgeStateRepository initial(*db_manager, "main", "bridge");
+  initial.initialize_schema();
+  db_manager->run_write<void>(
+      "main", [](obcx::core::IDbConnection &connection) {
+        connection.execute("DROP INDEX idx_bridge_message_mapping_reverse;");
+        connection.execute("ALTER TABLE bridge_message_mappings RENAME TO "
+                           "bridge_message_mappings_v3_empty;");
+        connection.execute(R"(
+          CREATE TABLE bridge_message_mappings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_installation TEXT NOT NULL,
+            source_platform TEXT NOT NULL,
+            source_message_id TEXT NOT NULL,
+            target_installation TEXT NOT NULL,
+            target_platform TEXT NOT NULL,
+            target_message_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(source_installation, source_platform, source_message_id,
+                   target_installation, target_platform));
+        )");
+        connection.execute("DROP TABLE bridge_message_mappings_v3_empty;");
+        connection.execute(R"(
+          INSERT INTO bridge_message_mappings
+            (source_installation, source_platform, source_message_id,
+             target_installation, target_platform, target_message_id,
+             created_at)
+          VALUES ('qq-main','qq','unresolved-source','tg-main','telegram',
+                  'unresolved-target',1);
+        )");
+        connection.execute("UPDATE bridge_schema_version SET version=2;");
+      });
+
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  const auto services =
+      bridge_retry_services(db_manager, qq_bot, telegram_bot, false);
+  auto results = run_actor_sequence(
+      services, {bridge_message_stored("qq", "first-event", "qq-group"),
+                 bridge_message_stored("qq", "second-event", "qq-group")});
+
+  ASSERT_EQ(results.size(), 2U);
+  for (const auto &result : results) {
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.failure.has_value());
+    EXPECT_EQ(result.failure->code, "bridge_error");
+    EXPECT_NE(result.failure->message.find("source_history_missing=1"),
+              std::string::npos);
+    EXPECT_EQ(result.failure->message.find("no such column"),
+              std::string::npos);
+  }
+  EXPECT_EQ(initial.schema_version(), 2);
+  EXPECT_EQ(telegram_bot->send_group_calls.load(), 0);
+  std::filesystem::remove(db_path);
+}
+
 TEST(BridgeActorTest, QqDirectForwardUsesOneDedupReadAndOneActorWrite) {
   const auto db_path = temp_db_path("qq_direct_operation_counts");
   auto db_manager = std::make_shared<obcx::core::DbManager>();
@@ -1309,6 +1751,10 @@ TEST(BridgeActorTest, QqDirectForwardUsesOneDedupReadAndOneActorWrite) {
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(result.emitted.size(), 1U);
   EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwarded");
+  EXPECT_EQ(result.emitted.front().payload["source_conversation_id"],
+            "group:qq-group");
+  EXPECT_EQ(result.emitted.front().payload["target_conversation_id"],
+            "chat:tg-group");
   EXPECT_EQ(result.emitted.front().payload["target_message_id"], "8001");
   EXPECT_EQ(telegram_bot->send_group_calls.load(), 1);
   const auto counts = repository->message_mapping_operation_counts();
@@ -1317,7 +1763,7 @@ TEST(BridgeActorTest, QqDirectForwardUsesOneDedupReadAndOneActorWrite) {
   EXPECT_EQ(counts.direct_forward_writes, 1U);
   EXPECT_EQ(counts.retry_completion_writes, 0U);
   EXPECT_EQ(counts.deferred_media_group_writes, 0U);
-  EXPECT_EQ(repository->get_target_message_id("qq", "qq-direct-1", "telegram"),
+  EXPECT_EQ(mapped_target(*repository, "qq", "qq-direct-1", "telegram"),
             "8001");
 
   std::filesystem::remove(db_path);
@@ -1345,6 +1791,10 @@ TEST(BridgeActorTest, TelegramDirectForwardUsesOneDedupReadAndOneActorWrite) {
   ASSERT_TRUE(result.ok());
   ASSERT_EQ(result.emitted.size(), 1U);
   EXPECT_EQ(result.emitted.front().type, "bridge::events::MessageForwarded");
+  EXPECT_EQ(result.emitted.front().payload["source_conversation_id"],
+            "chat:tg-group");
+  EXPECT_EQ(result.emitted.front().payload["target_conversation_id"],
+            "group:qq-group");
   EXPECT_EQ(result.emitted.front().payload["target_message_id"], "9001");
   EXPECT_EQ(qq_bot->send_group_calls.load(), 1);
   const auto counts = repository->message_mapping_operation_counts();
@@ -1353,7 +1803,7 @@ TEST(BridgeActorTest, TelegramDirectForwardUsesOneDedupReadAndOneActorWrite) {
   EXPECT_EQ(counts.direct_forward_writes, 1U);
   EXPECT_EQ(counts.retry_completion_writes, 0U);
   EXPECT_EQ(counts.deferred_media_group_writes, 0U);
-  EXPECT_EQ(repository->get_target_message_id("telegram", "tg-direct-1", "qq"),
+  EXPECT_EQ(mapped_target(*repository, "telegram", "tg-direct-1", "qq"),
             "9001");
 
   std::filesystem::remove(db_path);
@@ -1413,6 +1863,159 @@ TEST(BridgeActorTest, TelegramMediaFetchIsBoundedAndLeavesNoTokenUrl) {
   std::filesystem::remove(db_path);
 }
 
+TEST(BridgeActorTest, MultiPairRoutingIsolatesCollidingNativeMessageIds) {
+  const auto db_path = temp_db_path("multi_pair_collisions");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto qq_a = std::make_shared<RetryTestQQBot>();
+  auto qq_b = std::make_shared<RetryTestQQBot>();
+  auto tg_a = std::make_shared<RetryTestTelegramBot>();
+  auto tg_b = std::make_shared<RetryTestTelegramBot>();
+  qq_a->always_succeed.store(true, std::memory_order_release);
+  qq_b->always_succeed.store(true, std::memory_order_release);
+  tg_a->always_succeed.store(true, std::memory_order_release);
+  tg_b->always_succeed.store(true, std::memory_order_release);
+  auto services =
+      bridge_multi_pair_services(db_manager, qq_a, tg_a, qq_b, tg_b);
+
+  auto qq_from_a = bridge_message_stored("qq", "same-native", "qq-group");
+  qq_from_a.source_bot = "qq-a";
+  ASSERT_TRUE(run_actor(services, std::move(qq_from_a)).ok());
+  auto qq_from_b = bridge_message_stored("qq", "same-native", "qq-group");
+  qq_from_b.source_bot = "qq-b";
+  ASSERT_TRUE(run_actor(services, std::move(qq_from_b)).ok());
+
+  auto tg_from_a = bridge_message_stored("telegram", "same-native", "tg-group");
+  tg_from_a.source_bot = "tg-a";
+  ASSERT_TRUE(run_actor(services, std::move(tg_from_a)).ok());
+  auto tg_from_b = bridge_message_stored("telegram", "same-native", "tg-group");
+  tg_from_b.source_bot = "tg-b";
+  ASSERT_TRUE(run_actor(services, std::move(tg_from_b)).ok());
+
+  EXPECT_EQ(tg_a->send_group_calls.load(), 1);
+  EXPECT_EQ(tg_b->send_group_calls.load(), 1);
+  EXPECT_EQ(qq_a->send_group_calls.load(), 1);
+  EXPECT_EQ(qq_b->send_group_calls.load(), 1);
+
+  bridge::BridgeStateRepository repository(*db_manager, "main", "bridge");
+  EXPECT_EQ(mapped_target_scoped(repository, "qq-a", "qq", "group:qq-group",
+                                 "same-native", "tg-a", "telegram",
+                                 "chat:tg-group"),
+            "8001");
+  EXPECT_EQ(mapped_target_scoped(repository, "qq-b", "qq", "group:qq-group",
+                                 "same-native", "tg-b", "telegram",
+                                 "chat:tg-group"),
+            "8001");
+  EXPECT_EQ(mapped_target_scoped(repository, "tg-a", "telegram",
+                                 "chat:tg-group", "same-native", "qq-a", "qq",
+                                 "group:qq-group"),
+            "9001");
+  EXPECT_EQ(mapped_target_scoped(repository, "tg-b", "telegram",
+                                 "chat:tg-group", "same-native", "qq-b", "qq",
+                                 "group:qq-group"),
+            "9001");
+  EXPECT_FALSE(mapped_target_scoped(repository, "qq-a", "qq", "group:qq-group",
+                                    "same-native", "tg-b", "telegram",
+                                    "chat:tg-group")
+                   .has_value());
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest,
+     SameInstallationChatCollisionRepliesToCurrentConversationOnly) {
+  const auto db_path = temp_db_path("same_installation_chat_collision");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      *db_manager, "main", "bridge");
+  repository->initialize_schema();
+  ASSERT_TRUE(repository->add_message_mapping(
+      storage::MessageMapping{.source_installation = "qq-main",
+                              .source_platform = "qq",
+                              .source_conversation_id = "group:qq-group",
+                              .source_message_id = "1162814500",
+                              .target_installation = "tg-main",
+                              .target_platform = "telegram",
+                              .target_conversation_id = "chat:tg-group",
+                              .target_message_id = "2700",
+                              .created_at = std::chrono::system_clock::now()}));
+  ASSERT_TRUE(repository->add_message_mapping(
+      storage::MessageMapping{.source_installation = "qq-main",
+                              .source_platform = "qq",
+                              .source_conversation_id = "group:qq-history",
+                              .source_message_id = "-1583402916",
+                              .target_installation = "tg-main",
+                              .target_platform = "telegram",
+                              .target_conversation_id = "chat:tg-history",
+                              .target_message_id = "2700",
+                              .created_at = std::chrono::system_clock::now()}));
+
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  qq_bot->always_succeed.store(true, std::memory_order_release);
+  auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  auto services =
+      bridge_retry_services(db_manager, qq_bot, telegram_bot, false);
+  services->register_service<bridge::BridgeStateRepository>(repository);
+
+  auto stored = bridge_message_stored("telegram", "2702", "tg-group");
+  stored.raw["reply_to_message"] = {{"message_id", 2700}};
+  const auto result = run_actor(services, std::move(stored));
+
+  ASSERT_TRUE(result.ok());
+  ASSERT_EQ(qq_bot->send_group_calls.load(), 1);
+  EXPECT_EQ(qq_bot->last_group_id, "qq-group");
+  ASSERT_FALSE(qq_bot->last_message.empty());
+  EXPECT_EQ(qq_bot->last_message.front().type, "reply");
+  EXPECT_EQ(qq_bot->last_message.front().data.value("id", std::string{}),
+            "1162814500");
+  EXPECT_NE(qq_bot->last_message.front().data.value("id", std::string{}),
+            "-1583402916");
+
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, AmbiguousReplyMappingFailsBeforeProviderIo) {
+  const auto db_path = temp_db_path("ambiguous_reply_mapping");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      *db_manager, "main", "bridge");
+  repository->initialize_schema();
+  for (const auto source_id : {"qq-one", "qq-two"}) {
+    ASSERT_TRUE(repository->add_message_mapping(storage::MessageMapping{
+        .source_installation = "qq-main",
+        .source_platform = "qq",
+        .source_conversation_id = "group:qq-group",
+        .source_message_id = source_id,
+        .target_installation = "tg-main",
+        .target_platform = "telegram",
+        .target_conversation_id = "chat:tg-group",
+        .target_message_id = "2700",
+        .is_primary = true,
+        .created_at = std::chrono::system_clock::now()}));
+  }
+
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  qq_bot->always_succeed.store(true, std::memory_order_release);
+  auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  auto services =
+      bridge_retry_services(db_manager, qq_bot, telegram_bot, false);
+  services->register_service<bridge::BridgeStateRepository>(repository);
+  auto stored = bridge_message_stored("telegram", "2702", "tg-group");
+  stored.raw["reply_to_message"] = {{"message_id", 2700}};
+
+  const auto result = run_actor(services, std::move(stored));
+
+  ASSERT_FALSE(result.ok());
+  ASSERT_TRUE(result.failure.has_value());
+  EXPECT_EQ(result.failure->code, "bridge_delivery_failed");
+  EXPECT_EQ(result.failure->message, "ambiguous_message_mapping");
+  EXPECT_EQ(qq_bot->send_group_calls.load(), 0);
+  EXPECT_TRUE(mapped_target(*repository, "telegram", "2702", "qq") ==
+              std::nullopt);
+  std::filesystem::remove(db_path);
+}
+
 TEST(BridgeActorTest, TelegramEditResendReturnsNewMappingForOneActorWrite) {
   const auto db_path = temp_db_path("telegram_edit_operation_counts");
   auto db_manager = std::make_shared<obcx::core::DbManager>();
@@ -1421,10 +2024,25 @@ TEST(BridgeActorTest, TelegramEditResendReturnsNewMappingForOneActorWrite) {
       *db_manager, "main", "bridge");
   repository->initialize_schema();
   ASSERT_TRUE(repository->add_message_mapping(storage::MessageMapping{
+      .source_installation = "tg-main",
       .source_platform = "telegram",
+      .source_conversation_id = "chat:tg-group",
       .source_message_id = "tg-edit-1",
+      .target_installation = "qq-main",
       .target_platform = "qq",
+      .target_conversation_id = "group:qq-group",
       .target_message_id = "qq-old-1",
+      .created_at = std::chrono::system_clock::now(),
+  }));
+  ASSERT_TRUE(repository->add_message_mapping(storage::MessageMapping{
+      .source_installation = "tg-main",
+      .source_platform = "telegram",
+      .source_conversation_id = "chat:tg-history",
+      .source_message_id = "tg-edit-1",
+      .target_installation = "qq-main",
+      .target_platform = "qq",
+      .target_conversation_id = "group:qq-history",
+      .target_message_id = "qq-old-history",
       .created_at = std::chrono::system_clock::now(),
   }));
   repository->reset_message_mapping_operation_counts();
@@ -1442,13 +2060,13 @@ TEST(BridgeActorTest, TelegramEditResendReturnsNewMappingForOneActorWrite) {
 
   ASSERT_TRUE(result.ok());
   EXPECT_EQ(qq_bot->delete_message_calls.load(), 1);
+  EXPECT_EQ(qq_bot->last_deleted_message_id, "qq-old-1");
   EXPECT_EQ(qq_bot->send_group_calls.load(), 1);
   const auto counts = repository->message_mapping_operation_counts();
   EXPECT_EQ(counts.pre_send_deduplication_reads, 0U);
   EXPECT_EQ(counts.post_send_recovery_reads, 0U);
   EXPECT_EQ(counts.direct_forward_writes, 1U);
-  EXPECT_EQ(repository->get_target_message_id("telegram", "tg-edit-1", "qq"),
-            "9001");
+  EXPECT_EQ(mapped_target(*repository, "telegram", "tg-edit-1", "qq"), "9001");
 
   std::filesystem::remove(db_path);
 }
@@ -1461,9 +2079,13 @@ TEST(BridgeActorTest, AlreadyPersistedDirectForwardSkipsSendAndActorWrite) {
       *db_manager, "main", "bridge");
   repository->initialize_schema();
   ASSERT_TRUE(repository->add_message_mapping(storage::MessageMapping{
+      .source_installation = "qq-main",
       .source_platform = "qq",
+      .source_conversation_id = "group:qq-group",
       .source_message_id = "qq-already-1",
+      .target_installation = "tg-main",
       .target_platform = "telegram",
+      .target_conversation_id = "chat:tg-group",
       .target_message_id = "tg-existing-1",
       .created_at = std::chrono::system_clock::now(),
   }));
@@ -1529,9 +2151,8 @@ TEST(BridgeActorTest, InlineQqMediaGroupReturnsPrimaryIdForOneActorWrite) {
   EXPECT_EQ(counts.post_send_recovery_reads, 0U);
   EXPECT_EQ(counts.direct_forward_writes, 1U);
   EXPECT_EQ(counts.deferred_media_group_writes, 0U);
-  EXPECT_EQ(
-      repository->get_target_message_id("qq", "qq-album-inline-1", "telegram"),
-      "8101");
+  EXPECT_EQ(mapped_target(*repository, "qq", "qq-album-inline-1", "telegram"),
+            "8101");
 
   std::filesystem::remove(db_path);
 }
@@ -2251,13 +2872,94 @@ TEST(BridgeActorTest,
   EXPECT_EQ(counts.retry_completion_writes, 0U);
   EXPECT_EQ(counts.deferred_media_group_writes, 2U);
   EXPECT_EQ(counts.post_send_recovery_reads, 0U);
-  EXPECT_EQ(repository->get_target_message_id("telegram", "tg-album-1", "qq"),
-            "9001");
-  EXPECT_EQ(repository->get_target_message_id("telegram", "tg-album-2", "qq"),
-            "9001");
+  EXPECT_EQ(mapped_target(*repository, "telegram", "tg-album-1", "qq"), "9001");
+  EXPECT_EQ(mapped_target(*repository, "telegram", "tg-album-2", "qq"), "9001");
+  const auto reverse =
+      repository->resolve_source_mapping({.installation_id = "qq-main",
+                                          .platform = "qq",
+                                          .conversation_id = "group:qq-group",
+                                          .message_id = "9001"},
+                                         {.installation_id = "tg-main",
+                                          .platform = "telegram",
+                                          .conversation_id = "chat:tg-group"});
+  ASSERT_TRUE(reverse.unique());
+  EXPECT_EQ(reverse.mapping->source_message_id, "tg-album-1");
+  const auto media_rows = repository->get_media_group_mappings(
+      {.installation_id = "tg-main",
+       .platform = "telegram",
+       .conversation_id = "chat:tg-group"},
+      "album-1",
+      {.installation_id = "qq-main",
+       .platform = "qq",
+       .conversation_id = "group:qq-group"});
+  ASSERT_EQ(media_rows.size(), 2U);
+  EXPECT_TRUE(media_rows.front().is_primary);
+  EXPECT_EQ(media_rows.front().source_message_id, "tg-album-1");
 
   handler.reset();
   blocking_executor->shutdown();
+  std::filesystem::remove(db_path);
+}
+
+TEST(BridgeActorTest, DeferredAlbumsWithEqualIdsRemainIndependentAcrossChats) {
+  const auto db_path = temp_db_path("deferred_album_chat_collision");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      *db_manager, "main", "bridge");
+  repository->initialize_schema();
+  auto config = std::make_shared<bridge::BridgeConfig>();
+  config->group_map.emplace(
+      "tg-group", bridge::GroupBridgeConfig("tg-group", "qq-group", false,
+                                            false, true, true));
+  config->group_map.emplace(
+      "tg-history", bridge::GroupBridgeConfig("tg-history", "qq-history", false,
+                                              false, true, true));
+  auto blocking = std::make_shared<obcx::core::BlockingExecutor>(1);
+  asio::io_context ioc;
+  auto qq_bot = std::make_shared<RetryTestQQBot>();
+  qq_bot->always_succeed.store(true, std::memory_order_release);
+  auto telegram_bot = std::make_shared<RetryTestTelegramBot>();
+  auto handler = std::make_shared<bridge::TelegramHandler>(
+      bridge_operations(*qq_bot, *telegram_bot), config, nullptr,
+      ioc.get_executor(), repository, nullptr, blocking);
+  const auto album = [](std::string group) {
+    obcx::common::MessageEvent event;
+    event.message_id = "same-message";
+    event.message_type = "group";
+    event.group_id = std::move(group);
+    event.data = {{"media_group_id", "same-album"}};
+    event.message.push_back({.type = "text", .data = {{"text", "album"}}});
+    return event;
+  };
+  auto future = asio::co_spawn(
+      ioc,
+      [handler, first = album("tg-group"),
+       second = album("tg-history")]() mutable -> asio::awaitable<void> {
+        (void)co_await handler->forward_to_qq(std::move(first));
+        (void)co_await handler->forward_to_qq(std::move(second));
+        handler->flush_pending_media_groups();
+        co_return;
+      },
+      asio::use_future);
+  ioc.run();
+  future.get();
+
+  EXPECT_EQ(qq_bot->send_group_calls.load(), 2);
+  EXPECT_EQ(std::ranges::count(qq_bot->sent_group_ids, std::string{"qq-group"}),
+            1);
+  EXPECT_EQ(
+      std::ranges::count(qq_bot->sent_group_ids, std::string{"qq-history"}), 1);
+  EXPECT_EQ(mapped_target_scoped(*repository, "tg-main", "telegram",
+                                 "chat:tg-group", "same-message", "qq-main",
+                                 "qq", "group:qq-group"),
+            "9001");
+  EXPECT_EQ(mapped_target_scoped(*repository, "tg-main", "telegram",
+                                 "chat:tg-history", "same-message", "qq-main",
+                                 "qq", "group:qq-history"),
+            "9001");
+  handler.reset();
+  blocking->shutdown();
   std::filesystem::remove(db_path);
 }
 
@@ -2282,6 +2984,8 @@ TEST(BridgeActorTest, EnabledQqToTelegramFailurePersistsMessageRetry) {
   EXPECT_EQ(retries.front().source_platform, "qq");
   EXPECT_EQ(retries.front().target_platform, "telegram");
   EXPECT_EQ(retries.front().source_message_id, "qq-retry-1");
+  EXPECT_EQ(retries.front().source_conversation_id, "group:qq-group");
+  EXPECT_EQ(retries.front().target_conversation_id, "chat:tg-group");
   EXPECT_EQ(retries.front().group_id, "tg-group");
 
   std::filesystem::remove(db_path);
@@ -2306,7 +3010,9 @@ TEST(BridgeActorTest, EnabledTelegramToQqFailurePersistsMessageRetry) {
       std::chrono::system_clock::now() + std::chrono::hours{1}, 10);
   ASSERT_EQ(retries.size(), 1);
   EXPECT_EQ(retries.front().source_platform, "telegram");
+  EXPECT_EQ(retries.front().source_conversation_id, "chat:tg-group");
   EXPECT_EQ(retries.front().target_platform, "qq");
+  EXPECT_EQ(retries.front().target_conversation_id, "group:qq-group");
   EXPECT_EQ(retries.front().source_message_id, "tg-retry-1");
   EXPECT_EQ(retries.front().group_id, "qq-group");
 
@@ -2340,11 +3046,9 @@ TEST(BridgeActorTest, PossiblySubmittedInitialSendsAreNeverQueued) {
               std::chrono::system_clock::now() + std::chrono::hours{1}, 10)
           .empty());
   EXPECT_FALSE(
-      repository->get_target_message_id("qq", "qq-unknown-1", "telegram")
-          .has_value());
+      mapped_target(*repository, "qq", "qq-unknown-1", "telegram").has_value());
   EXPECT_FALSE(
-      repository->get_target_message_id("telegram", "tg-unknown-1", "qq")
-          .has_value());
+      mapped_target(*repository, "telegram", "tg-unknown-1", "qq").has_value());
 
   std::filesystem::remove(db_path);
 }

@@ -41,6 +41,7 @@ TEST(ReceivedMessageRepositoryTest, ReadsMessageStoreOwnedRawMessages) {
             message_id TEXT NOT NULL,
             source_platform TEXT NOT NULL,
             source_bot TEXT NOT NULL DEFAULT '',
+            conversation_id TEXT NOT NULL,
             sender TEXT NOT NULL DEFAULT '',
             group_id TEXT NOT NULL DEFAULT '',
             message_type TEXT NOT NULL DEFAULT 'unknown',
@@ -49,18 +50,20 @@ TEST(ReceivedMessageRepositoryTest, ReadsMessageStoreOwnedRawMessages) {
             timestamp INTEGER NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            UNIQUE(source_platform, source_bot, message_id)
+            UNIQUE(source_platform, source_bot, conversation_id, message_id)
           );
         )");
     connection.execute(
         R"(
           INSERT INTO message_store_qq_messages
-            (message_id, source_platform, source_bot, sender, group_id,
-             message_type, payload, raw, timestamp, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            (message_id, source_platform, source_bot, conversation_id,
+             sender, group_id, message_type, payload, raw, timestamp,
+             created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         )",
         {std::string{"qq-img-1"}, std::string{"qq"}, std::string{"qq-main"},
-         std::string{"user-7"}, std::string{"group-9"}, std::string{"image"},
+         std::string{"group:group-9"}, std::string{"user-7"},
+         std::string{"group-9"}, std::string{"image"},
          std::string{R"({"text":"caption"})"},
          std::string{R"({"message":[{"type":"image"}]})"},
          static_cast<std::int64_t>(123000), static_cast<std::int64_t>(123000),
@@ -70,15 +73,24 @@ TEST(ReceivedMessageRepositoryTest, ReadsMessageStoreOwnedRawMessages) {
   bridge::ReceivedMessageRepository repository(db_manager, "main",
                                                "message_store");
 
-  const auto message = repository.get_message("qq", "qq-img-1");
+  const auto message =
+      repository.get_message("qq", "qq-main", "group:group-9", "qq-img-1");
   ASSERT_TRUE(message.has_value());
   EXPECT_EQ(message->platform, "qq");
+  EXPECT_EQ(message->source_bot, "qq-main");
+  EXPECT_EQ(message->conversation_id, "group:group-9");
   EXPECT_EQ(message->message_id, "qq-img-1");
   EXPECT_EQ(message->group_id, "group-9");
   EXPECT_EQ(message->user_id, "user-7");
   EXPECT_EQ(message->message_type, "image");
   EXPECT_EQ(message->content, "caption");
   EXPECT_EQ(message->raw_message, R"({"message":[{"type":"image"}]})");
+  EXPECT_FALSE(
+      repository.get_message("qq", "qq-secondary", "group:group-9", "qq-img-1")
+          .has_value());
+  EXPECT_FALSE(
+      repository.get_message("qq", "qq-main", "group:other", "qq-img-1")
+          .has_value());
 
   std::filesystem::remove(db_path);
 }

@@ -43,8 +43,10 @@ class BridgeBotOperations final {
 public:
   BridgeBotOperations(std::shared_ptr<obcx::bot::BotOperationClient> client,
                       std::string telegram_installation,
-                      std::string onebot11_installation);
+                      std::string onebot11_installation,
+                      std::string pair_id = "legacy");
 
+  [[nodiscard]] auto pair_id() const noexcept -> const std::string &;
   [[nodiscard]] auto telegram_installation() const noexcept
       -> const obcx::bot::BotInstallationRef &;
   [[nodiscard]] auto onebot11_installation() const noexcept
@@ -125,6 +127,7 @@ private:
   }
 
   std::shared_ptr<obcx::bot::BotOperationClient> client_;
+  std::string pair_id_;
   obcx::bot::BotInstallationRef telegram_;
   obcx::bot::BotInstallationRef onebot11_;
 };

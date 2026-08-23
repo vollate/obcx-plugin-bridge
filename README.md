@@ -105,13 +105,13 @@ path = "data/obcx.sqlite3"
 library = "bridge"
 enabled = true
 requires = ["message_store"]
-partition = "source_platform:conversation_id"
+partition = "source_bot:conversation_id"
 db = "main"
 db_namespace = "bridge"
 
 [actors.bridge.config]
-telegram_installation = "telegram_bot"
-onebot11_installation = "qq_bot"
+legacy_state_pair = "primary"
+legacy_unresolved_mapping_policy = "fail"
 enable_retry_queue = true
 message_retry_max_attempts = 5
 message_retry_base_interval_sec = 2
@@ -127,6 +127,18 @@ gif_max_width = 0
 gif_max_colors = 256
 qq_media_download_max_bytes = 10485760
 image_placeholder_url = "https://placehold.co/512x512/e9ecef/495057/png?text=NOT+FOUND"
+
+[[actors.bridge.config.installation_pairs]]
+id = "primary"
+telegram_installation = "telegram_bot"
+onebot11_installation = "qq_bot"
+
+# Migration-only route history for a route no longer in group_mappings:
+# [[actors.bridge.config.legacy_mapping_routes]]
+# pair = "primary"
+# telegram_conversation_id = "chat:-1001234567890"
+# telegram_topic_id = -1
+# qq_conversation_id = "group:123456789"
 ```
 
 `image_placeholder_url` must be a direct image URL. It defaults to a PNG that
@@ -155,14 +167,23 @@ with the configured placeholder. Logs may include item indices and dimensions,
 but never signed QQ URLs, complete decoder output, or complete Telegram
 responses.
 
-The forwarding runtime currently resolves bots by platform, not by bot id.
-Configure exactly one live QQ bot and exactly one live Telegram bot. Multiple
-live accounts on either platform make lookup ambiguous and forwarding fails.
+The forwarding runtime resolves every event by exact `source_bot` and a named,
+disjoint Telegram/OneBot pair. Each installation may belong to only one pair,
+and a source conversation maps to one target rather than fan-out. When more
+than one pair is configured, every `group_mappings` entry must name `pair`.
+Missing routes remain successful no-ops, while unknown source installations
+fail without selecting another account.
+
+Existing single-pair deployments may retain scalar `telegram_installation` and
+`onebot11_installation` fields with pair-less mappings. Do not mix scalar and
+named forms. Command routes must list every source bot whose Bridge commands
+should be active.
 
 ### Execution domains and partitions
 
-Configure bridge with `partition = "source_platform:conversation_id"` so
-independent conversations remain independently schedulable. A suspended
+Configure bridge with `partition = "source_bot:conversation_id"` so equal
+native conversations from different installations have independent mailboxes.
+A suspended
 handler still owns its partition mailbox: later messages for the same
 conversation remain FIFO, while another conversation can use a different actor
 worker.
@@ -180,10 +201,69 @@ the process `PATH`. `action_timeout` should remain above the upstream
 first-media-send latency; 30 seconds is the example default. Telegram
 `poll_force_close` must be larger than `poll_timeout`.
 
+### Conversation-scoped schema migration
+
+Bridge-owned state uses schema version 3. Every live message identity is
+`(installation, platform, conversation_id, message_id)`: QQ groups use
+`group:<id>`, Telegram chats use `chat:<id>`, and Telegram topic id remains
+separate route metadata. Mappings, retry rows, and media-group rows include both
+source and target conversations; installation-scoped user/sticker caches and
+heartbeats retain their version-2 shape. Equal Telegram message ids in two
+chats are valid and MUST NOT be deduplicated or deleted as duplicates.
+
+An unversioned database is first assigned to its deterministic legacy pair as
+version 1 -> 2. Version 2 -> 3 then classifies each mapping from its exact
+Message Store source identity and a current route or migration-only
+`legacy_mapping_routes` entry. Telegram thread metadata selects an exact
+topic-to-group route when configured; a chat-wide group-to-group route applies
+to every forum thread in that chat and therefore does not require a synthetic
+topic-history entry. The default
+`legacy_unresolved_mapping_policy = "fail"` rolls back the complete transaction
+when a source conversation, historical target route, or album primary cannot be
+proven. `"archive"` is an explicit operator choice: unresolved mapping/media
+rows are retained in namespaced version-2 archive tables, but forwarding,
+de-duplication, replies, edits, recalls, commands, and retries never query
+those tables. Pending retries cannot be archived or retargeted and block
+migration until safely drained or explicitly removed after backup.
+
+Stop OBCX and take a SQLite-consistent backup before upgrading; do not copy only
+the main `.db` file while WAL writes are active. Migration and all row/count,
+shape, primary, and index checks run under one transaction during typed actor
+generation preparation, before scheduler or pipeline ingress can invoke
+Bridge. A failed preparation rejects the generation and never publishes an
+uninitialized repository. A reload candidate performs a read-only version-3
+shape check and cannot perform version 1 -> 2 or version 2 -> 3 migration.
+Version 3 is not readable by the preceding binary, so rollback requires
+restoring both that binary and the pre-migration database snapshot; there is no
+down-migration.
+
+With OBCX stopped, create and verify the snapshot with SQLite itself, for
+example:
+
+```bash
+sqlite3 bridge_bot.db ".timeout 10000" ".backup 'bridge_bot.pre-v3.db'"
+sqlite3 bridge_bot.pre-v3.db "PRAGMA integrity_check;"
+```
+
+After startup, verify `SELECT MAX(version) FROM bridge_schema_version;` returns
+`3`, inspect the logged live/archive counts, and confirm known equal ids are
+separate by `target_conversation_id`. Do not delete WAL/SHM files or copy only
+the main file from a running process.
+
+The Message Store already keys rows by `source_bot` and `conversation_id`.
+Bridge reads those existing values during preflight without changing Message
+Store tables, indexes, payloads, or event types. Migration diagnostics contain
+only bounded counts and non-secret route identities. The migration does not
+rewrite a message that was already sent with an incorrect reply reference;
+after deployment an operator must explicitly remove and resend that message if
+desired. Do not delete one of two valid rows merely because their native ids
+are equal in different conversations.
+
 ### Direct mapping persistence
 
 Immediate forwarding has one explicit durability owner. QQ and Telegram
-handlers return a typed outcome containing the complete mapping and one of
+handlers return a typed outcome containing exact source/target installations,
+conversations, native message ids, and one of
 `NewDelivery`, `AlreadyPersisted`, or `NotForwarded`. The forwarding runtime
 passes that value through without querying the mapping table after the bot
 send.
@@ -224,8 +304,13 @@ submitted send is never automatically retried and creates no fabricated
 mapping. The existing retry row is terminalized with its finite
 attempt fields; no new outbox or reconciliation table is introduced. A process
 crash at the provider boundary still cannot prove exactly-once delivery.
-Duplicate enqueue identity remains `(source_platform, source_message_id,
-target_platform)`.
+Duplicate enqueue identity contains the complete source message identity and
+the exact target installation/platform/conversation. Retry callbacks are
+registered by target installation but validate the persisted target
+conversation against the configured pair before dispatch, so a removed account
+or route is reported as unavailable and never replaced by another bot, group,
+or chat. Successful completion writes the same two conversations into the
+mapping before removing only that exact retry row.
 
 The defaults are 5 maximum attempts, a 2-second base backoff, a 10-second queue
 check interval, and a 300-second maximum backoff. All four values must be
@@ -239,9 +324,10 @@ contain platform direction, source identity, and attempt outcome, but not
 message bodies, bot tokens, proxy credentials, or complete API responses.
 
 [`actor-config.example.toml`](actor-config.example.toml) lists the bot,
-media, and group-mapping options. `telegram_installation` and
-`onebot11_installation` are required and select the one supported pair. Use the
-actor dependency and database block above as the current runtime contract.
+media, pair, and group-mapping options. Named pairs contain one exact Telegram
+and OneBot installation; the scalar fields remain the one-pair compatibility
+form. Use the actor dependency and database block above as the current runtime
+contract.
 
 ## Features
 

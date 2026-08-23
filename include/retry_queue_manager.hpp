@@ -64,8 +64,12 @@ struct RetryQueuePolicy {
  * persistent bridge state repository.
  */
 struct MessageRetryEntry {
+  std::string source_installation;
   std::string source_platform;
+  std::string source_conversation_id;
+  std::string target_installation;
   std::string target_platform;
+  std::string target_conversation_id;
   std::string source_message_id;
   obcx::common::Message message; // Store message directly, no serialization
   std::string group_id;
@@ -82,6 +86,7 @@ struct MessageRetryEntry {
  * @brief In-memory media download retry info (no database persistence)
  */
 struct MediaDownloadRetryEntry {
+  std::string installation_id;
   std::string platform;
   std::string file_id;
   std::string file_type;
@@ -147,8 +152,12 @@ public:
   /**
    * @brief 添加消息发送重试
    */
-  void add_message_retry(const std::string &source_platform,
+  void add_message_retry(const std::string &source_installation,
+                         const std::string &source_platform,
+                         const std::string &source_conversation_id,
+                         const std::string &target_installation,
                          const std::string &target_platform,
+                         const std::string &target_conversation_id,
                          const std::string &source_message_id,
                          const obcx::common::Message &message,
                          const std::string &group_id,
@@ -159,7 +168,8 @@ public:
   /**
    * @brief 添加媒体下载重试
    */
-  void add_media_download_retry(const std::string &platform,
+  void add_media_download_retry(const std::string &installation_id,
+                                const std::string &platform,
                                 const std::string &file_id,
                                 const std::string &file_type,
                                 const std::string &download_url,
@@ -176,7 +186,7 @@ public:
   /**
    * @brief 注册媒体下载回调函数
    */
-  void register_media_download_callback(const std::string &platform,
+  void register_media_download_callback(const std::string &installation_id,
                                         MediaDownloadCallback callback);
 
   /**

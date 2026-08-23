@@ -49,6 +49,16 @@ auto json_id(const nlohmann::json &data, const std::string_view key)
   return {};
 }
 
+auto sanitize_generated_text(std::string text) -> std::string {
+  for (auto &value : text) {
+    const auto byte = static_cast<unsigned char>(value);
+    if (byte < 0x20U && value != '\n') {
+      value = ' ';
+    }
+  }
+  return text;
+}
+
 } // namespace
 
 QQEventHandler::QQEventHandler(
@@ -85,47 +95,74 @@ auto QQEventHandler::handle_recall_event(obcx::common::Event event)
       co_return;
     }
     const auto [telegram_group_id, topic_id] =
-        config_->tg_group_and_topic_id(qq_group_id);
-    const auto *route = config_->bridge_config(telegram_group_id);
+        config_->tg_group_and_topic_id(operations_->pair_id(), qq_group_id);
+    const auto *route =
+        config_->bridge_config(operations_->pair_id(), telegram_group_id);
     if (telegram_group_id.empty() || route == nullptr) {
       co_return;
     }
 
-    std::optional<std::string> target_id;
+    MessageMappingResolution mapping;
     std::optional<storage::MessageInfo> original;
     if (state_repository_ || received_message_repository_) {
-      std::tie(target_id, original) = co_await blocking_executor_->run(
+      const auto source_installation =
+          operations_->onebot11_installation().installation_id;
+      const auto target_installation =
+          operations_->telegram_installation().installation_id;
+      const auto source_conversation = qq_conversation_id(qq_group_id);
+      const auto target_conversation =
+          telegram_conversation_id(telegram_group_id);
+      std::tie(mapping, original) = co_await blocking_executor_->run(
           [state = state_repository_, received = received_message_repository_,
-           recalled_id] {
-            return std::pair{state ? state->get_target_message_id(
-                                         "qq", recalled_id, "telegram")
-                                   : std::optional<std::string>{},
-                             received ? received->get_message("qq", recalled_id)
-                                      : std::optional<storage::MessageInfo>{}};
+           source_installation, target_installation, source_conversation,
+           target_conversation, recalled_id] {
+            return std::pair{
+                state ? state->resolve_target_mapping(
+                            {.installation_id = source_installation,
+                             .platform = "qq",
+                             .conversation_id = source_conversation,
+                             .message_id = recalled_id},
+                            {.installation_id = target_installation,
+                             .platform = "telegram",
+                             .conversation_id = target_conversation})
+                      : MessageMappingResolution{},
+                received
+                    ? received->get_message("qq", source_installation,
+                                            source_conversation, recalled_id)
+                    : std::optional<storage::MessageInfo>{}};
           });
     }
-    if (!target_id.has_value()) {
+    if (mapping.missing()) {
       co_return;
     }
+    if (!mapping.unique()) {
+      OBCX_WARN("QQ recall mapping resolution failed: {}",
+                mapping.diagnostic.empty() ? "ambiguous_message_mapping"
+                                           : mapping.diagnostic);
+      co_return;
+    }
+    const auto &target_id = mapping.mapping->target_message_id;
 
     try {
       if (original.has_value() && is_picture_message(*original)) {
         co_await operations_->delete_telegram_message(telegram_group_id,
-                                                      *target_id);
+                                                      target_id);
         co_return;
       }
       bool show_sender = route->show_qq_to_tg_sender;
       if (route->mode == BridgeMode::TOPIC_TO_GROUP) {
-        const auto *topic = config_->topic_config(telegram_group_id, topic_id);
+        const auto *topic = config_->topic_config(operations_->pair_id(),
+                                                  telegram_group_id, topic_id);
         show_sender = topic != nullptr && topic->show_qq_to_tg_sender;
       }
       std::string text = "~Message has been recalled~";
       if (show_sender && original.has_value()) {
-        const auto sender =
-            co_await fetch_user_display_name(original->user_id, qq_group_id);
-        text = escape_markdown_v2(fmt::format("[{}]\t", sender)) + text;
+        const auto sender = sanitize_generated_text(
+            co_await fetch_user_display_name(original->user_id, qq_group_id));
+        text = escape_markdown_v2(fmt::format("[{}] ", sender)) + text;
       }
-      co_await operations_->edit_telegram_message(telegram_group_id, *target_id,
+      text = sanitize_generated_text(std::move(text));
+      co_await operations_->edit_telegram_message(telegram_group_id, target_id,
                                                   text, "MarkdownV2");
     } catch (const std::exception &error) {
       OBCX_WARN("QQ recall propagation failed: {}", error.what());
@@ -163,15 +200,17 @@ auto QQEventHandler::handle_poke_event(const obcx::common::NoticeEvent &event)
     const auto suffix = event.data.value("suffix", std::string{});
 
     const auto [telegram_group_id, topic_id] =
-        config_->tg_group_and_topic_id(qq_group_id);
-    const auto *route = config_->bridge_config(telegram_group_id);
+        config_->tg_group_and_topic_id(operations_->pair_id(), qq_group_id);
+    const auto *route =
+        config_->bridge_config(operations_->pair_id(), telegram_group_id);
     if (telegram_group_id.empty() || route == nullptr) {
       co_return;
     }
     bool enabled = route->enable_qq_to_tg;
     bool show_names = route->show_qq_to_tg_sender;
     if (route->mode == BridgeMode::TOPIC_TO_GROUP) {
-      const auto *topic = config_->topic_config(telegram_group_id, topic_id);
+      const auto *topic = config_->topic_config(operations_->pair_id(),
+                                                telegram_group_id, topic_id);
       enabled = topic != nullptr && topic->enable_qq_to_tg;
       show_names = topic != nullptr && topic->show_qq_to_tg_sender;
     }
@@ -268,17 +307,23 @@ auto QQEventHandler::fetch_user_display_name(const std::string &user_id,
     -> boost::asio::awaitable<std::string> {
   std::optional<std::string> display_name;
   if (state_repository_) {
+    const auto installation =
+        operations_->onebot11_installation().installation_id;
     display_name = co_await blocking_executor_->run(
-        [repository = state_repository_, user_id, group_id] {
-          return repository->query_user_display_name("qq", user_id, group_id);
+        [repository = state_repository_, installation, user_id, group_id] {
+          return repository->query_user_display_name(installation, "qq",
+                                                     user_id, group_id);
         });
   }
   if (!display_name.has_value()) {
     co_await fetch_user_info(user_id, group_id);
     if (state_repository_) {
+      const auto installation =
+          operations_->onebot11_installation().installation_id;
       display_name = co_await blocking_executor_->run(
-          [repository = state_repository_, user_id, group_id] {
-            return repository->query_user_display_name("qq", user_id, group_id);
+          [repository = state_repository_, installation, user_id, group_id] {
+            return repository->query_user_display_name(installation, "qq",
+                                                       user_id, group_id);
           });
     }
   }
@@ -292,6 +337,7 @@ auto QQEventHandler::fetch_user_info(const std::string &user_id,
     const auto member = co_await operations_->get_onebot11_group_member(
         group_id, user_id, false);
     storage::UserInfo info;
+    info.installation_id = operations_->onebot11_installation().installation_id;
     info.platform = "qq";
     info.user_id = user_id;
     info.group_id = group_id;

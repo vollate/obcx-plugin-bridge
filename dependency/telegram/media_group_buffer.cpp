@@ -50,7 +50,8 @@ TGMediaGroupBuffer::~TGMediaGroupBuffer() {
   }
 }
 
-void TGMediaGroupBuffer::add(obcx::common::MessageEvent event,
+void TGMediaGroupBuffer::add(std::string source_installation,
+                             obcx::common::MessageEvent event,
                              FlushFn flush_fn) {
   const std::string mgid = extract_media_group_id(event);
   if (mgid.empty()) {
@@ -65,7 +66,8 @@ void TGMediaGroupBuffer::add(obcx::common::MessageEvent event,
     return;
   }
 
-  GroupKey key{event.group_id.value_or(""), mgid};
+  GroupKey key{std::move(source_installation), event.group_id.value_or(""),
+               mgid};
 
   std::scoped_lock lock(mutex_);
   auto &group = groups_[key];

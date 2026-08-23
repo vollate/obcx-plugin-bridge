@@ -181,6 +181,272 @@ bridge_files_dir = "/tmp/bridge_files"
   std::filesystem::remove(config_path);
 }
 
+TEST(BridgeHandlerRepositoryTest, LoadsNamedPairsAndIsolatesCollidingRoutes) {
+  const auto config_path =
+      temp_db_path("named_installations").replace_extension(".toml");
+  {
+    std::ofstream config(config_path);
+    config << R"(
+[bots.qq-a]
+type = "qq"
+enabled = true
+[bots.tg-a]
+type = "telegram"
+enabled = true
+[bots.qq-b]
+type = "qq"
+enabled = true
+[bots.tg-b]
+type = "telegram"
+enabled = true
+
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+legacy_state_pair = "primary"
+
+[[actors.bridge.config.installation_pairs]]
+id = "primary"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-a"
+
+[[actors.bridge.config.installation_pairs]]
+id = "secondary"
+telegram_installation = "tg-b"
+onebot11_installation = "qq-b"
+
+[[actors.bridge.config.legacy_mapping_routes]]
+pair = "primary"
+telegram_group_id = "old-tg"
+qq_group_id = "old-qq"
+
+[[group_mappings.group_to_group]]
+pair = "primary"
+telegram_group_id = "same-tg-group"
+qq_group_id = "same-qq-group"
+
+[[group_mappings.group_to_group]]
+pair = "secondary"
+telegram_group_id = "same-tg-group"
+qq_group_id = "same-qq-group"
+)";
+  }
+
+  const auto config = bridge::load_bridge_config(
+      bridge_config_view(config_path, /*inject_default_bots=*/false));
+  ASSERT_EQ(config->installation_pairs.size(), 2U);
+  ASSERT_NE(config->pair("primary"), nullptr);
+  ASSERT_NE(config->pair("secondary"), nullptr);
+  EXPECT_EQ(config->pair_for_source("telegram", "tg-a")->id, "primary");
+  EXPECT_EQ(config->pair_for_source("qq", "qq-b")->id, "secondary");
+  EXPECT_EQ(config->tg_group_and_topic_id("primary", "same-qq-group").first,
+            "same-tg-group");
+  EXPECT_EQ(config->tg_group_and_topic_id("secondary", "same-qq-group").first,
+            "same-tg-group");
+  EXPECT_EQ(config->legacy_migration_pair()->id, "primary");
+  ASSERT_EQ(config->legacy_mapping_routes.size(), 1U);
+  EXPECT_EQ(config->legacy_mapping_routes.front().telegram_installation,
+            "tg-a");
+  EXPECT_EQ(config->legacy_mapping_routes.front().onebot11_installation,
+            "qq-a");
+  EXPECT_TRUE(config->telegram_installation.empty());
+  std::filesystem::remove(config_path);
+}
+
+TEST(BridgeHandlerRepositoryTest, LoadsMigrationPolicyAndRouteHistory) {
+  const auto config_path =
+      temp_db_path("migration_routes").replace_extension(".toml");
+  {
+    std::ofstream config(config_path);
+    config << R"(
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+legacy_unresolved_mapping_policy = "archive"
+
+[[actors.bridge.config.legacy_mapping_routes]]
+telegram_conversation_id = "chat:-1001"
+qq_conversation_id = "group:1001"
+telegram_topic_id = 9
+
+[[group_mappings.group_to_group]]
+telegram_group_id = "-2002"
+qq_group_id = "2002"
+)";
+  }
+
+  const auto config =
+      bridge::load_bridge_config(bridge_config_view(config_path));
+  EXPECT_EQ(config->legacy_unresolved_mapping_policy,
+            bridge::LegacyUnresolvedMappingPolicy::Archive);
+  ASSERT_EQ(config->legacy_mapping_routes.size(), 1U);
+  EXPECT_EQ(config->legacy_mapping_routes.front().pair_id, "legacy");
+  EXPECT_EQ(config->legacy_mapping_routes.front().telegram_conversation_id,
+            "chat:-1001");
+  EXPECT_EQ(config->legacy_mapping_routes.front().qq_conversation_id,
+            "group:1001");
+  const auto migration = config->migration_context(true);
+  EXPECT_EQ(migration.conversation_routes.size(), 2U);
+  EXPECT_EQ(migration.unresolved_mapping_policy,
+            bridge::LegacyUnresolvedMappingPolicy::Archive);
+  std::filesystem::remove(config_path);
+}
+
+TEST(BridgeHandlerRepositoryTest, RejectsInvalidMigrationConfiguration) {
+  const std::vector<std::string> invalid = {
+      R"(
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+legacy_unresolved_mapping_policy = "guess"
+)",
+      R"(
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.legacy_mapping_routes]]
+telegram_conversation_id = "group:wrong"
+qq_conversation_id = "group:1"
+)",
+      R"(
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.legacy_mapping_routes]]
+telegram_group_id = "1"
+telegram_conversation_id = "chat:1"
+qq_group_id = "2"
+)",
+      R"(
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.legacy_mapping_routes]]
+telegram_group_id = "1"
+qq_group_id = "2"
+telegram_topic_id = 0
+)",
+      R"(
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.legacy_mapping_routes]]
+telegram_group_id = "1"
+qq_group_id = "2"
+[[actors.bridge.config.legacy_mapping_routes]]
+telegram_group_id = "1"
+qq_group_id = "3"
+)",
+      R"(
+[actors.bridge.config]
+telegram_installation = "tg-main"
+onebot11_installation = "qq-main"
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.legacy_mapping_routes]]
+telegram_group_id = "1"
+qq_group_id = "2"
+[[group_mappings.group_to_group]]
+telegram_group_id = "1"
+qq_group_id = "2"
+)",
+  };
+  for (std::size_t index = 0; index < invalid.size(); ++index) {
+    const auto path = temp_db_path("invalid_migration_" + std::to_string(index))
+                          .replace_extension(".toml");
+    {
+      std::ofstream config(path);
+      config << invalid[index];
+    }
+    EXPECT_THROW((void)bridge::load_bridge_config(bridge_config_view(path)),
+                 std::runtime_error)
+        << index;
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(BridgeHandlerRepositoryTest, RejectsAmbiguousNamedPairConfiguration) {
+  const std::vector<std::string> invalid = {
+      R"(
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-a"
+[[actors.bridge.config.installation_pairs]]
+id = "primary"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-a"
+)",
+      R"(
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.installation_pairs]]
+id = "duplicate"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-a"
+[[actors.bridge.config.installation_pairs]]
+id = "duplicate"
+telegram_installation = "tg-b"
+onebot11_installation = "qq-b"
+)",
+      R"(
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.installation_pairs]]
+id = "primary"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-a"
+[[actors.bridge.config.installation_pairs]]
+id = "secondary"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-b"
+)",
+      R"(
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.installation_pairs]]
+id = "primary"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-a"
+[[actors.bridge.config.installation_pairs]]
+id = "secondary"
+telegram_installation = "tg-b"
+onebot11_installation = "qq-b"
+[[group_mappings.group_to_group]]
+telegram_group_id = "tg-group"
+qq_group_id = "qq-group"
+)",
+      R"(
+[actors.bridge.config]
+bridge_files_dir = "/tmp/bridge_files"
+[[actors.bridge.config.installation_pairs]]
+id = "primary"
+telegram_installation = "tg-a"
+onebot11_installation = "qq-a"
+[[group_mappings.group_to_group]]
+pair = "missing"
+telegram_group_id = "tg-group"
+qq_group_id = "qq-group"
+)",
+  };
+  for (std::size_t index = 0; index < invalid.size(); ++index) {
+    const auto path = temp_db_path("invalid_named_" + std::to_string(index))
+                          .replace_extension(".toml");
+    {
+      std::ofstream config(path);
+      config << invalid[index];
+    }
+    EXPECT_THROW((void)bridge::load_bridge_config(bridge_config_view(path)),
+                 std::runtime_error)
+        << index;
+    std::filesystem::remove(path);
+  }
+}
+
 TEST(BridgeHandlerRepositoryTest, RejectsInvalidInstallationPair) {
   const std::vector<std::string> invalid = {
       R"(
@@ -256,8 +522,11 @@ bridge_files_dir = "/tmp/bridge_files"
 
 TEST(BridgeHandlerRepositoryTest, ExactSourceBotMustMatchConfiguredSide) {
   bridge::BridgeConfig config;
-  config.telegram_installation = "tg-main";
-  config.onebot11_installation = "qq-main";
+  config.installation_pairs.emplace(
+      "primary",
+      bridge::BridgeInstallationPair{.id = "primary",
+                                     .telegram_installation = "tg-main",
+                                     .onebot11_installation = "qq-main"});
 
   EXPECT_NO_THROW(
       bridge::validate_bridge_source(config, "telegram", "tg-main"));
@@ -404,7 +673,7 @@ TEST(BridgeHandlerRepositoryTest,
                                                      true, true));
 
   const auto [telegram_group_id, topic_id] =
-      config.tg_group_and_topic_id("qq-shared");
+      config.tg_group_and_topic_id("legacy", "qq-shared");
 
   EXPECT_EQ(telegram_group_id, "tg-bidirectional");
   EXPECT_EQ(topic_id, -1);
@@ -420,18 +689,28 @@ TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
   repository->initialize_schema();
 
   const storage::MessageMapping mapping{
+      .source_installation = "qq-main",
       .source_platform = "qq",
+      .source_conversation_id = "group:qq-group",
       .source_message_id = "qq-reply-1",
+      .target_installation = "tg-main",
       .target_platform = "telegram",
+      .target_conversation_id = "chat:tg-group",
       .target_message_id = "tg-reply-9",
       .created_at = std::chrono::system_clock::now(),
   };
   ASSERT_TRUE(repository->add_message_mapping(mapping));
 
   auto blocking_executor = std::make_shared<obcx::core::BlockingExecutor>(1);
-  bridge::qq::QQMessageFormatter formatter(
-      noop_bridge_operations(), std::make_shared<const bridge::BridgeConfig>(),
-      repository, blocking_executor);
+  auto config = std::make_shared<bridge::BridgeConfig>();
+  bridge::BridgeInstallationPair pair{.id = "legacy",
+                                      .telegram_installation = "tg-main",
+                                      .onebot11_installation = "qq-main"};
+  pair.group_map.emplace("tg-group",
+                         bridge::GroupBridgeConfig("tg-group", "qq-group"));
+  config->installation_pairs.emplace("legacy", std::move(pair));
+  bridge::qq::QQMessageFormatter formatter(noop_bridge_operations(), config,
+                                           repository, blocking_executor);
 
   obcx::common::MessageEvent event;
   event.message_id = "qq-current";
@@ -456,6 +735,62 @@ TEST(BridgeHandlerRepositoryTest, QQReplyLookupUsesBridgeStateRepository) {
   EXPECT_EQ(message_to_send.front().data.at("id").get<std::string>(),
             "tg-reply-9");
 
+  std::filesystem::remove(bridge_db_path);
+}
+
+TEST(BridgeHandlerRepositoryTest,
+     QQReplyReverseLookupUsesCurrentConversationWithEqualTargetIds) {
+  const auto bridge_db_path = temp_db_path("qq_reverse_collision");
+  auto db_manager = std::make_shared<obcx::core::DbManager>();
+  db_manager->configure({sqlite_config(bridge_db_path)});
+  auto repository = std::make_shared<bridge::BridgeStateRepository>(
+      *db_manager, "main", "bridge");
+  repository->initialize_schema();
+  ASSERT_TRUE(repository->add_message_mapping(
+      {.source_installation = "tg-main",
+       .source_platform = "telegram",
+       .source_conversation_id = "chat:tg-a",
+       .source_message_id = "tg-source-a",
+       .target_installation = "qq-main",
+       .target_platform = "qq",
+       .target_conversation_id = "group:qq-a",
+       .target_message_id = "same-qq-id",
+       .created_at = std::chrono::system_clock::now()}));
+  ASSERT_TRUE(repository->add_message_mapping(
+      {.source_installation = "tg-main",
+       .source_platform = "telegram",
+       .source_conversation_id = "chat:tg-b",
+       .source_message_id = "tg-source-b",
+       .target_installation = "qq-main",
+       .target_platform = "qq",
+       .target_conversation_id = "group:qq-b",
+       .target_message_id = "same-qq-id",
+       .created_at = std::chrono::system_clock::now()}));
+  auto config = std::make_shared<bridge::BridgeConfig>();
+  bridge::BridgeInstallationPair pair{.id = "legacy",
+                                      .telegram_installation = "tg-main",
+                                      .onebot11_installation = "qq-main"};
+  pair.group_map.emplace("tg-a", bridge::GroupBridgeConfig("tg-a", "qq-a"));
+  pair.group_map.emplace("tg-b", bridge::GroupBridgeConfig("tg-b", "qq-b"));
+  config->installation_pairs.emplace("legacy", std::move(pair));
+  auto blocking = std::make_shared<obcx::core::BlockingExecutor>(1);
+  bridge::qq::QQMessageFormatter formatter(noop_bridge_operations(), config,
+                                           repository, blocking);
+  obcx::common::MessageEvent event;
+  event.message_type = "group";
+  event.group_id = "qq-a";
+  event.message.push_back({.type = "reply", .data = {{"id", "same-qq-id"}}});
+  obcx::common::Message output;
+  boost::asio::io_context ioc;
+  auto future =
+      boost::asio::co_spawn(ioc, formatter.format_reply_message(event, output),
+                            boost::asio::use_future);
+  ioc.run();
+
+  EXPECT_TRUE(future.get());
+  ASSERT_EQ(output.size(), 1U);
+  EXPECT_EQ(output.front().data.value("id", std::string{}), "tg-source-a");
+  blocking->shutdown();
   std::filesystem::remove(bridge_db_path);
 }
 

@@ -23,8 +23,9 @@ auto classify_bridge_operation_failure(const std::exception &error)
 
 BridgeBotOperations::BridgeBotOperations(
     std::shared_ptr<obcx::bot::BotOperationClient> client,
-    std::string telegram_installation, std::string onebot11_installation)
-    : client_(std::move(client)),
+    std::string telegram_installation, std::string onebot11_installation,
+    std::string pair_id)
+    : client_(std::move(client)), pair_id_(std::move(pair_id)),
       telegram_{.installation_id = std::move(telegram_installation),
                 .surface = obcx::bot::BotSurface::TelegramBotApi},
       onebot11_{.installation_id = std::move(onebot11_installation),
@@ -32,8 +33,15 @@ BridgeBotOperations::BridgeBotOperations(
   if (!client_) {
     throw std::invalid_argument("bridge requires BotOperationClient");
   }
+  if (pair_id_.empty()) {
+    throw std::invalid_argument("bridge operations require pair id");
+  }
   telegram_.validate();
   onebot11_.validate();
+}
+
+auto BridgeBotOperations::pair_id() const noexcept -> const std::string & {
+  return pair_id_;
 }
 
 auto BridgeBotOperations::telegram_installation() const noexcept

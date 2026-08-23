@@ -19,8 +19,12 @@ enum class DirectForwardDisposition {
 struct DirectForwardOutcome {
   DirectForwardDisposition disposition = DirectForwardDisposition::NotForwarded;
   std::string source_platform;
+  std::string source_bot;
+  std::string source_conversation_id;
   std::string source_message_id;
   std::string target_platform;
+  std::string target_bot;
+  std::string target_conversation_id;
   std::string target_message_id;
   std::string failure_message;
   bool failure_retryable = false;
@@ -29,9 +33,12 @@ struct DirectForwardOutcome {
 struct BridgeForwardResult {
   DirectForwardDisposition disposition = DirectForwardDisposition::NotForwarded;
   std::string source_platform;
+  std::string source_bot;
+  std::string source_conversation_id;
   std::string source_message_id;
   std::string target_platform;
   std::string target_bot;
+  std::string target_conversation_id;
   std::string target_message_id;
   std::string failure_message;
   bool failure_retryable = false;
