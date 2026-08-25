@@ -390,8 +390,9 @@ auto ImageUrlValidator::download(
     }
   };
 
-  using namespace asio::experimental::awaitable_operators;
-  co_await (worker() && worker() && worker());
+  co_await asio::experimental::awaitable_operators::operator&&(
+      asio::experimental::awaitable_operators::operator&&(worker(), worker()),
+      worker());
   co_return results;
 }
 
