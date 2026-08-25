@@ -324,7 +324,7 @@ auto actor_is_enabled(const toml::table &actors, std::string_view actor)
 
 void validate_installation(const toml::table &bots,
                            const std::string &installation,
-                           const std::string_view expected_type,
+                           const std::string_view expected_surface,
                            const std::string &path) {
   const auto *configured = bots[installation].as_table();
   if (configured == nullptr) {
@@ -334,11 +334,12 @@ void validate_installation(const toml::table &bots,
   if (!(*configured)["enabled"].value_or(true)) {
     throw std::runtime_error(path + " names a disabled bot: " + installation);
   }
-  const auto actual_type = (*configured)["type"].value_or<std::string>("");
-  if (actual_type != expected_type) {
-    throw std::runtime_error(path + " requires " + std::string{expected_type} +
-                             " but " + installation + " has type " +
-                             actual_type);
+  const auto actual_surface =
+      (*configured)["surface"].value_or<std::string>("");
+  if (actual_surface != expected_surface) {
+    throw std::runtime_error(path + " requires " +
+                             std::string{expected_surface} + " but " +
+                             installation + " has surface " + actual_surface);
   }
 }
 
@@ -350,9 +351,9 @@ void validate_installation_pairs(const obcx::common::ActorConfigView &view,
         "bridge installation pairs require the root bots section");
   }
   for (const auto &[pair_id, pair] : config.installation_pairs) {
-    validate_installation(*bots, pair.telegram_installation, "telegram",
+    validate_installation(*bots, pair.telegram_installation, "telegram.bot_api",
                           "bridge pair " + pair_id + " telegram_installation");
-    validate_installation(*bots, pair.onebot11_installation, "qq",
+    validate_installation(*bots, pair.onebot11_installation, "onebot11.qq",
                           "bridge pair " + pair_id + " onebot11_installation");
   }
 }

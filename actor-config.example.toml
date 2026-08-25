@@ -3,36 +3,34 @@
 locale = "zh_CN.UTF8"
 
 [bots.qq_bot]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "websocket"
 
 [bots.qq_bot.connection]
-type = "websocket"
 host = "127.0.0.1"
 port = 3001
 access_token = ""
-use_ssl = false
-connect_timeout = 5000
-action_timeout = 30000
-heartbeat_interval = 5000
+connect_timeout_ms = 5000
+action_timeout_ms = 30000
 
 [bots.telegram_bot]
-type = "telegram"
 enabled = true
+surface = "telegram.bot_api"
+transport = "http"
 
 [bots.telegram_bot.connection]
-type = "http"
 host = "api.telegram.org"
 port = 443
 access_token = "YOUR_BOT_TOKEN"
 # Required to route /command@bot_username without accepting another bot's
 # explicitly targeted commands.
 bot_username = "your_bot_username"
-use_ssl = true
-connect_timeout = 5000
-poll_timeout = 25000
-poll_force_close = 30000
-poll_retry_interval = 3000
+use_tls = true
+connect_timeout_ms = 5000
+poll_timeout_ms = 25000
+poll_force_close_ms = 30000
+poll_retry_interval_ms = 3000
 proxy_host = "127.0.0.1"
 proxy_port = 10086
 proxy_type = "http"

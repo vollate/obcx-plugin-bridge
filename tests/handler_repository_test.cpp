@@ -71,12 +71,17 @@ auto bridge_config_view(const std::filesystem::path &path,
       std::ofstream output(resolved);
       output << R"(
 [bots.qq-main]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.qq-main.connection]
 
 [bots.tg-main]
-type = "telegram"
 enabled = true
+surface = "telegram.bot_api"
+transport = "http"
+[bots.tg-main.connection]
+access_token = "YOUR_TELEGRAM_TOKEN"
 
 )" << content;
     }
@@ -160,12 +165,17 @@ TEST(BridgeHandlerRepositoryTest, LoadsOneExplicitEnabledInstallationPair) {
     std::ofstream config(config_path);
     config << R"(
 [bots.qq-main]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.qq-main.connection]
 
 [bots.tg-main]
-type = "telegram"
 enabled = true
+surface = "telegram.bot_api"
+transport = "http"
+[bots.tg-main.connection]
+access_token = "YOUR_TELEGRAM_TOKEN"
 
 [actors.bridge.config]
 telegram_installation = "tg-main"
@@ -188,17 +198,30 @@ TEST(BridgeHandlerRepositoryTest, LoadsNamedPairsAndIsolatesCollidingRoutes) {
     std::ofstream config(config_path);
     config << R"(
 [bots.qq-a]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.qq-a.connection]
+
 [bots.tg-a]
-type = "telegram"
 enabled = true
+surface = "telegram.bot_api"
+transport = "http"
+[bots.tg-a.connection]
+access_token = "YOUR_TELEGRAM_TOKEN"
+
 [bots.qq-b]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.qq-b.connection]
+
 [bots.tg-b]
-type = "telegram"
 enabled = true
+surface = "telegram.bot_api"
+transport = "http"
+[bots.tg-b.connection]
+access_token = "YOUR_TELEGRAM_TOKEN"
 
 [actors.bridge.config]
 bridge_files_dir = "/tmp/bridge_files"
@@ -451,19 +474,30 @@ TEST(BridgeHandlerRepositoryTest, RejectsInvalidInstallationPair) {
   const std::vector<std::string> invalid = {
       R"(
 [bots.qq-main]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.qq-main.connection]
+
 [bots.tg-main]
-type = "telegram"
 enabled = true
+surface = "telegram.bot_api"
+transport = "http"
+[bots.tg-main.connection]
+access_token = "YOUR_TELEGRAM_TOKEN"
+
 [actors.bridge.config]
 onebot11_installation = "qq-main"
 bridge_files_dir = "/tmp/bridge_files"
 )",
       R"(
 [bots.same]
-type = "telegram"
 enabled = true
+surface = "telegram.bot_api"
+transport = "http"
+[bots.same.connection]
+access_token = "YOUR_TELEGRAM_TOKEN"
+
 [actors.bridge.config]
 telegram_installation = "same"
 onebot11_installation = "same"
@@ -471,11 +505,17 @@ bridge_files_dir = "/tmp/bridge_files"
 )",
       R"(
 [bots.qq-main]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.qq-main.connection]
+
 [bots.tg-main]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.tg-main.connection]
+
 [actors.bridge.config]
 telegram_installation = "tg-main"
 onebot11_installation = "qq-main"
@@ -483,11 +523,18 @@ bridge_files_dir = "/tmp/bridge_files"
 )",
       R"(
 [bots.qq-main]
-type = "qq"
+enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.qq-main.connection]
+
+[bots.tg-main]
 enabled = false
-[bots.tg-main]
-type = "telegram"
-enabled = true
+surface = "telegram.bot_api"
+transport = "http"
+[bots.tg-main.connection]
+access_token = "YOUR_TELEGRAM_TOKEN"
+
 [actors.bridge.config]
 telegram_installation = "tg-main"
 onebot11_installation = "qq-main"
@@ -495,8 +542,11 @@ bridge_files_dir = "/tmp/bridge_files"
 )",
       R"(
 [bots.qq-main]
-type = "qq"
 enabled = true
+surface = "onebot11.qq"
+transport = "http"
+[bots.qq-main.connection]
+
 [actors.bridge.config]
 telegram_installation = "missing-tg"
 onebot11_installation = "qq-main"

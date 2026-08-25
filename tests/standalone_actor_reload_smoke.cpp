@@ -1,17 +1,13 @@
 #include "common/config_loader.hpp"
 #include "core/actor_runtime_reload_controller.hpp"
+#include "core/bot_installation_directory.hpp"
 #include "core/bot_operation_dispatcher.hpp"
-#include "core/bot_registry.hpp"
 #include "core/db_manager.hpp"
 #include "core/message_event_ingress.hpp"
 #include "core/orchestrator.hpp"
-#include "core/qq_bot.hpp"
-#include "core/qq_telegram_bot_endpoints.hpp"
-#include "core/tg_bot.hpp"
-#include "onebot11/adapter/protocol_adapter.hpp"
-#include "telegram/adapter/protocol_adapter.hpp"
 
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_future.hpp>
@@ -41,86 +37,53 @@ namespace {
 using namespace std::chrono_literals;
 namespace fs = std::filesystem;
 
-class LiveQQBot final : public obcx::core::QQBot {
+class LiveQQEndpoint final : public obcx::core::BotOperationEndpoint {
 public:
-  LiveQQBot() : QQBot(obcx::adapter::onebot11::ProtocolAdapter{}) {}
-
-  void dispatch_message(obcx::common::MessageEvent event) {
-    dispatcher_->dispatch(this, obcx::common::Event{std::move(event)});
+  [[nodiscard]] auto installation() const
+      -> obcx::bot::BotInstallationRef override {
+    return {.installation_id = "qq_live",
+            .surface = obcx::bot::BotSurface::OneBot11Qq};
   }
 
-  void connect(const obcx::network::ConnectionManagerFactory::ConnectionType,
-               const obcx::common::ConnectionConfig &) override {
-    ++connect_calls;
-    running.store(true, std::memory_order_release);
+  [[nodiscard]] auto declared_actions() const
+      -> std::vector<obcx::bot::BotAction> override {
+    return {obcx::bot::BotAction::GetOneBotGroupMember};
   }
 
-  void run() override {
-    ++run_calls;
-    running.store(true, std::memory_order_release);
-    io_context_->restart();
-    event_work_.emplace(io_context_->get_executor());
-    event_thread_ = std::jthread([context = io_context_] { context->run(); });
+  auto execute(const obcx::bot::GetOneBotGroupMemberRequest &request)
+      -> asio::awaitable<obcx::bot::BotOperationResult<
+          obcx::bot::OneBotGroupMember>> override {
+    co_return obcx::bot::BotOperationResult<
+        obcx::bot::OneBotGroupMember>::success({.target = request.target,
+                                                .user_id = request.user_id,
+                                                .nickname = "reload-user"});
   }
-
-  void stop() override {
-    ++stop_calls;
-    running.store(false, std::memory_order_release);
-    event_work_.reset();
-    io_context_->stop();
-    if (event_thread_.joinable()) {
-      event_thread_.join();
-    }
-  }
-
-  auto get_group_member_info(std::string_view, std::string_view user_id, bool)
-      -> asio::awaitable<std::string> override {
-    co_return "{\"status\":\"ok\",\"data\":{\"user_id\":\"" +
-        std::string{user_id} +
-        "\",\"nickname\":\"reload-user\",\"card\":\"\"}}";
-  }
-
-  std::atomic_int connect_calls = 0;
-  std::atomic_int run_calls = 0;
-  std::atomic_int stop_calls = 0;
-  std::atomic_bool running = false;
-
-private:
-  std::optional<asio::executor_work_guard<asio::io_context::executor_type>>
-      event_work_;
-  std::jthread event_thread_;
 };
 
-class RecordingTelegramBot final : public obcx::core::TGBot {
+class RecordingTelegramEndpoint final
+    : public obcx::core::BotOperationEndpoint {
 public:
-  RecordingTelegramBot() : TGBot(obcx::adapter::telegram::ProtocolAdapter{}) {}
-
-  void connect(const obcx::network::ConnectionManagerFactory::ConnectionType,
-               const obcx::common::ConnectionConfig &) override {
-    ++connect_calls;
-    running.store(true, std::memory_order_release);
+  [[nodiscard]] auto installation() const
+      -> obcx::bot::BotInstallationRef override {
+    return {.installation_id = "telegram_live",
+            .surface = obcx::bot::BotSurface::TelegramBotApi};
   }
 
-  void run() override {
-    ++run_calls;
-    running.store(true, std::memory_order_release);
+  [[nodiscard]] auto declared_actions() const
+      -> std::vector<obcx::bot::BotAction> override {
+    return {obcx::bot::BotAction::SendGroupMessage};
   }
 
-  void stop() override {
-    ++stop_calls;
-    running.store(false, std::memory_order_release);
-  }
-
-  auto send_group_message(std::string_view group_id,
-                          const obcx::common::Message &message)
-      -> asio::awaitable<std::string> override {
+  auto
+  execute(const obcx::bot::SendGroupMessageRequest &request) -> asio::awaitable<
+      obcx::bot::BotOperationResult<obcx::bot::SendMessageResult>> override {
     std::size_t sequence = 0;
     bool fail = false;
     {
       std::scoped_lock lock(mutex_);
-      destinations_.emplace_back(group_id);
+      destinations_.push_back(request.target.native_group_id);
       std::string text;
-      for (const auto &segment : message) {
+      for (const auto &segment : request.message) {
         if (segment.type == "text") {
           text += segment.data.value("text", std::string{});
         }
@@ -133,10 +96,19 @@ public:
       }
     }
     if (fail) {
-      co_return R"({"ok":false,"error_code":429,"description":"rate limited","parameters":{"retry_after":1}})";
+      co_return obcx::bot::BotOperationResult<obcx::bot::SendMessageResult>::
+          failure({.code = obcx::bot::BotOperationErrorCode::ProviderRejected,
+                   .message = "rate limited",
+                   .provider_code = "429",
+                   .retry_after = std::chrono::seconds{1},
+                   .retryable = true,
+                   .submission_safety =
+                       obcx::bot::SubmissionSafety::DefinitelyNotSubmitted});
     }
-    co_return "{\"ok\":true,\"result\":{\"message_id\":" +
-        std::to_string(1000 + sequence) + "}}";
+    co_return obcx::bot::BotOperationResult<obcx::bot::SendMessageResult>::
+        success({.messages = {
+                     {.group = request.target,
+                      .native_message_id = std::to_string(1000 + sequence)}}});
   }
 
   void fail_next_group_send() {
@@ -153,11 +125,6 @@ public:
     std::scoped_lock lock(mutex_);
     return messages_;
   }
-
-  std::atomic_int connect_calls = 0;
-  std::atomic_int run_calls = 0;
-  std::atomic_int stop_calls = 0;
-  std::atomic_bool running = false;
 
 private:
   mutable std::mutex mutex_;
@@ -205,18 +172,18 @@ auto config_document(const fs::path &database, const fs::path &files,
                      std::string_view message_store, std::string_view bridge,
                      std::string_view telegram_group) -> std::string {
   return "[bots.qq_live]\n"
-         "type = \"qq\"\n"
-         "enabled = true\n\n"
+         "enabled = true\n"
+         "surface = \"onebot11.qq\"\n"
+         "transport = \"websocket\"\n\n"
          "[bots.qq_live.connection]\n"
-         "type = \"websocket\"\n"
          "host = \"127.0.0.1\"\n"
          "port = 3001\n"
          "access_token = \"reload-smoke-token\"\n\n"
          "[bots.telegram_live]\n"
-         "type = \"telegram\"\n"
-         "enabled = true\n\n"
+         "enabled = true\n"
+         "surface = \"telegram.bot_api\"\n"
+         "transport = \"http\"\n\n"
          "[bots.telegram_live.connection]\n"
-         "type = \"http\"\n"
          "host = \"api.invalid\"\n"
          "port = 443\n"
          "access_token = \"reload-smoke-token\"\n\n"
@@ -441,8 +408,8 @@ auto main(int argc, char **argv) -> int {
        std::to_string(
            std::chrono::steady_clock::now().time_since_epoch().count()));
   std::shared_ptr<obcx::core::ActorRuntimeReloadController> controller;
-  std::shared_ptr<LiveQQBot> qq;
-  std::shared_ptr<RecordingTelegramBot> telegram;
+  std::shared_ptr<LiveQQEndpoint> qq;
+  std::shared_ptr<RecordingTelegramEndpoint> telegram;
   asio::io_context io;
   auto work_guard = asio::make_work_guard(io);
   std::jthread io_thread([&io] { io.run(); });
@@ -460,26 +427,14 @@ auto main(int argc, char **argv) -> int {
 
     auto database = obcx::core::DbManager::shared_manager(
         parsed.snapshot->get_db_instance_configs());
-    auto registry = std::make_shared<obcx::core::BotRegistry>();
-    qq = std::make_shared<LiveQQBot>();
-    telegram = std::make_shared<RecordingTelegramBot>();
-    obcx::common::ConnectionConfig connection;
-    qq->connect(obcx::network::ConnectionManagerFactory::ConnectionType::
-                    Onebot11WebSocket,
-                connection);
-    telegram->connect(
-        obcx::network::ConnectionManagerFactory::ConnectionType::TelegramHTTP,
-        connection);
-    qq->run();
-    telegram->run();
-    registry->register_bot("qq", "qq_live", qq);
-    registry->register_bot("telegram", "telegram_live", telegram);
-    auto dispatcher =
-        std::make_shared<obcx::core::QQTelegramOperationDispatcher>();
-    obcx::core::register_existing_bot_operation_endpoint(*dispatcher, "qq_live",
-                                                         "qq", qq);
-    obcx::core::register_existing_bot_operation_endpoint(
-        *dispatcher, "telegram_live", "telegram", telegram);
+    qq = std::make_shared<LiveQQEndpoint>();
+    telegram = std::make_shared<RecordingTelegramEndpoint>();
+    auto directory = std::make_shared<obcx::core::BotInstallationDirectory>();
+    directory->register_capabilities(qq->installation(), qq);
+    directory->register_capabilities(telegram->installation(), telegram);
+    auto dispatcher = std::make_shared<obcx::core::BotOperationDispatcher>();
+    dispatcher->register_endpoint(qq);
+    dispatcher->register_endpoint(telegram);
 
     obcx::core::RuntimeGenerationBuilder builder;
     auto initial = builder.build({
@@ -491,7 +446,7 @@ auto main(int argc, char **argv) -> int {
         .staging_root = root / "staging",
         .configured_io_sources = 1,
         .db_manager = database,
-        .bot_registry = registry,
+        .bot_installation_directory = directory,
         .bot_operation_client = dispatcher,
         .require_registered_bots = true,
     });
@@ -504,16 +459,20 @@ auto main(int argc, char **argv) -> int {
     controller = std::make_shared<obcx::core::ActorRuntimeReloadController>(
         std::move(initial.generation));
     auto ingress_probe = std::make_shared<IngressProbe>();
-    qq->on_event<obcx::common::MessageEvent>(
-        [controller, ingress_probe](
-            obcx::core::IBot &,
-            const obcx::common::MessageEvent &event) -> asio::awaitable<void> {
-          auto result = co_await controller->process(
-              obcx::core::raw_message_envelope_from_event("qq", "qq_live",
-                                                          event));
-          ingress_probe->record(event.message_id, std::move(result));
-          co_return;
-        });
+    const auto dispatch_message =
+        [&io, controller, ingress_probe](obcx::common::MessageEvent event) {
+          asio::co_spawn(
+              io,
+              [controller, ingress_probe,
+               event = std::move(event)]() -> asio::awaitable<void> {
+                auto result = co_await controller->process(
+                    obcx::core::raw_message_envelope_from_event("qq", "qq_live",
+                                                                event));
+                ingress_probe->record(event.message_id, std::move(result));
+                co_return;
+              },
+              asio::detached);
+        };
 
     const auto make_reload_request = [&] {
       return obcx::core::RuntimeGenerationBuildRequest{
@@ -566,7 +525,7 @@ auto main(int argc, char **argv) -> int {
     require(static_cast<bool>(held_route),
             "active generation did not admit a held route");
     auto reloaded = start_reload(controller, make_reload_request());
-    qq->dispatch_message(message_event(2));
+    dispatch_message(message_event(2));
     const auto gate_deadline = std::chrono::steady_clock::now() + 20s;
     while (controller->gate_open() &&
            std::chrono::steady_clock::now() < gate_deadline) {
@@ -574,7 +533,7 @@ auto main(int argc, char **argv) -> int {
     }
     require(!controller->gate_open(),
             "installed actor reload gate did not close");
-    qq->dispatch_message(message_event(3));
+    dispatch_message(message_event(3));
     held_route.reset();
     const auto reload_result = finish_reload(reloaded);
     require(reload_result.active_generation_id == 7,
@@ -614,7 +573,7 @@ auto main(int argc, char **argv) -> int {
                 reload_result.active_generation_id,
             "invalid bridge retry reload replaced the active generation");
 
-    qq->dispatch_message(message_event(4));
+    dispatch_message(message_event(4));
     const auto route_deadline = std::chrono::steady_clock::now() + 20s;
     for (std::size_t sequence = 2; sequence <= 4; ++sequence) {
       const auto message_id = "reload-message-" + std::to_string(sequence);
@@ -662,19 +621,12 @@ auto main(int argc, char **argv) -> int {
                 std::ranges::count(destinations,
                                    std::string{"telegram-rejected"}) == 0,
             "reload retry ownership or post-cutover routing was incorrect");
-    require(controller->active_generation()->bot_registry() == registry,
-            "reload replaced the process-owned BotRegistry");
-    require(registry->find_bot("qq", "qq_live")->bot == qq &&
-                registry->find_bot("telegram", "telegram_live")->bot ==
-                    telegram,
-            "reload replaced live bot instances");
-    require(qq->running.load(std::memory_order_acquire) &&
-                telegram->running.load(std::memory_order_acquire),
-            "reload stopped a live bot connection");
-    require(qq->connect_calls == 1 && telegram->connect_calls == 1 &&
-                qq->run_calls == 1 && telegram->run_calls == 1 &&
-                qq->stop_calls == 0 && telegram->stop_calls == 0,
-            "reload reconnected or stopped a live bot");
+    require(controller->active_generation()->bot_installation_directory() ==
+                directory,
+            "reload replaced the process-owned installation directory");
+    require(directory->endpoint(qq->installation()) == qq &&
+                directory->endpoint(telegram->installation()) == telegram,
+            "reload replaced process-owned operation capabilities");
     require(std::ranges::count(telegram->messages(),
                                std::string{"/tp 2072 ~ 1080"}) == 1,
             "unmatched slash message did not follow the ordinary Bridge "
@@ -682,12 +634,10 @@ auto main(int argc, char **argv) -> int {
 
     controller->shutdown();
     controller.reset();
-    qq->stop();
-    telegram->stop();
     work_guard.reset();
     io.stop();
     fs::remove_all(root);
-    std::printf("reload=ok old_routes=1 new_routes=3 bot_reconnects=0\n");
+    std::printf("reload=ok old_routes=1 new_routes=3 capability_rebuilds=0\n");
     return 0;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "installed actor reload smoke failed: %s\n",
@@ -695,12 +645,6 @@ auto main(int argc, char **argv) -> int {
     if (controller) {
       controller->shutdown();
       controller.reset();
-    }
-    if (qq && qq->running.load(std::memory_order_acquire)) {
-      qq->stop();
-    }
-    if (telegram && telegram->running.load(std::memory_order_acquire)) {
-      telegram->stop();
     }
     work_guard.reset();
     io.stop();

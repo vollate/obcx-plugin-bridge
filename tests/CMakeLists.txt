@@ -12,11 +12,6 @@ add_executable(bridge_actor_test bridge_actor_test.cpp
 target_include_directories(
   bridge_actor_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
                             ${CMAKE_SOURCE_DIR}/include)
-if(IS_ABSOLUTE "${OBCX_CORE_SOURCE_DIR}" AND
-   EXISTS "${OBCX_CORE_SOURCE_DIR}/include/core/qq_bot.hpp")
-  target_include_directories(bridge_actor_test
-                             PRIVATE ${OBCX_CORE_SOURCE_DIR}/include)
-endif()
 target_link_libraries(bridge_actor_test PRIVATE bridge_core GTest::gtest_main)
 target_compile_definitions(bridge_actor_test
                            PRIVATE OBCX_BRIDGE_ACTOR_NO_EXPORT)
